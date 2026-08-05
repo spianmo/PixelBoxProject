@@ -1,0 +1,5 @@
+## devd 组件依赖 (IDF 组件注册表)
+dependencies:
+  idf: ">=5.0"
+  ## mDNS 服务发现 (_pixelbox._tcp 广播)
+  espressif/mdns: "^1.4.0"

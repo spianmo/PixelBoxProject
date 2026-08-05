@@ -1,0 +1,5 @@
+## appmgr 组件依赖 (IDF 组件注册表)
+dependencies:
+  idf: ">=5.0"
+  ## littlefs 文件系统 (storage 分区挂载 /flash)
+  joltwallet/littlefs: "^1.14.8"

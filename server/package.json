@@ -1,0 +1,25 @@
+{
+  "name": "@pixelbox/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PixelBox 语音中继服务器:WS /realtime 接入设备,串联 STT / LLM / TTS(OpenAI 兼容)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}

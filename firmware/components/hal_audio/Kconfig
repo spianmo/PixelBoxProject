@@ -1,0 +1,46 @@
+menu "PixelBox 音频 HAL (hal_audio)"
+
+config PX_AUDIO_TASK_CORE
+    int "音频任务绑定核心"
+    range 0 1
+    default 0
+    help
+        采集/播放/解码任务所在核心。JS 线程固定在核 1,音频任务默认放核 0。
+
+config PX_AUDIO_CAPTURE_PRIO
+    int "采集任务优先级"
+    range 1 24
+    default 15
+
+config PX_AUDIO_PLAYBACK_PRIO
+    int "播放(混音)任务优先级"
+    range 1 24
+    default 15
+
+config PX_AUDIO_DECODE_PRIO
+    int "解码任务优先级"
+    range 1 24
+    default 5
+
+config PX_AUDIO_DECODE_RING_KB
+    int "解码输出 PCM 环形缓冲 (KB, PSRAM)"
+    range 32 2048
+    default 128
+    help
+        player.play() 解码任务与混音器之间的缓冲。44.1kHz 单声道下 128KB 约 1.5 秒。
+
+config PX_AUDIO_STREAM_RING_KB
+    int "openPcmStream 默认环形缓冲 (KB, PSRAM)"
+    range 64 4096
+    default 512
+    help
+        TTS 流式播放缓冲。24kHz 单声道下 512KB 约 10.9 秒。
+
+config PX_AUDIO_MIC_QUEUE_FRAMES
+    int "JS 麦克风帧队列深度"
+    range 2 64
+    default 8
+    help
+        JS 线程未及时消费时最多积压的帧数,超出丢弃最旧帧并告警。
+
+endmenu

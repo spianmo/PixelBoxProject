@@ -1,0 +1,131 @@
+menu "PixelBox 外设 (hal_periph)"
+
+    comment "共享 I2C/触摸/IMU/按键引脚由 boards 组件提供 (hal_common/board.h)"
+    comment "此处仅保留 hal_periph 自有外设 (BLE/摄像头/GPS/灯带) 的开关与引脚"
+
+    # ------------------------------------------------------------
+    # 触摸
+    # ------------------------------------------------------------
+    config PX_TOUCH_POLL_MS
+        int "触摸轮询周期 ms"
+        range 5 50
+        default 10
+
+    # ------------------------------------------------------------
+    # BLE (NimBLE)
+    # ------------------------------------------------------------
+    config PX_ENABLE_BLE
+        bool "启用 BLE (px.ble)"
+        default y
+        help
+            还需要 sdkconfig 打开 CONFIG_BT_ENABLED + CONFIG_BT_NIMBLE_ENABLED,
+            否则 px.ble.available() 返回 false。
+
+    # ------------------------------------------------------------
+    # 摄像头 OV2640 (DVP, 定制板 CUSTOM_V1 可选)
+    # 引脚归属说明: boards 尚未提供 camera 配置 getter, DVP 引脚暂由
+    # 本组件 Kconfig 收敛; 待 boards 增加 board_camera_config() 后迁移。
+    # ------------------------------------------------------------
+    config PX_ENABLE_CAMERA
+        bool "启用摄像头 (px.camera)"
+        default n
+        help
+            Stage B 定制板外设。建议与 BOARD_CV1_HAS_CAMERA 同时开启,
+            运行期可用性 = 本开关 AND board_caps()->camera。
+
+    if PX_ENABLE_CAMERA
+        config PX_CAM_PIN_XCLK
+            int "CAM XCLK GPIO"
+            default 8
+        config PX_CAM_PIN_PCLK
+            int "CAM PCLK GPIO"
+            default 9
+        config PX_CAM_PIN_VSYNC
+            int "CAM VSYNC GPIO"
+            default 4
+        config PX_CAM_PIN_HREF
+            int "CAM HREF GPIO"
+            default 5
+        config PX_CAM_PIN_SIOD
+            int "CAM SCCB SDA GPIO"
+            default 15
+        config PX_CAM_PIN_SIOC
+            int "CAM SCCB SCL GPIO"
+            default 14
+        config PX_CAM_PIN_D0
+            int "CAM D0 GPIO"
+            default 10
+        config PX_CAM_PIN_D1
+            int "CAM D1 GPIO"
+            default 11
+        config PX_CAM_PIN_D2
+            int "CAM D2 GPIO"
+            default 12
+        config PX_CAM_PIN_D3
+            int "CAM D3 GPIO"
+            default 13
+        config PX_CAM_PIN_D4
+            int "CAM D4 GPIO"
+            default 16
+        config PX_CAM_PIN_D5
+            int "CAM D5 GPIO"
+            default 17
+        config PX_CAM_PIN_D6
+            int "CAM D6 GPIO"
+            default 18
+        config PX_CAM_PIN_D7
+            int "CAM D7 GPIO"
+            default 46
+        config PX_CAM_PIN_PWDN
+            int "CAM PWDN GPIO (-1 未接)"
+            default -1
+        config PX_CAM_PIN_RESET
+            int "CAM RESET GPIO (-1 未接)"
+            default -1
+    endif
+
+    # ------------------------------------------------------------
+    # GPS (UART NMEA, 定制板 CUSTOM_V1 可选)
+    # ------------------------------------------------------------
+    config PX_ENABLE_GPS
+        bool "启用 GPS (px.gps)"
+        default n
+        help
+            Stage B 定制板外设。建议与 BOARD_CV1_HAS_GPS 同时开启。
+
+    if PX_ENABLE_GPS
+        config PX_GPS_UART_NUM
+            int "GPS UART 端口号"
+            range 0 2
+            default 1
+        config PX_GPS_RX_GPIO
+            int "GPS RX GPIO (接模块 TX)"
+            default 44
+        config PX_GPS_TX_GPIO
+            int "GPS TX GPIO (接模块 RX, -1 不接)"
+            default 43
+        config PX_GPS_BAUD
+            int "GPS 波特率"
+            default 9600
+    endif
+
+    # ------------------------------------------------------------
+    # WS2812 灯带 (RMT, 定制板 CUSTOM_V1 可选)
+    # ------------------------------------------------------------
+    config PX_ENABLE_LED
+        bool "启用灯带 (px.led)"
+        default n
+        help
+            Stage B 定制板外设。建议与 BOARD_CV1_HAS_LED 同时开启。
+
+    if PX_ENABLE_LED
+        config PX_LED_GPIO
+            int "灯带数据 GPIO"
+            default 38
+        config PX_LED_COUNT
+            int "灯珠数量"
+            range 1 1024
+            default 8
+    endif
+
+endmenu

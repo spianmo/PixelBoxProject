@@ -1,0 +1,6 @@
+# bindings_net 组件清单
+# mdns / esp_websocket_client 为乐鑫托管组件,idf.py 首次构建时自动拉取
+dependencies:
+  idf: ">=5.5"
+  espressif/mdns: "^1.4.0"
+  espressif/esp_websocket_client: "^1.2.0"

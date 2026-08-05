@@ -1,0 +1,60 @@
+# ============================================================
+# PixelBox 像素盒 — sdkconfig 默认值 (ESP32-S3, 16MB Flash, 8MB Octal PSRAM)
+# ============================================================
+
+# ---- 目标芯片 ----
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---- Flash: 16MB / QIO / 80MHz ----
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ---- 自定义分区表 (OTA 双分区 + littlefs storage) ----
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- Octal PSRAM: 开启 + 允许 malloc 进 PSRAM ----
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# 小于该值的分配优先走内部 RAM (性能)
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+# 为 DMA/内部专用分配保留的内部堆
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# 允许任务栈放在 PSRAM (js_task 32KB 栈)
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+# WiFi/LWIP 缓冲尽量走 PSRAM
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# ---- CPU / FreeRTOS ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# ---- 编译优化 (性能优先 -O2) ----
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ---- 日志: 编译保留 DEBUG 级别 (运行期可通过 esp_log_level_set 提升) ----
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ---- mbedTLS: 内置 CA 证书包 (fetch https 用) ----
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# ---- esp_http_server: WebSocket 支持 (devd 开发服务必需) ----
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# ---- 蓝牙: NimBLE (px.ble 依赖; 未开启时 bindings_net 退化为 stub) ----
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# ---- 任务栈 ----
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# ---- LWIP ----
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# ---- 控制台: 板载 USB-C 为 S3 原生 USB (USB-Serial-JTAG) ----
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

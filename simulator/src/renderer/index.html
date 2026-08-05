@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PixelBox Simulator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      script-src 说明(device-sim 沙箱需要,srcdoc/blob 文档继承本 CSP):
+        'unsafe-inline' → 沙箱 iframe srcdoc 内联运行时脚本
+        blob:           → 用户 bundle 以 Blob 模块动态 import;AudioWorklet 模块
+        'unsafe-eval'   → Blob import 不可用时的 eval 回退
+      本应用为本地开发工具,不加载远程页面,风险可控
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ws: wss: http: https:; frame-src 'self' blob: data:; media-src 'self' blob: data:"
+    />
+  </head>
+  <body class="bg-ink-900 text-gray-200 antialiased overflow-hidden">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

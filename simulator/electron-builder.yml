@@ -1,0 +1,28 @@
+# electron-builder 基础配置(打包非必需项,vite 三段构建通过即可交付)
+appId: com.pixelbox.simulator
+productName: PixelBox Simulator
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**
+  - '!node_modules/.cache/**'
+asarUnpack:
+  # esbuild 含平台原生二进制,必须解包
+  - node_modules/esbuild/**
+  - node_modules/@esbuild/**
+mac:
+  icon: build/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+win:
+  icon: build/icon.png
+  target:
+    - nsis
+linux:
+  icon: build/icon.png
+  target:
+    - AppImage
+  category: Development
+npmRebuild: false

@@ -1,0 +1,8 @@
+{
+  "id": "com.pixelbox.examples.sensorplayground",
+  "name": "传感器游乐场",
+  "version": "1.0.0",
+  "entry": "main.js",
+  "assets": [],
+  "minFirmware": "0.1.0"
+}

@@ -1,0 +1,30 @@
+menu "PixelBox 语音对话 (voicechat)"
+
+config PX_ENABLE_WAKEWORD
+    bool "启用 esp-sr wakenet 唤醒词"
+    default n
+    help
+        开启后 px.voice.configure({ wakeword: true }) 生效。
+        需要:
+          1. 手动为 voicechat 组件添加 espressif/esp-sr 依赖
+             (idf_component.yml 加 espressif/esp-sr: "^2.0.0");
+          2. 分区表增加 model 数据分区并烧录 wakenet 模型;
+          3. menuconfig 选择唤醒词模型 (ESP Speech Recognition)。
+        默认关闭(空实现,available() 返回 false)。
+
+config PX_VOICE_TTS_RING_KB
+    int "TTS 下行 PCM 环形缓冲 (KB, PSRAM)"
+    range 128 4096
+    default 1024
+    help
+        服务器 TTS 推流快于实时播放时的缓冲。24kHz 单声道下 1MB 约 21.8 秒。
+
+config PX_VOICE_UPLINK_RING_KB
+    int "麦克风上行环形缓冲 (KB, PSRAM)"
+    range 16 512
+    default 64
+    help
+        采集任务与 WebSocket 发送任务之间的缓冲,吸收网络抖动。
+        16kHz 单声道下 64KB 约 2 秒;溢出丢最旧数据。
+
+endmenu

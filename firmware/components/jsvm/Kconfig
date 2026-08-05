@@ -1,0 +1,39 @@
+menu "PixelBox JSVM"
+
+    config JSVM_MEM_LIMIT_KB
+        int "JS 堆上限 (KB, 分配走 PSRAM)"
+        default 4096
+        help
+            QuickJS 运行时内存上限。分配经自定义分配器优先落 PSRAM。
+
+    config JSVM_TASK_STACK_KB
+        int "js_task 栈大小 (KB)"
+        default 32
+        help
+            JS 唯一执行线程的栈。QuickJS 的栈溢出检查阈值会按
+            (本值 - 12KB) 自动适配, 保证原生侧仍有安全余量。
+
+    config JSVM_TASK_STACK_IN_PSRAM
+        bool "js_task 栈分配在 PSRAM (谨慎开启)"
+        default n
+        help
+            注意: js_task 会直接执行 littlefs 文件读写 (加载应用入口 /
+            readAsset / px.storage.fs)。SPI flash 操作期间 cache 被关闭,
+            栈在 PSRAM 的任务此时访问栈会触发崩溃, 因此默认栈放内部 RAM。
+            仅当确认 JS 线程完全不触碰 flash (或启用了 flash 自动挂起
+            特性) 时才可开启本选项以节省内部内存。
+
+    config JSVM_TASK_CORE
+        int "js_task 绑定核心"
+        range 0 1
+        default 1
+
+    config JSVM_TASK_PRIORITY
+        int "js_task 优先级"
+        default 5
+
+    config JSVM_QUEUE_DEPTH
+        int "事件队列深度"
+        default 64
+
+endmenu

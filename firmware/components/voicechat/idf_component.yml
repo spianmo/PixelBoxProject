@@ -1,0 +1,7 @@
+# voicechat 组件依赖(ESP 组件注册表)
+dependencies:
+  idf: ">=5.3"
+  # 语音中继 WebSocket 客户端
+  espressif/esp_websocket_client: "^1.2.0"
+  # 唤醒词(可选):开启 PX_ENABLE_WAKEWORD 时取消下行注释
+  # espressif/esp-sr: "^2.0.0"

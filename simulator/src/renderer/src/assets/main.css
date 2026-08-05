@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局深色滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2c333e;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a424f;
+  background-clip: content-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* 禁止整页选中拖拽产生的原生高亮干扰(编辑器/控制台内部自行处理) */
+body {
+  user-select: none;
+}
+.selectable {
+  user-select: text;
+}

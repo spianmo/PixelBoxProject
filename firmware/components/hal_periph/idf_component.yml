@@ -1,0 +1,9 @@
+# hal_periph 组件清单 — 组件注册表依赖
+dependencies:
+  idf: ">=5.1"
+  # BOOT 按键 (click/doubleClick/longPress 状态机)
+  espressif/button: "^4.1"
+  # WS2812 灯带 (RMT 后端)
+  espressif/led_strip: "^3.0"
+  # OV2640 DVP 摄像头驱动
+  espressif/esp32-camera: "^2.0.13"

@@ -1,0 +1,94 @@
+{
+  "app": {
+    "title": "PixelBox Simulator"
+  },
+  "toolbar": {
+    "openWorkspace": "Open Workspace",
+    "run": "Run",
+    "stop": "Stop",
+    "push": "Push to Device",
+    "devices": "Select device",
+    "noDevices": "No devices found",
+    "refreshDevices": "Rescan",
+    "scanning": "Scanning…",
+    "language": "Switch language"
+  },
+  "fileTree": {
+    "empty": "No workspace opened",
+    "openHint": "Click \"Open Workspace\" above to select an app project folder",
+    "newFile": "New File",
+    "newFolder": "New Folder",
+    "rename": "Rename",
+    "delete": "Delete",
+    "newFileTitle": "New File",
+    "newFolderTitle": "New Folder",
+    "renameTitle": "Rename",
+    "namePlaceholder": "Enter a name",
+    "deleteConfirm": "Delete {{name}}? This cannot be undone."
+  },
+  "editor": {
+    "welcome": "Open a workspace, then double-click a file on the left to edit",
+    "unsaved": "Unsaved",
+    "closeDirtyConfirm": "{{name}} has unsaved changes. Close anyway?"
+  },
+  "console": {
+    "appLog": "App Logs",
+    "buildOutput": "Build Output",
+    "clear": "Clear",
+    "empty": "No output yet"
+  },
+  "device": {
+    "panelTitle": "Device Preview",
+    "simNotReady": "Device simulation engine not attached",
+    "simNotReadyHint": "Once device-sim is implemented, the 368×448 pixel screen and virtual peripherals render here"
+  },
+  "sim": {
+    "running": "Running",
+    "stopped": "Not running",
+    "micOn": "Mic",
+    "voice": {
+      "connecting": "Voice · connecting",
+      "listening": "Voice · listening",
+      "thinking": "Voice · thinking",
+      "speaking": "Voice · speaking"
+    },
+    "group": {
+      "power": "Power",
+      "buttons": "Buttons",
+      "imu": "IMU Sensor",
+      "gps": "GPS",
+      "led": "LED Strip",
+      "camera": "Camera"
+    },
+    "battery": "Battery",
+    "charging": "Charging",
+    "bootButton": "BOOT",
+    "shake": "Shake",
+    "bootHint": "Hold duration → click / longPress; two quick presses → doubleClick",
+    "lat": "Latitude",
+    "lng": "Longitude",
+    "ledEnable": "Enable strip (available)",
+    "cameraHint": "px.camera maps to your computer camera; permission is requested on init/capture"
+  },
+  "run": {
+    "noWorkspace": "Open a workspace first",
+    "buildFailed": "Build failed, see Build Output",
+    "simMissing": "Device simulation engine is not ready",
+    "started": "App is running in the simulator",
+    "stopped": "Stopped",
+    "reloaded": "Hot-reloaded latest build"
+  },
+  "push": {
+    "noDevice": "Select a target device in the dropdown first",
+    "connecting": "Connecting to device…",
+    "uploading": "Uploading {{file}}",
+    "finalizing": "Verifying and switching app…",
+    "done": "Pushed. Device hot-updated",
+    "failed": "Push failed: {{message}}"
+  },
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "error": "Error"
+  }
+}

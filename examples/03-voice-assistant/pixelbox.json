@@ -1,0 +1,8 @@
+{
+  "id": "com.pixelbox.examples.voiceassistant",
+  "name": "语音助手",
+  "version": "1.0.0",
+  "entry": "main.js",
+  "assets": [],
+  "minFirmware": "0.1.0"
+}

@@ -1,0 +1,94 @@
+{
+  "app": {
+    "title": "PixelBox 模拟器"
+  },
+  "toolbar": {
+    "openWorkspace": "打开工作区",
+    "run": "运行",
+    "stop": "停止",
+    "push": "推送到设备",
+    "devices": "选择设备",
+    "noDevices": "未发现设备",
+    "refreshDevices": "重新扫描",
+    "scanning": "扫描中…",
+    "language": "切换语言"
+  },
+  "fileTree": {
+    "empty": "尚未打开工作区",
+    "openHint": "点击上方「打开工作区」选择应用项目文件夹",
+    "newFile": "新建文件",
+    "newFolder": "新建文件夹",
+    "rename": "重命名",
+    "delete": "删除",
+    "newFileTitle": "新建文件",
+    "newFolderTitle": "新建文件夹",
+    "renameTitle": "重命名",
+    "namePlaceholder": "请输入名称",
+    "deleteConfirm": "确定删除 {{name}} 吗?该操作不可撤销。"
+  },
+  "editor": {
+    "welcome": "打开工作区后,双击左侧文件开始编辑",
+    "unsaved": "未保存",
+    "closeDirtyConfirm": "{{name}} 有未保存的修改,确定关闭吗?"
+  },
+  "console": {
+    "appLog": "应用日志",
+    "buildOutput": "构建输出",
+    "clear": "清空",
+    "empty": "暂无输出"
+  },
+  "device": {
+    "panelTitle": "设备预览",
+    "simNotReady": "设备模拟引擎尚未接入",
+    "simNotReadyHint": "device-sim 模块实现后将在此渲染 368×448 像素屏与虚拟外设"
+  },
+  "sim": {
+    "running": "运行中",
+    "stopped": "未运行",
+    "micOn": "麦克风",
+    "voice": {
+      "connecting": "语音·连接中",
+      "listening": "语音·聆听",
+      "thinking": "语音·思考",
+      "speaking": "语音·播报"
+    },
+    "group": {
+      "power": "电源",
+      "buttons": "按键",
+      "imu": "IMU 传感器",
+      "gps": "GPS 定位",
+      "led": "LED 灯带",
+      "camera": "摄像头"
+    },
+    "battery": "电量",
+    "charging": "充电中",
+    "bootButton": "BOOT 键",
+    "shake": "摇一摇",
+    "bootHint": "按住时长决定 click / longPress,快速两次为 doubleClick",
+    "lat": "纬度",
+    "lng": "经度",
+    "ledEnable": "启用灯带(available)",
+    "cameraHint": "px.camera 映射电脑摄像头,应用调用 init/capture 时请求权限"
+  },
+  "run": {
+    "noWorkspace": "请先打开工作区",
+    "buildFailed": "构建失败,详见构建输出",
+    "simMissing": "设备模拟引擎未就绪,无法运行",
+    "started": "应用已在模拟器中运行",
+    "stopped": "已停止运行",
+    "reloaded": "已热重载最新构建"
+  },
+  "push": {
+    "noDevice": "请先在设备下拉框中选择目标设备",
+    "connecting": "正在连接设备…",
+    "uploading": "上传中 {{file}}",
+    "finalizing": "校验并切换应用…",
+    "done": "推送成功,设备已热更新",
+    "failed": "推送失败:{{message}}"
+  },
+  "common": {
+    "ok": "确定",
+    "cancel": "取消",
+    "error": "出错了"
+  }
+}

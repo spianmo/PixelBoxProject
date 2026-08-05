@@ -1,0 +1,15 @@
+# ESP-IDF 构建产物
+build/
+sdkconfig
+sdkconfig.old
+
+# 组件管理器
+managed_components/
+dependencies.lock
+
+# vendored 第三方源码 (tools/fetch_deps.sh 拉取)
+components/jsvm/quickjs-ng/
+
+# 其他
+.vscode/
+*.pyc

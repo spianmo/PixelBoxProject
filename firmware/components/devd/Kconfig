@@ -1,0 +1,23 @@
+menu "PixelBox devd"
+
+    config DEVD_PORT
+        int "devd WebSocket 端口"
+        default 8765
+        help
+            协议约定端口 8765 (architecture.md §5), 一般无需修改。
+
+    config DEVD_LOG_RING
+        int "日志环形缓冲条数"
+        default 128
+
+    config DEVD_HTTPD_STACK
+        int "HTTP 服务器任务栈 (字节)"
+        default 8192
+
+    config DEVD_MAX_FRAME_KB
+        int "单个 WS 帧上限 (KB)"
+        default 96
+        help
+            push_chunk 单块 ≤32KB, base64 后约 44KB, 预留余量。
+
+endmenu
