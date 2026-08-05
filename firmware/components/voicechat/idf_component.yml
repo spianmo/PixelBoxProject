@@ -3,5 +3,15 @@ dependencies:
   idf: ">=5.3"
   # 语音中继 WebSocket 客户端
   espressif/esp_websocket_client: "^1.2.0"
-  # 唤醒词(可选):开启 PX_ENABLE_WAKEWORD 时取消下行注释
-  # espressif/esp-sr: "^2.0.0"
+  # esp-sr 唤醒词(wakenet)— 常驻依赖,取舍说明:
+  #   组件管理器 2.2.0+ 的 rules/matches 虽支持 $CONFIG{...} 按 Kconfig 门控
+  #   依赖,但官方文档标注该特性要求 ESP-IDF >= 6.0;本工程锁定 IDF v5.5,
+  #   依赖求解阶段拿不到 Kconfig 值,条件依赖不可行。
+  #   故 esp-sr 作为常驻依赖,由源码级条件编译保证关闭时零体积影响:
+  #   仅 PX_ENABLE_WAKEWORD=y 时 wakeword.cpp 才引用其符号,默认构建中
+  #   esp-sr 静态库无任何符号被引用,链接器整库裁剪(已复核:默认构建
+  #   pixelbox.map 中 esp-sr/esp-dsp/dl_fft 对最终镜像贡献为零字节,
+  #   pixelbox.bin 体积不受影响);模型打包由分区表驱动 —— 仅当分区表
+  #   含名为 model 的分区时 esp-sr 构建系统才打包/烧录 srmodels.bin,
+  #   默认 partitions.csv 无该分区,故默认构建无模型产物。
+  espressif/esp-sr: "^2.4.7"

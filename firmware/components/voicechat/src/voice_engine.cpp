@@ -501,11 +501,18 @@ struct VoiceEngine::Impl {
 
         std::lock_guard<std::mutex> lk(mtx);
 
-        // wakeword:idle 期喂 wakenet
+        // wakeword:仅 idle 待机期喂 wakenet(低功耗侦听);会话期间
+        // (listening/thinking/speaking)不喂 → 唤醒词与 barge-in 天然互斥:
+        // speaking 期打断只走能量 barge-in 路径,不会被 TTS 音频里的
+        // 唤醒词二次触发。连续对话模式下说完自动回 listening 而非 idle,
+        // 因此也不会经过唤醒词;只有会话彻底结束回 idle 后恢复侦听。
         if (wake_enabled && st == State::Idle) {
             if (wake.feed(frame, EnergyVad::kFrameSamples)) {
                 ESP_LOGI(TAG, "唤醒词触发");
                 if (ev.wake) ev.wake();
+                // 命中 → 自动进入一轮对话(等效 start(),单轮模式;
+                // 覆盖可能残留的 continuous 标志)
+                continuous = false;
                 session_round = true;
                 if (ws_connected.load()) {
                     begin_round_locked();
@@ -637,6 +644,8 @@ struct VoiceEngine::Impl {
     void to_idle_locked() {
         end_round_pending.store(false);
         up_clear();
+        // 回 idle 恢复唤醒词侦听前,丢弃会话期间可能积累的陈旧命中标志
+        wake.clear_pending();
         if (tts_ring) {
             tts_ring->stop();
             tts_ring = nullptr;
@@ -741,14 +750,24 @@ void VoiceEngine::configure(const Options& opts) {
     p->configured = !opts.server_url.empty();
     if (opts.wakeword) {
 #if CONFIG_PX_ENABLE_WAKEWORD
+        // 进入待机侦听:idle 态保持 mic 采集喂 wakenet,命中 → wake 事件
+        // → 自动开始一轮对话(见 process_vad_frame)
         p->wake_enabled = p->wake.init();
-        if (p->wake_enabled) p->ensure_mic_locked();
+        if (p->wake_enabled) {
+            p->ensure_mic_locked();
+        } else {
+            // 优雅降级:模型分区缺失 / PSRAM 不足 / 任务创建失败 →
+            // 报 error 事件,px.voice 其余功能(手动 start 等)不受影响
+            p->emit_error_locked(
+                "唤醒词初始化失败(需 sdkconfig.wakeword 构建烧录 model 分区,且 PSRAM 充足),已降级为手动模式");
+        }
 #else
-        ESP_LOGW(TAG, "wakeword 需开启 Kconfig PX_ENABLE_WAKEWORD 并添加 esp-sr 依赖,已忽略");
+        ESP_LOGW(TAG, "wakeword 需用 sdkconfig.wakeword 配置构建(PX_ENABLE_WAKEWORD=y),已忽略");
         p->wake_enabled = false;
 #endif
     } else {
         p->wake_enabled = false;
+        p->wake.deinit();  // 释放 wakenet PSRAM 工作区与检测任务
         p->release_mic_if_unused_locked();
     }
 }
@@ -811,6 +830,11 @@ void VoiceEngine::stop() {
     Impl* p = impl();
     std::lock_guard<std::mutex> lk(p->mtx);
     p->continuous = false;
+    // 契约:stop() 同时停止唤醒词待机侦听(否则 mic 永不释放);
+    // 重新 configure({wakeword:true}) 可恢复。须在 to_idle 前清标志,
+    // 使 release_mic_if_unused 能真正释放 mic。
+    p->wake_enabled = false;
+    p->wake.deinit();
     p->fail_say_locked("stopped");
     if (p->st == State::Speaking) p->send_type_msg("interrupt");
     p->to_idle_locked();

@@ -25,8 +25,13 @@ idle ──start()──▶ connecting ──WS connected──▶ listening ─
   回 listening,并把 500ms 预滚缓冲补发,不丢用户开头的话。
 - **事件**:8+1 类全部经 `jsvm::post` 投递 JS 线程;`level` 100ms 节流。
 - **唤醒词**:`Kconfig PX_ENABLE_WAKEWORD`(默认关)条件编译 esp-sr wakenet;
-  开启需另加 esp-sr 依赖与模型分区(见 Kconfig help)。开启后 idle 期喂
-  wakenet,命中 → `wake` 事件 + 自动开始一轮对话。
+  esp-sr 为常驻依赖但默认构建零体积(链接器整库裁剪,见 idf_component.yml)。
+  启用走 `sdkconfig.wakeword` 叠加构建(切换含 model 分区的分区表 + wn9 模型,
+  见 firmware/README.md「启用唤醒词」)。`configure({wakeword:true})` 后 idle
+  态待机侦听(独立 8KB 检测任务跑 wakenet,与音频任务异核),命中 → `wake`
+  事件 + 自动开始一轮单轮对话;会话期间不喂 wakenet(与 barge-in 互斥,防
+  TTS 音频二次触发);`stop()` 同时停止侦听并释放 PSRAM 工作区;初始化失败
+  (缺 model 分区 / PSRAM 不足)投递 `error` 事件并降级为手动模式。
 
 ## 协议注记
 

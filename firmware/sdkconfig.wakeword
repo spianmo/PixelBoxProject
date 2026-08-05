@@ -1,0 +1,23 @@
+# ============================================================
+# PixelBox 唤醒词构建叠加配置(叠加在 sdkconfig.defaults 之上使用):
+#   idf.py -B build_wakeword \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.wakeword" \
+#          -D SDKCONFIG=build_wakeword/sdkconfig build
+# 注意必须显式传 -D SDKCONFIG 指向独立文件,否则会改写默认构建的 ./sdkconfig。
+# 详见 firmware/README.md「启用唤醒词」。
+# ============================================================
+
+# ---- voicechat: 编译 wakenet 唤醒词支持(wakeword.cpp 条件编译) ----
+CONFIG_PX_ENABLE_WAKEWORD=y
+
+# ---- 分区表: 切换为含 model 分区的布局(app 分区不变,OTA 兼容) ----
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_wakeword.csv"
+
+# ---- esp-sr: 模型数据放 flash 的 model 分区(构建时自动打包 srmodels.bin) ----
+CONFIG_MODEL_IN_FLASH=y
+
+# ---- 唤醒词模型: 默认中文"Hi,乐鑫"(wn9,约 291KB)。
+#      更换唤醒词: idf.py -B build_wakeword menuconfig →
+#      ESP Speech Recognition → Load Multiple Wake Words (WakeNet9)。
+#      换更大的模型时注意 partitions_wakeword.csv 中 model 分区容量。 ----
+CONFIG_SR_WN_WN9_HILEXIN=y

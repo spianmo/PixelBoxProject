@@ -4,13 +4,13 @@ config PX_ENABLE_WAKEWORD
     bool "启用 esp-sr wakenet 唤醒词"
     default n
     help
-        开启后 px.voice.configure({ wakeword: true }) 生效。
-        需要:
-          1. 手动为 voicechat 组件添加 espressif/esp-sr 依赖
-             (idf_component.yml 加 espressif/esp-sr: "^2.0.0");
-          2. 分区表增加 model 数据分区并烧录 wakenet 模型;
-          3. menuconfig 选择唤醒词模型 (ESP Speech Recognition)。
-        默认关闭(空实现,available() 返回 false)。
+        开启后 px.voice.configure({ wakeword: true }) 生效:idle 态待机
+        侦听,命中唤醒词自动进入 listening 并投递 "wake" 事件。
+        请勿单独打开本开关,应使用 sdkconfig.wakeword 叠加构建
+        (一并切换 partitions_wakeword.csv 的 model 分区 + 选择 wn9 模型,
+        srmodels.bin 由 esp-sr 构建系统自动打包),见 firmware/README.md
+        「启用唤醒词」。默认关闭(空实现,available() 返回 false;
+        esp-sr 依赖被链接器整库裁剪,零体积影响)。
 
 config PX_VOICE_TTS_RING_KB
     int "TTS 下行 PCM 环形缓冲 (KB, PSRAM)"

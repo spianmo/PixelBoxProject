@@ -114,6 +114,8 @@ storage,   data, littlefs, ,         0x3D0000
 
 `storage` 挂载 `/flash`,内含 `/flash/data`(px.storage.fs 映射为 `/data`)、`/flash/apps`(应用包)。
 
+**双分区表策略(唤醒词)**:默认构建用上表 `partitions.csv`;唤醒词构建(`firmware/sdkconfig.wakeword` 叠加,见 firmware/README.md「启用唤醒词」)切换为 `partitions_wakeword.csv` —— 唯一差异是 `storage` 压缩 0x58000,尾部腾出 `model` 数据分区(352KB)存放 esp-sr 打包的 `srmodels.bin`(wn9 中文唤醒词模型实测约 284KB,余量约 24%)。app/nvs/otadata 布局两表完全一致,两种固件可互相 OTA。
+
 ### 4.3 应用包与热更新
 
 应用包目录:`/flash/apps/current/{manifest.json, main.js, assets/**}`;推送先写 `/flash/apps/staging/`,`push_end` 校验通过后原子重命名切换,再**仅重启 JS VM**(不重启芯片)。manifest 字段见 §6。
@@ -166,7 +168,7 @@ SDK 构建:esbuild 把 `src/main.ts` 打包为单文件 ES2020 `dist/main.js`(�
 
 服务器职责:接 PCM → STT(OpenAI 兼容 /audio/transcriptions,可配硅基流动等)→ LLM(OpenAI 兼容 chat/completions 流式)→ TTS(OpenAI 兼容 /audio/speech,请求 PCM/WAV 格式)→ 推流回设备。全部 baseURL/key/model 走 `.env`。收到 `interrupt` 立即停止当前 TTS 推流。
 
-设备端 voicechat 状态机:`idle → listening(VAD 收音) → thinking(等 LLM) → speaking(播 TTS) → idle`;speaking 中检测到用户说话(barge-in)→ 发 `interrupt` 并回到 listening。VAD 默认能量法(esp-sr wakenet/vadnet 留 Kconfig 开关,默认关)。
+设备端 voicechat 状态机:`idle → listening(VAD 收音) → thinking(等 LLM) → speaking(播 TTS) → idle`;speaking 中检测到用户说话(barge-in)→ 发 `interrupt` 并回到 listening。VAD 默认能量法(esp-sr wakenet/vadnet 留 Kconfig 开关,默认关)。唤醒词:`sdkconfig.wakeword` 构建启用 esp-sr wakenet(默认"Hi,乐鑫"),`configure({wakeword:true})` 后 idle 态待机侦听,命中投递 `wake` 事件并自动进入 listening(见 §4.2 双分区表)。
 
 ## 8. SDK / CLI(`@pixelbox/sdk`)
 

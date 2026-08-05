@@ -1,0 +1,13 @@
+# PixelBox 唤醒词构建分区表 (16MB Flash) — 见 docs/architecture.md §4.2
+# 与默认 partitions.csv 的唯一差异:storage 压缩 0x58000,尾部腾出 model 分区
+# 存放 esp-sr srmodels.bin(wn9_hilexin 实测约 291KB,0x58000=352KB ≈ +20% 余量)。
+# app/nvs/otadata 布局与默认构建完全一致 → 两种固件可互相 OTA,仅 storage 容量不同。
+# esp-sr 构建系统检测到名为 model 的分区后自动打包 srmodels.bin 并纳入 flash 目标。
+# Name,    Type, SubType,  Offset,   Size
+nvs,       data, nvs,      0x9000,   0x6000
+otadata,   data, ota,      0xf000,   0x2000
+phy_init,  data, phy,      0x11000,  0x1000
+ota_0,     app,  ota_0,    0x20000,  0x600000
+ota_1,     app,  ota_1,    ,         0x600000
+storage,   data, littlefs, ,         0x378000
+model,     data, spiffs,   ,         0x58000

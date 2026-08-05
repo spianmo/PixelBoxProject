@@ -8,7 +8,9 @@ ESP32-S3 固件工程:QuickJS-ng JS 运行时 + 应用热更新 + devd 开发服
 firmware/
 ├── CMakeLists.txt         # 工程入口 (PROJECT_VER = 固件版本)
 ├── partitions.csv         # 分区表: OTA 双分区 + littlefs storage
+├── partitions_wakeword.csv# 唤醒词构建分区表 (storage 压缩, 尾部加 model 分区)
 ├── sdkconfig.defaults     # esp32s3 / 16MB Flash / Octal PSRAM 默认配置
+├── sdkconfig.wakeword     # 唤醒词叠加配置 (见「启用唤醒词」)
 ├── main/                  # app_main: 板级初始化 → appmgr → devd → jsvm
 └── components/
     ├── hal_common/        # 板级抽象接口 (纯头文件, 无依赖)
@@ -56,6 +58,62 @@ pixelbox dev             # watch 构建 + 自动推送 + 日志
 
 所有引脚都收敛在 `components/boards`,其他组件一律通过
 `hal_common/board.h` 的 getter 获取,禁止硬编码引脚。
+
+## 启用唤醒词 (esp-sr WakeNet)
+
+默认构建不含唤醒词:esp-sr 为 voicechat 的常驻依赖,但无符号被引用时被
+链接器整库裁剪(已复核 map,esp-sr/esp-dsp/dl_fft 对默认镜像贡献为零字节)。
+启用需用独立构建目录 + 叠加配置(以下命令均已实测):
+
+```bash
+cd firmware
+idf.py -B build_wakeword \
+       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.wakeword" \
+       -D SDKCONFIG=build_wakeword/sdkconfig \
+       build
+
+# 烧录 + 监视 (flash 目标已自动包含 srmodels.bin → model 分区 @0xF98000)
+idf.py -B build_wakeword -p /dev/cu.usbmodem* flash monitor
+```
+
+要点:
+
+- `-D SDKCONFIG=build_wakeword/sdkconfig` **必须显式指定**,否则会改写默认
+  构建共用的 `./sdkconfig`;两套构建目录互不干扰,可并存。
+- `sdkconfig.wakeword` 做三件事:`PX_ENABLE_WAKEWORD=y`(编译 wakeword.cpp
+  的 wakenet 路径)、切换 `partitions_wakeword.csv`、选择 wn9 模型。
+- 分区表差异仅为 `storage` 压缩 352KB 腾出 `model` 分区;app/nvs/otadata
+  布局与默认表一致,**两种固件可互相 OTA**(见 docs/architecture.md §4.2)。
+- 模型打包走 esp-sr 官方机制:分区表存在名为 `model` 的分区时,esp-sr 构建
+  系统自动把 menuconfig 所选模型打包为 `srmodels.bin` 并挂入 flash 目标,
+  无需手工烧录。
+- 更换唤醒词:`idf.py -B build_wakeword menuconfig` → `ESP Speech
+  Recognition` → `Load Multiple Wake Words (WakeNet9)`(默认"Hi,乐鑫"
+  `wn9_hilexin`);选更大的模型时注意同步扩大 `model` 分区并保留 ~20% 余量。
+- 组件注册表不稳(首次配置报 "Server returned invalid or empty JSON")时,
+  前缀 `IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn` 重试。
+- JS 侧行为:`px.voice.configure({serverUrl, wakeword:true})` 后 idle 态
+  待机侦听,命中 → `'wake'` 事件 → 自动进入 listening;`stop()` 同时停止
+  侦听。未烧录 model 分区或 PSRAM 不足时投递 `error` 事件并降级为手动模式
+  (其余 px.voice 功能不受影响)。
+
+### 实测数据 (2026-08-05, ESP-IDF v5.5, esp-sr v2.4.7)
+
+| 项目 | 默认构建 (build/) | 唤醒词构建 (build_wakeword/) |
+| --- | --- | --- |
+| `pixelbox.bin` | 2,728,480 B (0x29A220) | 2,840,256 B (0x2B56C0), +111,776 B (+4.1%) |
+| 6MB app 分区余量 | 3,563,040 B (57%) | 3,451,200 B (55%) |
+| Flash Code (.text) | 1,836,032 B | 1,930,684 B |
+| Flash Data (.rodata) | 728,524 B | 736,220 B |
+| DIRAM | 179,291 B (52.5%) | 188,755 B (55.2%, 余 153,005 B) |
+| `srmodels.bin` (wn9_hilexin) | — | 291,149 B |
+| `model` 分区 | — | 352KB @0xF98000, 余 69,299 B (23.8%) |
+| `storage` 分区 | 3904KB | 3552KB |
+
+默认构建加入 esp-sr 常驻依赖后体积不受影响(与启用依赖前基线 2,728,416 B
+相比 +64 B ≈ 0.002%,map 中无任何 esp-sr 贡献);唤醒词构建的 wakenet 运行
+时工作区走 PSRAM(初始化失败自动降级),`rm -rf build_wakeword` 后按上述
+命令重建已验证可复现(产物字节数一致)。
 
 ## 常用调试
 

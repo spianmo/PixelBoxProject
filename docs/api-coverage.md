@@ -116,7 +116,7 @@
 | `say(text)` | ✅ | ✅ | 上行扩展消息 `{type:"tts.request", text}`,仅 TTS 语义、不入 LLM 上下文(见 architecture.md §7);服务器兼容历史别名 `{type:"say"}` |
 | `state()` | ✅ | ✅ | |
 | `on('stateChange'/'speechStart'/'speechEnd'/'userText'/'assistantDelta'/'assistantText'/'level'/'error')` | ✅ | ✅ | |
-| `on('wake')` | ⚠️ | ⚠️ | 固件需 `CONFIG_PX_ENABLE_WAKEWORD`(esp-sr,默认关);模拟器可订阅但不会触发 |
+| `on('wake')` | ✅(需 sdkconfig.wakeword 构建) | ⚠️ | 固件默认构建不含 wakenet(零体积裁剪),用 `sdkconfig.wakeword` 叠加构建启用(esp-sr wn9,默认唤醒词"Hi,乐鑫",见 firmware/README.md);模拟器可订阅但不会触发 |
 
 ## px.wifi
 
