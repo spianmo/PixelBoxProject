@@ -9,6 +9,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "hal_common/px_alloc.h"
 #include "jsvm/jsvm.hpp"
 
 namespace pxjs {
@@ -22,10 +23,8 @@ void run_on_js(std::function<void()> fn) { jsvm::post(std::move(fn)); }
 
 uint8_t* psram_alloc(size_t size) {
   if (size == 0) size = 1;
-  uint8_t* p = static_cast<uint8_t*>(
-      heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!p) p = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_8BIT));
-  return p;
+  /* PSRAM 优先, 无 PSRAM 目标自动落内部堆 (hal_common/px_alloc.h) */
+  return static_cast<uint8_t*>(px_alloc_prefer_psram(size));
 }
 void psram_free(void* p) {
   if (p) heap_caps_free(p);

@@ -34,6 +34,7 @@
 
 #include "appmgr/appmgr.h"
 #include "hal_common/board.h"
+#include "hal_common/px_alloc.h"
 #include "jsvm/jsvm.hpp"
 
 #include "devd_log.hpp"
@@ -401,10 +402,7 @@ void handle_push_chunk(httpd_req_t *req, const cJSON *id, const cJSON *params)
 
     size_t b64_len = strlen(data_b64->valuestring);
     size_t cap = b64_len / 4 * 3 + 8;
-    uint8_t *buf = (uint8_t *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) {
-        buf = (uint8_t *)malloc(cap);
-    }
+    uint8_t *buf = (uint8_t *)px_alloc_prefer_psram(cap);
     if (!buf) {
         reply_error(req, id, 500, "内存不足");
         return;
@@ -617,11 +615,7 @@ esp_err_t ws_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    uint8_t *buf = (uint8_t *)heap_caps_malloc(frame.len + 1,
-                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) {
-        buf = (uint8_t *)malloc(frame.len + 1);
-    }
+    uint8_t *buf = (uint8_t *)px_alloc_prefer_psram(frame.len + 1);
     if (!buf) {
         return ESP_ERR_NO_MEM;
     }

@@ -25,6 +25,8 @@ export interface EditorHostHandle {
 interface Props {
   /** 脏状态变化(驱动标签/文件树的修改点) */
   onDirtyChange: (path: string, dirty: boolean) => void
+  /** 光标位置变化(驱动状态栏「行:列」) */
+  onCursorChange?: (line: number, column: number) => void
 }
 
 interface ModelRecord {
@@ -34,7 +36,7 @@ interface ModelRecord {
 }
 
 export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHost(
-  { onDirtyChange },
+  { onDirtyChange, onCursorChange },
   ref
 ): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -43,14 +45,16 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
   const activePathRef = useRef<string | null>(null)
   const onDirtyChangeRef = useRef(onDirtyChange)
   onDirtyChangeRef.current = onDirtyChange
+  const onCursorChangeRef = useRef(onCursorChange)
+  onCursorChangeRef.current = onCursorChange
 
   useEffect(() => {
     if (!containerRef.current) return
     const editor = monaco.editor.create(containerRef.current, {
-      theme: 'vs-dark',
+      theme: 'pixelbox-dark', // 自定义主题,对齐 IDE 色板(monacoSetup.ts)
       automaticLayout: true,
       fontSize: 13,
-      fontFamily: '"SF Mono", Menlo, Consolas, monospace',
+      fontFamily: '"JetBrains Mono", "SF Mono", Menlo, Consolas, monospace',
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       tabSize: 2,
@@ -59,6 +63,11 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
       fixedOverflowWidgets: true
     })
     editorRef.current = editor
+
+    // 光标位置 → 状态栏
+    editor.onDidChangeCursorPosition((e) => {
+      onCursorChangeRef.current?.(e.position.lineNumber, e.position.column)
+    })
 
     // Cmd/Ctrl + S 保存当前文件
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {

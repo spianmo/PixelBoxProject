@@ -11,6 +11,7 @@
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "hal_common/px_alloc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
@@ -48,10 +49,8 @@ int64_t now_ms()
 char *psram_strdup(const char *s)
 {
     size_t len = strlen(s) + 1;
-    char *p = (char *)heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!p) {
-        p = (char *)malloc(len);
-    }
+    /* PSRAM 优先, 无 PSRAM 目标自动落内部堆 */
+    char *p = (char *)px_alloc_prefer_psram(len);
     if (p) {
         memcpy(p, s, len);
     }
@@ -196,11 +195,7 @@ void init()
         return;
     }
     s_capacity = CONFIG_DEVD_LOG_RING;
-    s_ring = (Entry *)heap_caps_calloc(s_capacity, sizeof(Entry),
-                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_ring) {
-        s_ring = (Entry *)calloc(s_capacity, sizeof(Entry));
-    }
+    s_ring = (Entry *)px_calloc_prefer_psram(s_capacity, sizeof(Entry));
     s_head = 0;
     s_count = 0;
     s_seq = 0;

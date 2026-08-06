@@ -1,3 +1,5 @@
+import type { SimCapabilities } from '../../../shared/chipCapabilities'
+
 /**
  * device-sim 内部协议:宿主(renderer host)⇄ 沙箱 iframe 之间的 postMessage 消息定义
  *
@@ -58,6 +60,27 @@ export interface SimFileEntry {
   data: ArrayBuffer
 }
 
+/**
+ * 设备档案注入(宿主 → 沙箱,随 init 携带;来源=设备管理器所选档案)
+ * capabilities/wifi 由 shared/chipCapabilities.ts 单一数据源派生,
+ * 驱动 system.info() / memory().psramFree / wifi·ble 的 ENOTSUP 行为与动态屏幕。
+ */
+export interface SimDeviceInit {
+  /** 芯片型号(esp32s3 / esp32c6 / esp32p4 / esp32 / esp32c3) */
+  chip: string
+  /** 档案显示名(system.info().model 附注用) */
+  name: string
+  screenW: number
+  screenH: number
+  /** PSRAM 容量 MB;0 = 无(memory().psramFree 恒 0,大分配走内部堆语义) */
+  psramMB: number
+  flashMB: number
+  /** system.info().capabilities 静态部分(led 运行期由外设面板覆写) */
+  capabilities: SimCapabilities
+  /** 片上 WiFi;false(如 ESP32-P4)时 wifi.connect 抛 ENOTSUP */
+  wifi: boolean
+}
+
 /** 外设面板 → 沙箱的状态快照(变化时也用事件 'periph' 推送) */
 export interface PeriphSnapshot {
   battery: { level: number; charging: boolean }
@@ -82,6 +105,8 @@ export interface SandboxInitPayload {
   deviceId: string
   /** 屏幕初始亮度 0-100 */
   brightness: number
+  /** 设备档案(芯片/屏幕/PSRAM/能力,阶段 2 设备管理器注入) */
+  device: SimDeviceInit
 }
 
 // ---------------------------------------------------------------
@@ -158,7 +183,7 @@ export interface UncaughtPayload {
   fatal: boolean
 }
 
-/** 'frame' —— 一帧 368x448 RGBA 帧缓冲提交 */
+/** 'frame' —— 一帧 RGBA 帧缓冲提交(尺寸 = 设备档案分辨率) */
 export interface FramePayload {
   buf: ArrayBuffer
   width: number

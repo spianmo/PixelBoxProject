@@ -10,3 +10,4 @@ sdkconfig
 firmware/components/jsvm/quickjs-ng/
 .espressif/
 .idea/
+firmware/build_*/

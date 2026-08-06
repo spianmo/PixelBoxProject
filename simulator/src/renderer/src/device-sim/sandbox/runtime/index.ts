@@ -116,6 +116,9 @@ window.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
 // ---------------------------------------------------------------
 
 async function boot(init: SandboxInitPayload): Promise<void> {
+  // 0) 设备档案(芯片/屏幕/PSRAM/能力,阶段 2 设备管理器注入;单一数据源 chipCapabilities)
+  const device = init.device
+
   // 1) 字体(drawText 依赖)
   await installFonts(logWarn)
 
@@ -125,10 +128,13 @@ async function boot(init: SandboxInitPayload): Promise<void> {
   const kv = new KvStore(link, logError)
   kv.seed(init.kvJson)
 
-  // 3) 外设镜像与屏幕
+  // 3) 外设镜像与屏幕(分辨率 = 档案 screenW×screenH,不再硬编码)
   const mirror = new PeriphMirror(link, init.periph)
   const resolver = createImageResolver(vfs)
-  const screen = new ScreenImpl(link, resolver, init.brightness)
+  const screen = new ScreenImpl(link, resolver, init.brightness, {
+    width: device.screenW,
+    height: device.screenH
+  })
   link.on('tick', () => screen.handleTick())
 
   // 4) 音频 / 语音
@@ -142,9 +148,9 @@ async function boot(init: SandboxInitPayload): Promise<void> {
   }
   const { app, runExitCallbacks } = createApp(link, init.manifest, readAssetBytes)
 
-  // 6) px 根对象组装
+  // 6) px 根对象组装(system/wifi 按芯片能力表定制)
   const px: Record<string, unknown> = {
-    system: createSystem(link, mirror, init.deviceId, screen, logInfo),
+    system: createSystem(link, mirror, init.deviceId, screen, logInfo, device),
     app,
     storage: {
       kv: {
@@ -172,7 +178,7 @@ async function boot(init: SandboxInitPayload): Promise<void> {
     input: createInput(mirror),
     audio,
     voice,
-    wifi: createWifi(logInfo),
+    wifi: createWifi(logInfo, device.wifi),
     net: createNet(link, logWarn),
     ble: createBle(),
     camera: createCamera(link),

@@ -367,7 +367,14 @@ const FAKE_APS = [
   { ssid: 'Neighbor-2.4G', rssi: -84, secure: true, channel: 3 }
 ]
 
-export function createWifi(logInfo: (msg: string) => void): Record<string, unknown> {
+/**
+ * @param hasWifi 芯片是否有片上 WiFi(chipCapabilities 单一数据源;
+ *                false 时(如 ESP32-P4)connect/scan/startAP 报 ENOTSUP,
+ *                status() 恒离线 —— 与真机无 hosted 模块时的行为一致,
+ *                真机需配套 ESP32-C6 hosted 模块提供 WiFi)
+ */
+export function createWifi(logInfo: (msg: string) => void, hasWifi = true): Record<string, unknown> {
+  if (!hasWifi) return createWifiUnsupported()
   const events = new NamedEmitter()
   let connectedSsid: string | null = navigator.onLine ? 'PixelBox-Home' : null
   const mac = 'AA:BB:CC:12:34:56'
@@ -442,6 +449,39 @@ export function createWifi(logInfo: (msg: string) => void): Record<string, unkno
 
     stopAP(): void {
       logInfo('wifi.stopAP: 模拟关闭 SoftAP')
+    }
+  }
+}
+
+/** 无片上 WiFi 芯片(ESP32-P4)的 wifi 命名空间:契约表面完整,行为 ENOTSUP */
+function createWifiUnsupported(): Record<string, unknown> {
+  const ENOTSUP_MSG = 'ENOTSUP: 当前芯片无片上 WiFi(ESP32-P4 需配套 ESP32-C6 hosted 模块)'
+  const offline = (): {
+    connected: boolean
+    ssid: string | null
+    ip: string | null
+    rssi: number
+    mac: string
+  } => ({ connected: false, ssid: null, ip: null, rssi: 0, mac: '00:00:00:00:00:00' })
+  return {
+    scan(): Promise<never> {
+      return Promise.reject(new Error(ENOTSUP_MSG))
+    },
+    connect(): Promise<never> {
+      return Promise.reject(new Error(ENOTSUP_MSG))
+    },
+    disconnect(): void {
+      // 本就未连接,空操作
+    },
+    status: offline,
+    on(): () => void {
+      return () => undefined // 永不触发,返回可调用的退订函数
+    },
+    startAP(): void {
+      throw new Error(ENOTSUP_MSG)
+    },
+    stopAP(): void {
+      // 空操作
     }
   }
 }

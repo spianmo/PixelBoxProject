@@ -22,6 +22,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
+#include "hal_common/px_alloc.h"
 #endif
 
 namespace img {
@@ -30,9 +31,8 @@ namespace img {
 static uint8_t *alloc_bytes(size_t n)
 {
 #ifdef ESP_PLATFORM
-    uint8_t *p = static_cast<uint8_t *>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!p) p = static_cast<uint8_t *>(heap_caps_malloc(n, MALLOC_CAP_8BIT));
-    return p;
+    /* PSRAM 优先, 无 PSRAM 目标自动落内部堆 (hal_common/px_alloc.h) */
+    return static_cast<uint8_t *>(px_alloc_prefer_psram(n));
 #else
     return static_cast<uint8_t *>(malloc(n));
 #endif

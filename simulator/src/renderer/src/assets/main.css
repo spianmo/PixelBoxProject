@@ -2,7 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 全局深色滚动条 */
+/*
+ * JetBrains/Android Studio New UI dark 色板(RGB 分量,供 tailwind rgb(var()/alpha) 组合)
+ * 后续亮色主题:新增 [data-theme='light'] 覆写同名变量即可,组件类名不变
+ */
+:root {
+  --pb-bg-editor: 30 31 34; /* #1E1F22 编辑器背景 */
+  --pb-bg-panel: 43 45 48; /* #2B2D30 面板/标题栏/工具窗背景 */
+  --pb-border: 57 59 64; /* #393B40 边框分隔线 */
+  --pb-bg-hover: 53 55 59; /* #35373B 悬停 */
+  --pb-selection: 46 67 110; /* #2E436E 选中行/项(半透蓝) */
+  --pb-text: 223 225 229; /* #DFE1E5 主文字 */
+  --pb-text-muted: 157 160 168; /* #9DA0A8 次级文字 */
+  --pb-accent: 53 116 240; /* #3574F0 强调蓝 */
+}
+
+/* 全局深色滚动条(对齐面板色板) */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -11,13 +26,13 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2c333e;
+  background: rgb(var(--pb-border));
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a424f;
+  background: #4b4e54;
   background-clip: content-box;
 }
 
@@ -27,10 +42,28 @@ body,
   height: 100%;
 }
 
-/* 禁止整页选中拖拽产生的原生高亮干扰(编辑器/控制台内部自行处理) */
+/* UI 字体:13px 系统字体(JetBrains New UI 紧凑密度) */
 body {
-  user-select: none;
+  font-size: 13px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  user-select: none; /* 禁止整页选中(编辑器/日志内部用 .selectable 放开) */
 }
 .selectable {
   user-select: text;
+}
+
+/* 自绘标题栏拖拽区(交互控件挂 .app-no-drag) */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* 表单控件强调色(range/checkbox)对齐强调蓝 */
+input[type='range'],
+input[type='checkbox'] {
+  accent-color: rgb(var(--pb-accent));
 }

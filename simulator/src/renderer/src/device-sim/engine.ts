@@ -10,7 +10,16 @@
  *   - console 与运行时错误(含堆栈)经 CustomEvent 代理到外壳底部面板
  */
 import runtimeCode from 'virtual:pixelbox-sandbox-runtime'
-import type { PixelboxSimApi, SimManifest, SimLogDetail, SimStateDetail, SimRunState } from './types'
+import type {
+  PixelboxSimApi,
+  SimManifest,
+  SimLogDetail,
+  SimStateDetail,
+  SimRunState,
+  SimDeviceTag
+} from './types'
+import type { DeviceProfile } from '../../../shared/ipc-types'
+import { chipCapability, defaultCapabilities } from '../../../shared/chipCapabilities'
 import { createStore, type Store } from './store'
 import {
   isSimMessage,
@@ -18,6 +27,7 @@ import {
   type RpcCallMsg,
   type PeriphSnapshot,
   type SandboxInitPayload,
+  type SimDeviceInit,
   type FramePayload,
   type ConsolePayload,
   type UncaughtPayload,
@@ -45,6 +55,8 @@ export interface EngineUiState {
   micActive: boolean
   cameraActive: boolean
   cameraStream: MediaStream | null
+  /** 宿主侧静音(设备面板音量开关) */
+  muted: boolean
 }
 
 /** 外设面板输入的默认值 */
@@ -57,6 +69,30 @@ const DEFAULT_PERIPH: PeriphSnapshot = {
 
 const LOAD_TIMEOUT_MS = 15000
 const EXIT_GRACE_MS = 400
+
+/** 引擎构造参数(阶段 2:每个「运行的设备」tab 一个引擎实例) */
+export interface EngineOptions {
+  /** 虚拟设备档案(决定屏幕分辨率 / 芯片 / PSRAM / 能力表) */
+  profile: DeviceProfile
+  /** 外壳设备路由 key('sim:<profileId>',日志/状态事件按此路由) */
+  deviceKey: string
+}
+
+/** 档案 → 沙箱 init 的设备负载(能力来自 chipCapabilities 单一数据源) */
+function deviceInitOf(profile: DeviceProfile): SimDeviceInit {
+  const cap = chipCapability(profile.chip)
+  return {
+    chip: profile.chip,
+    name: profile.name,
+    screenW: profile.screenW,
+    screenH: profile.screenH,
+    // 芯片不支持 PSRAM 时强制 0(与档案校验双保险)
+    psramMB: cap.psram ? profile.psramMB : 0,
+    flashMB: profile.flashMB,
+    capabilities: defaultCapabilities(profile.chip),
+    wifi: cap.wifi
+  }
+}
 
 /** 简单字符串散列(deviceId 派生) */
 function hashStr(s: string): string {
@@ -78,8 +114,12 @@ export class SimEngine {
   readonly periphStore: Store<PeriphSnapshot>
   /** 面板展示(运行态/屏幕控制/灯带内容/语音状态)*/
   readonly uiStore: Store<EngineUiState>
-  /** 外壳工具栏使用的运行 API(挂 window.__pixelboxSim) */
+  /** 外壳工具栏使用的运行 API(激活 tab 的引擎经 facade 挂 window.__pixelboxSim) */
   readonly api: PixelboxSimApi
+  /** 本实例绑定的虚拟设备档案(阶段 2 多实例) */
+  readonly profile: DeviceProfile
+  /** 外壳设备路由 key('sim:<profileId>') */
+  readonly deviceKey: string
 
   private iframe: HTMLIFrameElement | null = null
   private screenCanvas: HTMLCanvasElement | null = null
@@ -101,8 +141,12 @@ export class SimEngine {
   private loadWaiter: { resolve: () => void; reject: (e: Error) => void; timer: number } | null = null
   private exitWaiter: (() => void) | null = null
   private stopping: Promise<void> | null = null
+  /** window message 监听句柄(dispose 时移除,避免多实例泄漏) */
+  private readonly onWindowMessage: (ev: MessageEvent) => void
 
-  constructor() {
+  constructor(opts: EngineOptions) {
+    this.profile = opts.profile
+    this.deviceKey = opts.deviceKey
     this.periphStore = createStore<PeriphSnapshot>(DEFAULT_PERIPH)
     this.uiStore = createStore<EngineUiState>({
       running: false,
@@ -115,7 +159,8 @@ export class SimEngine {
       voiceState: 'idle',
       micActive: false,
       cameraActive: false,
-      cameraStream: null
+      cameraStream: null,
+      muted: false
     })
 
     this.playerHost = new AudioPlayerHost(
@@ -136,13 +181,14 @@ export class SimEngine {
       this.postEvent('periph', this.periphStore.get())
     })
 
-    // 全局消息路由(按 source 过滤)
-    window.addEventListener('message', (ev: MessageEvent) => {
+    // 全局消息路由(按 source 过滤;多实例并存时各自只处理自己 iframe 的消息)
+    this.onWindowMessage = (ev: MessageEvent): void => {
       if (!this.iframe || ev.source !== this.iframe.contentWindow) return
       const msg: unknown = ev.data
       if (!isSimMessage(msg)) return
       this.route(msg)
-    })
+    }
+    window.addEventListener('message', this.onWindowMessage)
 
     const engine = this
     this.api = {
@@ -180,6 +226,42 @@ export class SimEngine {
   }
 
   // ---------------------------------------------------------------
+  // 外壳「运行的设备」面板工具条动作(重载 / 静音 / 旋转 / 截图)
+  // ---------------------------------------------------------------
+
+  /** 重载最近一次成功加载的应用(无历史包时为空操作) */
+  async reload(): Promise<void> {
+    if (this.lastBundle && this.lastManifest) {
+      await this.load(this.lastBundle, this.lastManifest)
+    }
+  }
+
+  /** 宿主侧静音开关(不改变应用设置的音量) */
+  setMuted(muted: boolean): void {
+    this.playerHost.setMuted(muted)
+    this.uiStore.set({ muted })
+  }
+
+  /** 顺时针旋转屏幕显示 90°(仅显示旋转,与应用 setRotation 行为一致) */
+  rotateScreen(): void {
+    const order: Array<EngineUiState['rotation']> = [0, 90, 180, 270]
+    const cur = this.uiStore.get().rotation
+    this.uiStore.set({ rotation: order[(order.indexOf(cur) + 1) % order.length] })
+  }
+
+  /** 当前屏幕帧编码为 PNG 字节(无帧时返回 null,面板截图按钮用) */
+  async captureScreenshotPng(): Promise<ArrayBuffer | null> {
+    const frame = this.latestFrame
+    if (!frame) return null
+    const canvas = document.createElement('canvas')
+    canvas.width = frame.width
+    canvas.height = frame.height
+    canvas.getContext('2d')?.putImageData(frame, 0, 0)
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    return blob ? blob.arrayBuffer() : null
+  }
+
+  // ---------------------------------------------------------------
   // 生命周期
   // ---------------------------------------------------------------
 
@@ -207,7 +289,7 @@ export class SimEngine {
     this.netRelay = new NetRelay()
     this.netRelay.attach((ev: NetEventPayload, transfer) => this.postEvent('net-event', ev, transfer))
 
-    // 起沙箱
+    // 起沙箱(device = 本实例档案派生的芯片能力/屏幕负载)
     await this.spawnSandbox({
       manifest: { id: manifest.id, name: manifest.name, version: manifest.version, entry: manifest.entry },
       bundleCode,
@@ -215,8 +297,9 @@ export class SimEngine {
       dataFiles: storage.files,
       kvJson: storage.kvJson,
       periph: this.periphStore.get(),
-      deviceId: `sim-${hashStr(this.wsName)}`,
-      brightness: this.uiStore.get().brightness
+      deviceId: `sim-${hashStr(`${this.wsName}:${this.profile.id}`)}`,
+      brightness: this.uiStore.get().brightness,
+      device: deviceInitOf(this.profile)
     })
 
     this.uiStore.set({ running: true, appName: manifest.name, voiceState: 'idle' })
@@ -651,16 +734,35 @@ export class SimEngine {
   // ---------------------------------------------------------------
 
   private log(level: SimLogDetail['level'], text: string): void {
-    window.dispatchEvent(
-      new CustomEvent<SimLogDetail>('pixelbox-sim:log', {
-        detail: { level, text, ts: Date.now() }
-      })
-    )
+    // detail 追加 deviceKey/deviceName(SimDeviceTag 可选字段):
+    // 外壳底部日志按设备下拉路由;旧监听方忽略额外字段,契约兼容
+    const detail: SimLogDetail & SimDeviceTag = {
+      level,
+      text,
+      ts: Date.now(),
+      deviceKey: this.deviceKey,
+      deviceName: this.profile.name
+    }
+    window.dispatchEvent(new CustomEvent<SimLogDetail>('pixelbox-sim:log', { detail }))
   }
 
   private dispatchState(state: SimRunState, error?: string): void {
-    window.dispatchEvent(
-      new CustomEvent<SimStateDetail>('pixelbox-sim:state', { detail: { state, error } })
-    )
+    const detail: SimStateDetail & SimDeviceTag = {
+      state,
+      error,
+      deviceKey: this.deviceKey,
+      deviceName: this.profile.name
+    }
+    window.dispatchEvent(new CustomEvent<SimStateDetail>('pixelbox-sim:state', { detail }))
+  }
+
+  // ---------------------------------------------------------------
+  // 实例销毁(关闭「运行的设备」tab 时调用)
+  // ---------------------------------------------------------------
+
+  /** 停止应用并释放本实例的全局监听(多实例场景防泄漏);实例销毁后不可复用 */
+  async dispose(): Promise<void> {
+    await this.stopAsync(true)
+    window.removeEventListener('message', this.onWindowMessage)
   }
 }

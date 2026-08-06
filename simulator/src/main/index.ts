@@ -8,6 +8,9 @@ import { registerWorkspaceIpc, disposeWorkspace } from './workspace'
 import { registerBuilderIpc, disposeBuilder } from './builder'
 import { registerDevdIpc, disposeDevd } from './devd'
 import { registerSimBridgeIpc, disposeSimBridge } from './simbridge'
+import { registerShellIpc, wireShellWindowEvents } from './shell'
+import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProfiles'
+import { registerToolchainIpc, disposeToolchain } from './toolchain'
 
 // device-sim:沙箱 iframe 隐藏在页面中,禁用 Chromium 对后台/离屏帧的定时器与渲染节流,
 // 否则沙箱内 setTimeout/setInterval(动画、IMU、GPS 定时回调)会被限到 1Hz
@@ -23,9 +26,14 @@ function createWindow(): void {
     minHeight: 640,
     show: false,
     title: 'PixelBox Simulator',
-    backgroundColor: '#0f1115',
+    backgroundColor: '#1e1f22', // 对齐 JetBrains dark 编辑器背景
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icon.png'),
+    // 自绘标题栏:macOS 隐藏原生标题栏但保留红绿灯(hiddenInset);
+    // Windows/Linux 完全无边框,由 renderer 自绘 最小化/最大化/关闭
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 10 } }
+      : { frame: false }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -37,6 +45,7 @@ function createWindow(): void {
   })
 
   win.on('ready-to-show', () => win.show())
+  wireShellWindowEvents(win)
 
   // 外部链接一律交给系统浏览器
   win.webContents.setWindowOpenHandler((details) => {
@@ -56,6 +65,10 @@ app.whenReady().then(() => {
   registerBuilderIpc()
   registerDevdIpc()
   registerSimBridgeIpc()
+  registerShellIpc()
+  registerDeviceProfilesIpc()
+  registerToolchainIpc()
+  void ensureDeviceProfilesDir()
 
   // 设备模拟需要麦克风/摄像头(getUserMedia):本地开发工具,直接放行 media 权限
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -78,4 +91,5 @@ app.on('before-quit', () => {
   void disposeBuilder()
   disposeDevd()
   disposeSimBridge()
+  disposeToolchain() // 不留后台固件构建/烧录进程
 })

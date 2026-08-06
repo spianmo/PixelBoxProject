@@ -2,15 +2,36 @@ menu "PixelBox Board"
 
     choice BOARD_TYPE
         prompt "板型选择"
-        default BOARD_WAVESHARE_AMOLED_18
+        default BOARD_WAVESHARE_AMOLED_18 if IDF_TARGET_ESP32S3
+        default BOARD_GENERIC_SPI if IDF_TARGET_ESP32C6
+        default BOARD_HEADLESS
         help
             选择目标硬件板型。所有引脚定义收敛在板型文件中。
+            微雪板与定制 PCB 依赖 S3 外设 (QSPI AMOLED/Octal PSRAM),
+            仅在 esp32s3 目标可选; 其他目标 (C6/P4) 请选通用 SPI 屏或无屏板。
 
         config BOARD_WAVESHARE_AMOLED_18
             bool "微雪 ESP32-S3-Touch-AMOLED-1.8 (SH8601/FT3168/ES8311/QMI8658/AXP2101)"
+            depends on IDF_TARGET_ESP32S3
 
         config BOARD_CUSTOM_V1
             bool "PixelBox 定制 PCB v1 (Stage B)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_GENERIC_SPI
+            bool "通用 SPI 屏开发板 (ST7789 240x240, 引脚全 Kconfig; C6/P4 等)"
+            help
+                任意 ESP32 系列开发板 + 单线 SPI ST7789 TFT (esp_lcd 内置驱动)。
+                无触摸/IMU/PMU/codec, 对应能力位如实返回 false。
+                帧缓冲与行带 (strip) 中转缓冲按 px_alloc 策略分配
+                (无 PSRAM 目标落内部堆, 行带 flush 见 hal_display Kconfig)。
+
+        config BOARD_HEADLESS
+            bool "无屏调试板 (px.screen 报 ENOTSUP; P4/C6 裸板调试用)"
+            help
+                无任何板载外设的裸开发板 (如 ESP32-P4 Function EV Board
+                不接屏)。px.screen 所有绘图调用抛 Error("ENOTSUP"),
+                system.info().screen 为 0x0, 其余能力位全 false。
     endchoice
 
     if BOARD_WAVESHARE_AMOLED_18
@@ -178,5 +199,84 @@ menu "PixelBox Board"
             default n
 
     endif # BOARD_CUSTOM_V1
+
+    if BOARD_GENERIC_SPI
+
+        comment "―― 通用 SPI 屏 (ST7789) 引脚 — 默认值面向 ESP32-C6 DevKit, 按实际接线修改 ――"
+
+        config BOARD_GSPI_LCD_WIDTH
+            int "屏幕宽 (px)"
+            default 240
+        config BOARD_GSPI_LCD_HEIGHT
+            int "屏幕高 (px)"
+            default 240
+        config BOARD_GSPI_LCD_SCLK
+            int "SPI SCLK"
+            default 6
+        config BOARD_GSPI_LCD_MOSI
+            int "SPI MOSI"
+            default 7
+        config BOARD_GSPI_LCD_CS
+            int "SPI CS"
+            default 18
+        config BOARD_GSPI_LCD_DC
+            int "DC (数据/命令)"
+            default 19
+        config BOARD_GSPI_LCD_RST
+            int "复位 (-1 = 未接)"
+            default 20
+        config BOARD_GSPI_LCD_BACKLIGHT
+            int "背光 (-1 = 常亮/未接; 接 GPIO 时用 LEDC PWM 调亮度)"
+            default 21
+        config BOARD_GSPI_LCD_PCLK_MHZ
+            int "SPI 像素时钟 (MHz)"
+            default 40
+            help
+                ST7789 典型 40MHz; 杜邦线飞线不稳时降到 20。
+        config BOARD_GSPI_LCD_X_OFFSET
+            int "面板 X 偏移 (esp_lcd set_gap)"
+            default 0
+        config BOARD_GSPI_LCD_Y_OFFSET
+            int "面板 Y 偏移 (240x240 圆角屏常见 0 或 80, 视扫描方向)"
+            default 0
+        config BOARD_GSPI_LCD_INVERT_COLOR
+            bool "颜色反转 (多数 ST7789 IPS 屏需要开)"
+            default y
+        config BOARD_GSPI_LCD_BGR
+            bool "BGR 子像素顺序 (颜色红蓝颠倒时切换)"
+            default n
+
+        config BOARD_GSPI_HAS_I2C
+            bool "启用共享 I2C 总线 (外接传感器等)"
+            default n
+        if BOARD_GSPI_HAS_I2C
+            config BOARD_GSPI_I2C_SDA
+                int "I2C SDA"
+                default 4
+            config BOARD_GSPI_I2C_SCL
+                int "I2C SCL"
+                default 5
+            config BOARD_GSPI_I2C_FREQ_KHZ
+                int "I2C 速率 (kHz)"
+                default 400
+        endif
+
+        config BOARD_GSPI_BOOT_GPIO
+            int "BOOT 按键 GPIO"
+            default 9 if IDF_TARGET_ESP32C6
+            default 35 if IDF_TARGET_ESP32P4
+            default 0
+
+    endif # BOARD_GENERIC_SPI
+
+    if BOARD_HEADLESS
+
+        config BOARD_HEADLESS_BOOT_GPIO
+            int "BOOT 按键 GPIO (-1 = 无)"
+            default 9 if IDF_TARGET_ESP32C6
+            default 35 if IDF_TARGET_ESP32P4
+            default 0
+
+    endif # BOARD_HEADLESS
 
 endmenu

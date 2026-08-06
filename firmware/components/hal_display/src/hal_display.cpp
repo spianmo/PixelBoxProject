@@ -27,6 +27,7 @@
 #include "esp_lcd_sh8601.h"
 #include "esp_log.h"
 #include "hal_common/board.h"
+#include "hal_common/px_alloc.h"
 
 namespace hal_display {
 
@@ -260,12 +261,7 @@ esp_err_t init()
         return ESP_ERR_NO_MEM;
     }
     const size_t fb_bytes = static_cast<size_t>(s.panel_w) * s.panel_h * sizeof(uint16_t);
-    s.staging = static_cast<uint16_t *>(
-        heap_caps_aligned_alloc(64, fb_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!s.staging) {
-        s.staging = static_cast<uint16_t *>(
-            heap_caps_aligned_alloc(64, fb_bytes, MALLOC_CAP_8BIT));
-    }
+    s.staging = static_cast<uint16_t *>(px_aligned_alloc_prefer_psram(64, fb_bytes));
     if (!s.staging) {
         gfx::destroy_surface(&s.fb);
         ESP_LOGE(TAG, "中转缓冲分配失败");

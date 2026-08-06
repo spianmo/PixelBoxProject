@@ -1,0 +1,13 @@
+# PixelBox 分区表 — 8MB Flash 变体 (ESP32-C6 等) — 见 docs/architecture.md §4.2
+#
+# 与 16MB 表 (partitions.csv) 的差异: OTA 双分区由 6MB 收缩为 3.25MB,
+# storage 收缩为 1.375MB。nvs/otadata/phy 布局与 16MB 表一致。
+# C6 整包 (WiFi6+NimBLE, 无音频栈) 实测 0x2E0FB0 ≈ 2.88MB, 分区余量 11%;
+# 若需更大余量可关 mbedTLS 完整证书包 (CERTIFICATE_BUNDLE_DEFAULT_CMN) 换空间。
+# Name,    Type, SubType,  Offset,   Size
+nvs,       data, nvs,      0x9000,   0x6000
+otadata,   data, ota,      0xf000,   0x2000
+phy_init,  data, phy,      0x11000,  0x1000
+ota_0,     app,  ota_0,    0x20000,  0x340000
+ota_1,     app,  ota_1,    ,         0x340000
+storage,   data, littlefs, ,         0x160000

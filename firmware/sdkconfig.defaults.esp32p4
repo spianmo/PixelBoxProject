@@ -1,0 +1,32 @@
+# ============================================================
+# PixelBox 像素盒 — ESP32-P4 目标叠加配置
+# (IDF 原生机制: set-target esp32p4 时在 sdkconfig.defaults 之后自动叠加)
+#
+# 参考板: ESP32-P4-Function-EV-Board (16MB Flash + 32MB PSRAM)
+#   idf.py -B build_p4 -D SDKCONFIG=build_p4/sdkconfig set-target esp32p4 build
+#
+# 注意: P4 无片上 WiFi/BT —— hal_net/bindings_net/devd 自动切换 ENOTSUP
+# 桩 (CONFIG_SOC_WIFI_SUPPORTED=n 条件编译); 联网需 esp_hosted (P4+C6 组合),
+# 见 docs/hardware/multi-target.md 的 TODO。
+# 基础文件中 P4 不存在的符号 (BT_*, SPIRAM_MODE_OCT 等) 自动忽略。
+# ============================================================
+
+# ---- Flash: 16MB (与基础文件一致, 沿用 partitions.csv) ----
+
+# ---- CPU: 双核 RISC-V, 默认 360MHz ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# ---- PSRAM: P4-EV 板载 HEX PSRAM ----
+# 速率取稳定档 80MHz; 200MHz 在 IDF v5.5 仍属实验特性
+# (SPIRAM_SPEED_200M depends on IDF_EXPERIMENTAL_FEATURES), 不默认开启
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ---- 板型: 无屏调试板 (px.screen 抛 ENOTSUP; 接 SPI 屏可改 BOARD_GENERIC_SPI) ----
+CONFIG_BOARD_HEADLESS=y
+
+# 说明 (由 Kconfig 按目标自动取默认):
+#   - 有 PSRAM: JSVM_MEM_LIMIT_KB 默认 4096 (分配经 px_alloc 优先 PSRAM);
+#   - 音频栈: PX_ENABLE_AUDIO 默认 y (P4 I2S/codec 可用, HEADLESS 板
+#     能力位 mic/speaker=false, 运行期如实降级);
+#   - BLE: P4 无片上蓝牙, board_caps().ble=false, px.ble.available()=false。

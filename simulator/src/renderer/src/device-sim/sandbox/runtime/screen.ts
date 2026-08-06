@@ -1,9 +1,12 @@
 /**
- * px.screen —— 368x448 帧缓冲、全套绘图 API、离屏画布、帧动画、GIF
+ * px.screen —— 帧缓冲(尺寸=设备档案分辨率,阶段 2 起动态注入)、全套绘图 API、
+ * 离屏画布、帧动画、GIF
  *
  * 实现要点:
  * - 沙箱内用隐藏 <canvas> 作为帧缓冲,全部绘制同步完成;
  *   flush() 把 RGBA 帧零拷贝(transfer)推给宿主的可见画布(整数倍缩放 + pixelated)。
+ * - 分辨率不再硬编码:ScreenImpl 构造时接收 {width,height}(SandboxInitPayload.device),
+ *   全部裁剪/flush/onFrame 逻辑经 this.width/this.height 动态取值。
  * - onFrame 的节拍由宿主 rAF 驱动('tick' 事件,已按 setFps 节流),
  *   dt 为沙箱内实测毫秒;回调返回后自动 flush(与真机行为一致)。
  * - 直线/圆用 Bresenham/中点算法逐像素绘制,保证像素风格(无抗锯齿)。
@@ -16,8 +19,9 @@ import { resolveFont, type PxFontName } from './fonts'
 import { decodeImageBytes, decodeGifFrames, withColorKey, type DecodedImage } from './images'
 import type { Vfs } from './storage'
 
-export const SCREEN_W = 368
-export const SCREEN_H = 448
+/** 缺省分辨率(PixelBox 一代内置档案;正常路径由 init.device 注入,不再硬编码使用) */
+export const DEFAULT_SCREEN_W = 368
+export const DEFAULT_SCREEN_H = 448
 
 interface TextStyle {
   color?: number
@@ -425,8 +429,14 @@ export class ScreenImpl extends DrawSurface {
   private lastTickAt = 0
   private brightness: number
 
-  constructor(link: HostLink, resolver: ImageResolver, brightness: number) {
-    super(SCREEN_W, SCREEN_H, resolver)
+  constructor(
+    link: HostLink,
+    resolver: ImageResolver,
+    brightness: number,
+    size?: { width: number; height: number }
+  ) {
+    // 分辨率来自设备档案(init.device);未注入时回退内置档案 368×448
+    super(size?.width ?? DEFAULT_SCREEN_W, size?.height ?? DEFAULT_SCREEN_H, resolver)
     this.link = link
     this.brightness = clamp(brightness, 0, 100)
   }
@@ -434,9 +444,9 @@ export class ScreenImpl extends DrawSurface {
   // ---- 帧提交 ----
 
   flush(): void {
-    const im = this.ctx.getImageData(0, 0, SCREEN_W, SCREEN_H)
+    const im = this.ctx.getImageData(0, 0, this.width, this.height)
     const buf = im.data.buffer
-    this.link.emit('frame', { buf, width: SCREEN_W, height: SCREEN_H }, [buf])
+    this.link.emit('frame', { buf, width: this.width, height: this.height }, [buf])
   }
 
   /** 宿主 tick 到来(已按 setFps 节流) */

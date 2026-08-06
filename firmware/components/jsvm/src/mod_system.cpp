@@ -27,6 +27,7 @@
 #include "freertos/task.h"
 #include "hal_common/board.h"
 #include "sdkconfig.h"
+#include "soc/soc_caps.h"
 
 static const char *TAG = "px.system";
 
@@ -150,7 +151,12 @@ JSValue js_info(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *a
     JS_SetPropertyStr(ctx, o, "chip", JS_NewString(ctx, CONFIG_IDF_TARGET));
 
     uint8_t mac[6] = {};
+#if SOC_WIFI_SUPPORTED
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
+#else
+    /* 无片上 WiFi 目标 (P4): 用 eFuse 基础 MAC 派生 deviceId */
+    esp_read_mac(mac, ESP_MAC_BASE);
+#endif
     char devid[24];
     snprintf(devid, sizeof(devid), "pxb-%02x%02x%02x%02x%02x%02x",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

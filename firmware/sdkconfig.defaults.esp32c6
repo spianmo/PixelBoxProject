@@ -1,0 +1,26 @@
+# ============================================================
+# PixelBox 像素盒 — ESP32-C6 目标叠加配置
+# (IDF 原生机制: set-target esp32c6 时在 sdkconfig.defaults 之后自动叠加,
+#  同名项覆盖基础文件; 基础文件中 C6 不存在的符号 (SPIRAM_* 等) 自动忽略)
+#
+# 参考板: ESP32-C6-DevKitC-1 (8MB Flash, 无 PSRAM) + ST7789 240x240 SPI 屏
+#   idf.py -B build_c6 -D SDKCONFIG=build_c6/sdkconfig set-target esp32c6 build
+# ============================================================
+
+# ---- Flash: C6 模组常见 8MB (覆盖基础文件的 16MB) ----
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# ---- 分区表: 8MB 专用 (OTA 双分区收缩到 3.25MB, 见 partitions_8mb.csv) ----
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_8mb.csv"
+
+# ---- CPU: C6 单核 RISC-V, 最高 160MHz (基础文件的 240 不存在, 自动忽略) ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+
+# ---- 板型: 通用 SPI 屏 (ST7789 240x240, 引脚见 menuconfig PixelBox Board) ----
+CONFIG_BOARD_GENERIC_SPI=y
+
+# 说明 (无需显式配置, 由 Kconfig 按目标自动取默认):
+#   - 无 PSRAM: JSVM_MEM_LIMIT_KB 默认 256 (KB, 内部堆);
+#   - 音频栈: PX_ENABLE_AUDIO 默认 n (C6), px.audio/px.voice 为 ENOTSUP 桩;
+#   - js_task: FREERTOS_UNICORE=y → 绑核 0;
+#   - WiFi 6 / BLE (NimBLE): 基础文件的 BT_ENABLED/BT_NIMBLE_ENABLED 直接生效。

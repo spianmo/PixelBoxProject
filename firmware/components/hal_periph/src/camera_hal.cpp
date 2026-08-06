@@ -12,6 +12,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "hal_common/board.h"
+#include "hal_common/px_alloc.h"
 #include "sdkconfig.h"
 
 #if CONFIG_PX_ENABLE_CAMERA
@@ -95,11 +96,8 @@ esp_err_t do_init(const Cmd& c) {
 esp_err_t grab_copy(CamFrame& out) {
     camera_fb_t* fb = esp_camera_fb_get();
     if (fb == nullptr) return ESP_FAIL;
-    uint8_t* buf = static_cast<uint8_t*>(
-        heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (buf == nullptr) {
-        buf = static_cast<uint8_t*>(heap_caps_malloc(fb->len, MALLOC_CAP_8BIT));
-    }
+    /* PSRAM 优先, 无 PSRAM 目标自动落内部堆 (hal_common/px_alloc.h) */
+    uint8_t* buf = static_cast<uint8_t*>(px_alloc_prefer_psram(fb->len));
     if (buf == nullptr) {
         esp_camera_fb_return(fb);
         return ESP_ERR_NO_MEM;

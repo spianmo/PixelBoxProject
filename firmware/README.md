@@ -1,6 +1,8 @@
 # PixelBox 固件 (ESP-IDF v5.5)
 
-ESP32-S3 固件工程:QuickJS-ng JS 运行时 + 应用热更新 + devd 开发服务。
+多目标固件工程(esp32s3 默认 / esp32c6 / esp32p4):QuickJS-ng JS 运行时
++ 应用热更新 + devd 开发服务。多目标能力矩阵见 docs/architecture.md §3.1,
+C6/P4 落地细节见 docs/hardware/multi-target.md,构建命令与实测见下文「多目标构建」。
 
 ## 目录结构
 
@@ -53,11 +55,67 @@ pixelbox dev             # watch 构建 + 自动推送 + 日志
 
 `idf.py menuconfig` → `PixelBox Board`:
 
-- `BOARD_WAVESHARE_AMOLED_18`(默认):微雪 ESP32-S3-Touch-AMOLED-1.8
-- `BOARD_CUSTOM_V1`:定制 PCB(Stage B,引脚在 Kconfig 中配置)
+- `BOARD_WAVESHARE_AMOLED_18`(esp32s3 默认):微雪 ESP32-S3-Touch-AMOLED-1.8
+- `BOARD_CUSTOM_V1`:定制 PCB(Stage B,引脚在 Kconfig 中配置;仅 esp32s3)
+- `BOARD_GENERIC_SPI`(esp32c6 默认):通用 SPI 屏(ST7789 240x240,
+  引脚全 Kconfig;无触摸/IMU/PMU,能力位如实 false)
+- `BOARD_HEADLESS`(esp32p4 默认):无屏调试板(px.screen 抛 ENOTSUP)
 
 所有引脚都收敛在 `components/boards`,其他组件一律通过
 `hal_common/board.h` 的 getter 获取,禁止硬编码引脚。
+
+## 多目标构建 (esp32c6 / esp32p4)
+
+三个目标共用一套源码,能力按芯片诚实降级(矩阵见 docs/architecture.md §3.1,
+细节见 docs/hardware/multi-target.md)。目标差异走 IDF 原生
+`sdkconfig.defaults.<target>` 叠加机制;独立构建目录 + 显式 `-D SDKCONFIG`
+(避免改写默认 S3 构建的 `./sdkconfig`),以下命令均已实测:
+
+```bash
+cd firmware
+
+# ESP32-C6 (8MB Flash, 无 PSRAM; 板型默认 BOARD_GENERIC_SPI, ST7789 240x240)
+idf.py -B build_c6 -D SDKCONFIG=build_c6/sdkconfig set-target esp32c6 build
+
+# ESP32-P4 (16MB Flash + PSRAM, 无片上 WiFi/BT; 板型默认 BOARD_HEADLESS)
+idf.py -B build_p4 -D SDKCONFIG=build_p4/sdkconfig set-target esp32p4 build
+```
+
+要点:
+
+- **C6**:无 PSRAM → JS 堆默认收缩为 256KB(内部堆,`CONFIG_JSVM_MEM_LIMIT_KB`
+  按 `!SPIRAM` 取默认);显示走 ST7789 SPI 后端 + 行带 flush(中转缓冲
+  18.75KB 替代整帧 112.5KB,`CONFIG_PX_DISPLAY_STRIP_LINES`);音频栈
+  `PX_ENABLE_AUDIO` 默认关(px.audio/px.voice 注册 ENOTSUP 桩,
+  esp_codec_dev/esp_audio_codec/esp-sr 不参与链接);分区表
+  `partitions_8mb.csv`(OTA 双分区收缩为 3.25MB)。
+- **P4**:无片上 WiFi/BT → `CONFIG_SOC_WIFI_SUPPORTED=n` 条件编译:
+  hal_net/bindings_net 切换 ENOTSUP 桩(px.wifi/px.net/fetch/WebSocket
+  按 d.ts 契约注册,status() 如实返回未连接),devd/mDNS 跳过启动不报错;
+  联网需 esp_hosted(P4+C6 组合)——TODO 见 docs/hardware/multi-target.md §3.3。
+- **S3 零回归**:默认 `idf.py build` 产物与改造前一致(见下表)。
+
+### 多目标实测 (2026-08-06, ESP-IDF v5.5, 整包编译)
+
+| 项目 | esp32s3 (build/) | esp32c6 (build_c6/) | esp32p4 (build_p4/) |
+| --- | --- | --- | --- |
+| 板型 | WAVESHARE_AMOLED_18 | GENERIC_SPI (ST7789) | HEADLESS |
+| `pixelbox.bin` | 2,728,560 B (0x29A270) | 3,018,672 B (0x2E0FB0) | 2,326,576 B (0x238030) |
+| app 分区 / 余量 | 6MB / 57% | 3.25MB / 11% | 6MB / 63% |
+| Flash .text | 1,836,032 B | 2,132,862 B | 1,574,442 B |
+| Flash .rodata | 728,604 B | 715,360 B | 643,728 B |
+| 静态 DIRAM | 179,291 B (52.5%) | 205,491 B (45.5%, 余 246,621 B) | 126,967 B (22.0%, 余 449,497 B) |
+| JS 堆默认 | 4096KB @PSRAM | 256KB @内部堆 | 4096KB @PSRAM |
+| 帧缓冲策略 | 整帧中转 @PSRAM (322KB×2) | 行带 flush (FB 112.5KB + 行带 18.75KB, 内部堆) | 无屏 |
+| WiFi / BLE | ✅ / ✅ | ✅ / ✅ | ENOTSUP 桩 / 无 |
+| 音频栈 | ✅ | 裁剪 (ENOTSUP 桩) | 编译在, 板无 codec |
+
+C6 内存预算:静态 DIRAM 205.5KB 后余 246.6KB,运行期再扣帧缓冲
+112.5KB + 行带 18.75KB + js_task 栈 32KB 与 WiFi/LWIP 缓冲;JS 堆 256KB
+为上限而非预分配,图形应用实际可用约 60-90KB(详见
+docs/hardware/multi-target.md §2.2 预算表与调优项)。S3 基线与改造前
+一致(2,728,560 B vs 基线 2,728,416 B,差 +144 B ≈ 0.005%,为
+wifi_manager strncpy→memcpy 修正所致)。
 
 ## 启用唤醒词 (esp-sr WakeNet)
 

@@ -30,6 +30,8 @@ interface Props {
   dirtyPaths: ReadonlySet<string>
   /** 文件被删除/重命名时通知上层(关闭对应标签) */
   onFileRemoved: (path: string) => void
+  /** 当前激活文件(选中行高亮) */
+  activePath?: string | null
 }
 
 interface MenuState {
@@ -72,7 +74,7 @@ function joinPath(dir: string, name: string): string {
   return dir.endsWith(sep) ? dir + name : dir + sep + name
 }
 
-export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved }: Props): React.JSX.Element {
+export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePath }: Props): React.JSX.Element {
   const { t } = useTranslation()
   // 已加载目录 → 子项
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map())
@@ -173,11 +175,14 @@ export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved }: Props)
     const entries = children.get(dir) ?? []
     return entries.flatMap((entry) => {
       const isExpanded = entry.isDir && expanded.has(entry.path)
+      const isActive = !entry.isDir && entry.path === activePath
       const row = (
         <div
           key={entry.path}
           style={{ paddingLeft: depth * 14 + 6 }}
-          className="group flex cursor-pointer items-center gap-1.5 py-[3px] pr-2 text-sm text-gray-300 hover:bg-ink-700/70"
+          className={`group flex h-6 cursor-pointer items-center gap-1.5 pr-2 text-[13px] ${
+            isActive ? 'bg-jb-selection text-jb-text' : 'text-jb-text hover:bg-ink-800'
+          }`}
           onClick={() => (entry.isDir ? toggleDir(entry) : onOpenFile(entry.path))}
           onContextMenu={(e) => {
             e.preventDefault()

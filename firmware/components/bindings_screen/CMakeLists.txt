@@ -6,6 +6,7 @@ idf_component_register(
         "src/path_resolve.cpp"
     PRIV_REQUIRES
         jsvm
+        hal_common
         hal_display
         esp_timer
         heap

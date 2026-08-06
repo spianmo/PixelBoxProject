@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "quickjs.h"
 
+#include "hal_common/px_alloc.h"
 #include "hal_display/fonts.h"
 #include "hal_display/gfx.hpp"
 #include "hal_display/hal_display.hpp"
@@ -225,9 +226,8 @@ uint8_t *read_file_psram(const char *path, size_t *out_len)
         fclose(f);
         return nullptr;
     }
-    auto *buf = static_cast<uint8_t *>(
-        heap_caps_malloc(static_cast<size_t>(n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!buf) buf = static_cast<uint8_t *>(heap_caps_malloc(static_cast<size_t>(n), MALLOC_CAP_8BIT));
+    /* 大文件缓冲: PSRAM 优先, 无 PSRAM 目标 (C6) 自动落内部堆 */
+    auto *buf = static_cast<uint8_t *>(px_alloc_prefer_psram(static_cast<size_t>(n)));
     if (!buf) {
         fclose(f);
         return nullptr;
@@ -867,7 +867,12 @@ void screen_native_init(JSContext *ctx, JSValue px)
     // 显示硬件初始化 (幂等; 首次 VM 启动时点亮)
     if (!hal_display::ready()) {
         const esp_err_t err = hal_display::init();
-        if (err != ESP_OK) ESP_LOGE(TAG, "显示初始化失败: %s", esp_err_to_name(err));
+        if (err == ESP_ERR_NOT_SUPPORTED) {
+            // 无屏板型 (BOARD_HEADLESS): 契约行为, 绘图调用抛 ENOTSUP, 不算错误
+            ESP_LOGW(TAG, "本板无屏幕, px.screen 调用将抛 ENOTSUP");
+        } else if (err != ESP_OK) {
+            ESP_LOGE(TAG, "显示初始化失败: %s", esp_err_to_name(err));
+        }
     }
 
     // class 注册 (class id 跨 VM 重启复用, class 定义每个 runtime 一次)

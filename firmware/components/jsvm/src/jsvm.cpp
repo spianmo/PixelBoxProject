@@ -23,6 +23,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "hal_common/px_alloc.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "jsvm";
@@ -84,10 +85,8 @@ int64_t s_oom_first_us = 0;
 void *qjs_malloc(void *opaque, size_t size)
 {
     (void)opaque;
-    void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!p) {
-        p = heap_caps_malloc(size, MALLOC_CAP_8BIT); /* 无 PSRAM 时回退 */
-    }
+    /* PSRAM 优先, 无 PSRAM 目标 (C6) 自动落内部堆 (hal_common/px_alloc.h) */
+    void *p = px_alloc_prefer_psram(size);
     if (p) {
         s_mem_used += heap_caps_get_allocated_size(p);
     }
@@ -97,10 +96,7 @@ void *qjs_malloc(void *opaque, size_t size)
 void *qjs_calloc(void *opaque, size_t count, size_t size)
 {
     (void)opaque;
-    void *p = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!p) {
-        p = heap_caps_calloc(count, size, MALLOC_CAP_8BIT);
-    }
+    void *p = px_calloc_prefer_psram(count, size);
     if (p) {
         s_mem_used += heap_caps_get_allocated_size(p);
     }
@@ -127,10 +123,7 @@ void *qjs_realloc(void *opaque, void *ptr, size_t size)
         return nullptr;
     }
     size_t old = heap_caps_get_allocated_size(ptr);
-    void *p = heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!p) {
-        p = heap_caps_realloc(ptr, size, MALLOC_CAP_8BIT);
-    }
+    void *p = px_realloc_prefer_psram(ptr, size);
     if (p) {
         s_mem_used -= old;
         s_mem_used += heap_caps_get_allocated_size(p);

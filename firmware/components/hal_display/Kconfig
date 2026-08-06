@@ -1,0 +1,14 @@
+menu "PixelBox 显示 (hal_display)"
+
+    config PX_DISPLAY_STRIP_LINES
+        int "SPI 屏行带 (strip) flush 高度 (行)"
+        depends on BOARD_GENERIC_SPI
+        range 8 240
+        default 40
+        help
+            通用 SPI 屏后端 (ST7789) 的中转缓冲按「行带」分配:
+            宽 = 面板宽, 高 = 本值, DMA 内部内存。240 宽 x 40 行 x 2B
+            = 18.75KB。行带越大 flush 次数越少 (稍快), 越小越省内部
+            内存 —— 无 PSRAM 的 C6 建议保持默认或调小。
+
+endmenu

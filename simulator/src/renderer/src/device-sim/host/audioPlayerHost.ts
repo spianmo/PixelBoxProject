@@ -38,6 +38,8 @@ export class AudioPlayerHost {
   private entries = new Map<number, Entry>()
   private nextId = 1
   private volumePct = 80
+  /** 宿主侧静音(设备面板音量开关),独立于应用 setVolume */
+  private muted = false
   private onEnded: EndedCallback
   private onState: StateCallback
 
@@ -50,7 +52,7 @@ export class AudioPlayerHost {
     if (!this.ctx) {
       this.ctx = new AudioContext()
       this.master = this.ctx.createGain()
-      this.master.gain.value = this.volumePct / 100
+      this.master.gain.value = this.muted ? 0 : this.volumePct / 100
       this.master.connect(this.ctx.destination)
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume()
@@ -67,7 +69,13 @@ export class AudioPlayerHost {
 
   setVolume(pct: number): void {
     this.volumePct = Math.min(100, Math.max(0, pct))
-    if (this.master) this.master.gain.value = this.volumePct / 100
+    if (this.master) this.master.gain.value = this.muted ? 0 : this.volumePct / 100
+  }
+
+  /** 宿主静音开关(不影响应用设置的音量值,解除后恢复) */
+  setMuted(muted: boolean): void {
+    this.muted = muted
+    if (this.master) this.master.gain.value = muted ? 0 : this.volumePct / 100
   }
 
   // ---------------- 文件 / URL / PCM ----------------

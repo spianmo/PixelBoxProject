@@ -1,11 +1,24 @@
 menu "PixelBox 音频 HAL (hal_audio)"
 
+config PX_ENABLE_AUDIO
+    bool "启用音频栈 (I2S + ES8311 codec + 解码器)"
+    default n if IDF_TARGET_ESP32C6
+    default y
+    help
+        关闭后 hal_audio 不编译, bindings_audio/voicechat 切换为 ENOTSUP
+        桩 (px.audio/px.voice API 表面保留, 调用抛 Error("ENOTSUP")),
+        esp_codec_dev/esp_audio_codec/esp-sr 均不参与链接。
+        无 PSRAM 的小内存目标 (ESP32-C6) 默认关闭以省 flash/RAM;
+        S3/P4 默认开启。
+
 config PX_AUDIO_TASK_CORE
     int "音频任务绑定核心"
+    range 0 0 if FREERTOS_UNICORE
     range 0 1
     default 0
     help
-        采集/播放/解码任务所在核心。JS 线程固定在核 1,音频任务默认放核 0。
+        采集/播放/解码任务所在核心。JS 线程固定在核 1,音频任务默认放核 0
+        (单核目标恒为 0)。
 
 config PX_AUDIO_CAPTURE_PRIO
     int "采集任务优先级"

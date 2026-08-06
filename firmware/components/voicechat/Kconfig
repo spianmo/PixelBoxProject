@@ -2,6 +2,7 @@ menu "PixelBox 语音对话 (voicechat)"
 
 config PX_ENABLE_WAKEWORD
     bool "启用 esp-sr wakenet 唤醒词"
+    depends on PX_ENABLE_AUDIO
     default n
     help
         开启后 px.voice.configure({ wakeword: true }) 生效:idle 态待机

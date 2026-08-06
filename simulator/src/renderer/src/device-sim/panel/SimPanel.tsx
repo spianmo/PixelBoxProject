@@ -1,10 +1,13 @@
 /**
- * 虚拟设备面板(右侧):像素屏 + 虚拟外设控件
+ * 虚拟设备面板(「运行的设备」工具窗内容,对齐 AS Running Devices)
  *
- * - 屏幕:368×448 canvas,整数倍缩放 + image-rendering: pixelated,白色圆角盒子外框;
+ * - 左缘竖排小工具条:电源(停止)/ 重载 / 截图(PNG → ~/Downloads)/ 旋转 / 音量开关 /
+ *   缩放适应 / 100%
+ * - 画布区:设备屏幕居中(尺寸=设备档案分辨率,经 screen props 传入,不再硬编码),
+ *   整数倍缩放优先,右下角缩放百分比小标签(如 147%)
  *   鼠标事件映射为触摸(down/move/up),亮度→CSS filter,熄屏→黑色遮罩,旋转→CSS transform
- * - 外设分组(可折叠):电源(电量滑条+充电开关)/ 按键(BOOT+摇一摇)/
- *   IMU 三轴滑条 / GPS 经纬度 / LED 灯带(开关+可视化)/ 摄像头(预览)
+ * - 下方虚拟外设控件抽屉(折叠分组):电源(电量+充电)/ 按键(BOOT+摇一摇)/
+ *   IMU 三轴 / GPS 经纬度 / LED 灯带 / 摄像头(预览)
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -21,11 +24,27 @@ import {
   VscMic,
   VscComment
 } from 'react-icons/vsc'
+import {
+  LuCamera,
+  LuMaximize,
+  LuPower,
+  LuRotateCw,
+  LuRefreshCw,
+  LuVolume2,
+  LuVolumeX
+} from 'react-icons/lu'
 import type { SimEngine, EngineUiState } from '../engine'
 import type { PeriphSnapshot } from '../protocol'
+import { showToast } from '../../components/toast'
 
-const SCREEN_W = 368
-const SCREEN_H = 448
+/** 设备屏幕分辨率(设备档案,阶段 2 由设备管理器提供) */
+export interface ScreenSize {
+  width: number
+  height: number
+}
+
+/** 缩放模式:适应窗口(整数倍优先)或固定 100% */
+type ZoomMode = 'fit' | 'one'
 
 function useUiState(engine: SimEngine): EngineUiState {
   return useSyncExternalStore(engine.uiStore.subscribe, engine.uiStore.get)
@@ -49,7 +68,7 @@ function Group(props: {
   return (
     <div className="border-b border-ink-700">
       <button
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-gray-300 hover:bg-ink-800"
+        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-jb-text hover:bg-ink-800"
         onClick={() => setOpen((o) => !o)}
       >
         {open ? <VscChevronDown className="shrink-0" /> : <VscChevronRight className="shrink-0" />}
@@ -71,10 +90,10 @@ function Slider(props: {
   onChange: (v: number) => void
 }): React.JSX.Element {
   return (
-    <label className="block text-xs text-gray-400">
+    <label className="block text-xs text-jb-muted">
       <div className="mb-0.5 flex justify-between">
         <span>{props.label}</span>
-        <span className="font-mono text-gray-300">
+        <span className="font-mono text-jb-text">
           {props.value}
           {props.suffix ?? ''}
         </span>
@@ -86,7 +105,7 @@ function Slider(props: {
         step={props.step ?? 1}
         value={props.value}
         onChange={(e) => props.onChange(Number(e.target.value))}
-        className="w-full accent-sky-400"
+        className="w-full"
       />
     </label>
   )
@@ -94,15 +113,98 @@ function Slider(props: {
 
 function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void }): React.JSX.Element {
   return (
-    <label className="flex cursor-pointer items-center justify-between text-xs text-gray-400">
+    <label className="flex cursor-pointer items-center justify-between text-xs text-jb-muted">
       <span>{props.label}</span>
       <input
         type="checkbox"
         checked={props.checked}
         onChange={(e) => props.onChange(e.target.checked)}
-        className="h-3.5 w-3.5 accent-sky-400"
+        className="h-3.5 w-3.5"
       />
     </label>
+  )
+}
+
+// ---------------------------------------------------------------
+// 左缘工具条
+// ---------------------------------------------------------------
+
+function ToolStripButton(props: {
+  title: string
+  disabled?: boolean
+  active?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <button
+      title={props.title}
+      disabled={props.disabled}
+      onClick={props.onClick}
+      className={`flex h-7 w-7 items-center justify-center rounded text-[14px] ${
+        props.disabled
+          ? 'cursor-not-allowed text-ink-500'
+          : props.active
+            ? 'bg-jb-selection text-jb-text'
+            : 'text-jb-muted hover:bg-ink-800 hover:text-jb-text'
+      }`}
+    >
+      {props.children}
+    </button>
+  )
+}
+
+function ToolStrip({
+  engine,
+  zoom,
+  onZoom
+}: {
+  engine: SimEngine
+  zoom: ZoomMode
+  onZoom: (z: ZoomMode) => void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const ui = useUiState(engine)
+
+  const screenshot = async (): Promise<void> => {
+    try {
+      const png = await engine.captureScreenshotPng()
+      if (!png) {
+        showToast(t('sim.screenshotEmpty'), 'warn')
+        return
+      }
+      const path = await window.api.saveScreenshot(png)
+      showToast(t('sim.screenshotSaved', { path }), 'info', 4200)
+    } catch (err) {
+      showToast(t('sim.screenshotFailed', { message: err instanceof Error ? err.message : String(err) }), 'error')
+    }
+  }
+
+  return (
+    <div className="flex w-9 shrink-0 flex-col items-center gap-0.5 border-r border-ink-700 bg-ink-850 py-1">
+      <ToolStripButton title={t('sim.toolbar.power')} disabled={!ui.running} onClick={() => engine.api.stop()}>
+        <LuPower className={ui.running ? 'text-red-400' : ''} />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.toolbar.reload')} disabled={!ui.running} onClick={() => void engine.reload()}>
+        <LuRefreshCw />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.toolbar.screenshot')} onClick={() => void screenshot()}>
+        <LuCamera />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.toolbar.rotate')} onClick={() => engine.rotateScreen()}>
+        <LuRotateCw />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.toolbar.volume')} onClick={() => engine.setMuted(!ui.muted)}>
+        {ui.muted ? <LuVolumeX className="text-yellow-400" /> : <LuVolume2 />}
+      </ToolStripButton>
+      <div className="my-0.5 h-px w-5 bg-ink-700" />
+      <ToolStripButton title={t('sim.toolbar.zoomFit')} active={zoom === 'fit'} onClick={() => onZoom('fit')}>
+        <LuMaximize />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.toolbar.zoom100')} active={zoom === 'one'} onClick={() => onZoom('one')}>
+        <span className="text-[9px] font-bold">1:1</span>
+      </ToolStripButton>
+    </div>
   )
 }
 
@@ -110,7 +212,15 @@ function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean)
 // 屏幕区域
 // ---------------------------------------------------------------
 
-function ScreenView({ engine }: { engine: SimEngine }): React.JSX.Element {
+function ScreenView({
+  engine,
+  screen,
+  zoom
+}: {
+  engine: SimEngine
+  screen: ScreenSize
+  zoom: ZoomMode
+}): React.JSX.Element {
   const ui = useUiState(engine)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const areaRef = useRef<HTMLDivElement>(null)
@@ -123,37 +233,46 @@ function ScreenView({ engine }: { engine: SimEngine }): React.JSX.Element {
     return () => engine.attachScreen(null)
   }, [engine])
 
-  // 容器尺寸变化 → 整数倍缩放(容不下 1x 时退到 0.5x)
+  // 容器尺寸变化 → 计算缩放:fit = 整数倍优先(容不下 1x 时用精确比例);one = 恒 100%
   useEffect(() => {
     const area = areaRef.current
     if (!area) return
-    const ro = new ResizeObserver(() => {
+    const compute = (): void => {
+      if (zoom === 'one') {
+        setScale(1)
+        return
+      }
       const pad = 40 // 白框 + 边距
       const rotated = ui.rotation === 90 || ui.rotation === 270
-      const bw = (rotated ? SCREEN_H : SCREEN_W) + pad
-      const bh = (rotated ? SCREEN_W : SCREEN_H) + pad
+      const bw = (rotated ? screen.height : screen.width) + pad
+      const bh = (rotated ? screen.width : screen.height) + pad
       const fit = Math.min(area.clientWidth / bw, area.clientHeight / bh)
-      setScale(fit >= 1 ? Math.floor(fit) : 0.5)
-    })
+      setScale(fit >= 1 ? Math.floor(fit) : Math.max(0.1, fit))
+    }
+    compute()
+    const ro = new ResizeObserver(compute)
     ro.observe(area)
     return () => ro.disconnect()
-  }, [ui.rotation])
+  }, [ui.rotation, zoom, screen.width, screen.height])
 
-  const toScreenXY = useCallback((e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
-    // offsetX/Y 在 Chromium 中已换算到元素本地坐标系(含 transform)
-    const ne = e.nativeEvent
-    return {
-      x: Math.max(0, Math.min(SCREEN_W - 1, ne.offsetX / scale)),
-      y: Math.max(0, Math.min(SCREEN_H - 1, ne.offsetY / scale))
-    }
-  }, [scale])
+  const toScreenXY = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
+      // offsetX/Y 在 Chromium 中已换算到元素本地坐标系(含 transform)
+      const ne = e.nativeEvent
+      return {
+        x: Math.max(0, Math.min(screen.width - 1, ne.offsetX / scale)),
+        y: Math.max(0, Math.min(screen.height - 1, ne.offsetY / scale))
+      }
+    },
+    [scale, screen.width, screen.height]
+  )
 
   const rotated = ui.rotation === 90 || ui.rotation === 270
-  const boxW = (rotated ? SCREEN_H : SCREEN_W) * scale
-  const boxH = (rotated ? SCREEN_W : SCREEN_H) * scale
+  const boxW = (rotated ? screen.height : screen.width) * scale
+  const boxH = (rotated ? screen.width : screen.height) * scale
 
   return (
-    <div ref={areaRef} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+    <div ref={areaRef} className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-2">
       {/* 白色圆角盒子外框(产品外观) */}
       <div
         className="flex items-center justify-center rounded-2xl bg-white shadow-lg"
@@ -165,8 +284,8 @@ function ScreenView({ engine }: { engine: SimEngine }): React.JSX.Element {
         >
           <canvas
             ref={canvasRef}
-            width={SCREEN_W}
-            height={SCREEN_H}
+            width={screen.width}
+            height={screen.height}
             onMouseDown={(e) => {
               pressedRef.current = true
               const p = toScreenXY(e)
@@ -191,8 +310,8 @@ function ScreenView({ engine }: { engine: SimEngine }): React.JSX.Element {
             }}
             className="absolute left-1/2 top-1/2 cursor-crosshair"
             style={{
-              width: SCREEN_W * scale,
-              height: SCREEN_H * scale,
+              width: screen.width * scale,
+              height: screen.height * scale,
               imageRendering: 'pixelated',
               filter: `brightness(${Math.max(5, ui.brightness)}%)`,
               transform: `translate(-50%, -50%) rotate(${ui.rotation}deg)`
@@ -202,6 +321,10 @@ function ScreenView({ engine }: { engine: SimEngine }): React.JSX.Element {
           {!ui.power && <div className="absolute inset-0 bg-black" />}
         </div>
       </div>
+      {/* 右下角缩放百分比标签(如 147%) */}
+      <span className="absolute bottom-1.5 right-2 rounded bg-ink-850/90 px-1.5 py-0.5 text-[10px] text-jb-muted">
+        {Math.round(scale * 100)}%
+      </span>
     </div>
   )
 }
@@ -237,11 +360,12 @@ function LedStrip({ colors, brightness }: { colors: number[]; brightness: number
 // 主面板
 // ---------------------------------------------------------------
 
-export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
+export function SimPanel({ engine, screen }: { engine: SimEngine; screen: ScreenSize }): React.JSX.Element {
   const { t } = useTranslation()
   const ui = useUiState(engine)
   const periph = usePeriph(engine)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const [zoom, setZoom] = useState<ZoomMode>('fit')
 
   // 摄像头预览
   useEffect(() => {
@@ -257,8 +381,8 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-ink-900">
-      {/* 屏幕 + 运行状态 */}
-      <div className="flex h-6 shrink-0 items-center gap-2 px-3 text-[11px] text-gray-500">
+      {/* 运行状态行 */}
+      <div className="flex h-6 shrink-0 items-center gap-2 px-3 text-[11px] text-jb-muted">
         <VscCircleFilled className={ui.running ? 'text-green-400' : 'text-ink-500'} />
         <span>{ui.running ? (ui.appName ?? t('sim.running')) : t('sim.stopped')}</span>
         {ui.voiceState !== 'idle' && (
@@ -272,9 +396,14 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
           </span>
         )}
       </div>
-      <ScreenView engine={engine} />
 
-      {/* 外设控件(滚动区) */}
+      {/* 左缘工具条 + 屏幕画布 */}
+      <div className="flex min-h-0 flex-1">
+        <ToolStrip engine={engine} zoom={zoom} onZoom={setZoom} />
+        <ScreenView engine={engine} screen={screen} zoom={zoom} />
+      </div>
+
+      {/* 虚拟外设控件抽屉(滚动区) */}
       <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-ink-700">
         {/* 电源 */}
         <Group icon={<VscPlug />} title={t('sim.group.power')}>
@@ -297,7 +426,7 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
         <Group icon={<VscRecordKeys />} title={t('sim.group.buttons')}>
           <div className="flex gap-2">
             <button
-              className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-xs text-gray-200 active:bg-accent-dim"
+              className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-xs text-jb-text active:bg-accent-dim"
               onMouseDown={() => engine.sendButton('down')}
               onMouseUp={() => engine.sendButton('up')}
               onMouseLeave={(e) => {
@@ -307,13 +436,13 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
               {t('sim.bootButton')}
             </button>
             <button
-              className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-xs text-gray-200 active:bg-accent-dim"
+              className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-xs text-jb-text active:bg-accent-dim"
               onClick={() => engine.sendShake()}
             >
               {t('sim.shake')}
             </button>
           </div>
-          <div className="text-[10px] text-gray-600">{t('sim.bootHint')}</div>
+          <div className="text-[10px] text-ink-500">{t('sim.bootHint')}</div>
         </Group>
 
         {/* IMU */}
@@ -326,7 +455,7 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
         {/* GPS */}
         <Group icon={<VscLocation />} title={t('sim.group.gps')} defaultOpen={false}>
           <div className="flex gap-2">
-            <label className="flex-1 text-xs text-gray-400">
+            <label className="flex-1 text-xs text-jb-muted">
               {t('sim.lat')}
               <input
                 type="number"
@@ -335,10 +464,10 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
                 onChange={(e) =>
                   engine.periphStore.set({ gps: { ...periph.gps, lat: Number(e.target.value) } })
                 }
-                className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-xs text-gray-200 outline-none focus:border-accent"
+                className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-xs text-jb-text outline-none focus:border-accent"
               />
             </label>
-            <label className="flex-1 text-xs text-gray-400">
+            <label className="flex-1 text-xs text-jb-muted">
               {t('sim.lng')}
               <input
                 type="number"
@@ -347,7 +476,7 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
                 onChange={(e) =>
                   engine.periphStore.set({ gps: { ...periph.gps, lng: Number(e.target.value) } })
                 }
-                className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-xs text-gray-200 outline-none focus:border-accent"
+                className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-xs text-jb-text outline-none focus:border-accent"
               />
             </label>
           </div>
@@ -365,7 +494,7 @@ export function SimPanel({ engine }: { engine: SimEngine }): React.JSX.Element {
 
         {/* 摄像头 */}
         <Group icon={<VscDeviceCameraVideo />} title={t('sim.group.camera')} defaultOpen={false}>
-          <div className="text-[10px] text-gray-600">{t('sim.cameraHint')}</div>
+          <div className="text-[10px] text-ink-500">{t('sim.cameraHint')}</div>
           {ui.cameraActive && (
             <video ref={videoRef} muted playsInline className="w-full rounded border border-ink-600" />
           )}

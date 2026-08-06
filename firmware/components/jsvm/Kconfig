@@ -1,10 +1,15 @@
 menu "PixelBox JSVM"
 
     config JSVM_MEM_LIMIT_KB
-        int "JS 堆上限 (KB, 分配走 PSRAM)"
+        int "JS 堆上限 (KB)"
+        default 256 if !SPIRAM
         default 4096
         help
-            QuickJS 运行时内存上限。分配经自定义分配器优先落 PSRAM。
+            QuickJS 运行时内存上限。分配经自定义分配器
+            (hal_common/px_alloc.h) 优先落 PSRAM, 无 PSRAM 目标 (C6 /
+            关闭 SPIRAM 时) 自动落内部堆 —— 此时默认收缩到 256KB,
+            为帧缓冲/网络栈保留内部内存余量。
+            按目标默认: S3 (8MB PSRAM) / P4 (PSRAM) = 4096; C6 = 256。
 
     config JSVM_TASK_STACK_KB
         int "js_task 栈大小 (KB)"
@@ -25,8 +30,13 @@ menu "PixelBox JSVM"
 
     config JSVM_TASK_CORE
         int "js_task 绑定核心"
+        range 0 0 if FREERTOS_UNICORE
         range 0 1
+        default 0 if FREERTOS_UNICORE
         default 1
+        help
+            双核目标 (S3/P4) 默认核 1 (核 0 留给 WiFi/音频);
+            单核目标 (C6) 恒为核 0。
 
     config JSVM_TASK_PRIORITY
         int "js_task 优先级"

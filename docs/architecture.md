@@ -58,10 +58,36 @@ esp32_devices/
 
 在 Stage A 基础上增加:OV2640 摄像头(DVP)、ATGM336H GPS(UART)、WS2812 灯带、USB-C、定制外壳。这些外设在固件中均有 Kconfig 开关,默认关闭,`available()` 返回 false。
 
+### 3.1 多目标支持矩阵(v2 新增,详见 docs/hardware/multi-target.md)
+
+固件在 ESP-IDF v5.5 下支持三个目标芯片整包编译,能力按芯片**诚实降级**
+(不支持的域按 d.ts 契约注册 ENOTSUP 行为,available/状态接口如实返回):
+
+| 能力 | esp32s3(默认) | esp32c6 | esp32p4 |
+|---|---|---|---|
+| 核心 | 双核 Xtensa 240MHz | 单核 RISC-V 160MHz | 双核 RISC-V 360MHz |
+| PSRAM | 8MB Octal | 无(内部 ~512KB HP SRAM) | 有(EV 板 32MB HEX) |
+| Flash / 分区表 | 16MB / partitions.csv | 8MB / partitions_8mb.csv | 16MB / partitions.csv |
+| 默认板型 | BOARD_WAVESHARE_AMOLED_18 | BOARD_GENERIC_SPI | BOARD_HEADLESS |
+| 屏幕 | SH8601 QSPI 368×448(整帧中转) | ST7789 SPI 240×240(行带 flush) | 无屏(px.screen 抛 ENOTSUP) |
+| 音频 (px.audio/voice) | ✅ ES8311 | Kconfig 默认关(ENOTSUP 桩) | 编译在,板无 codec → caps=false |
+| WiFi (px.wifi/net/fetch/WS) | ✅ | ✅(WiFi 6) | ❌ 无片上 WiFi → ENOTSUP 桩;esp_hosted TODO |
+| BLE (px.ble) | ✅ NimBLE | ✅ NimBLE | ❌ 无片上蓝牙(available=false) |
+| devd/mDNS | ✅ | ✅ | 跳过启动(不报错) |
+| JS 堆默认 (JSVM_MEM_LIMIT_KB) | 4096KB @PSRAM | 256KB @内部堆 | 4096KB @PSRAM |
+| js_task 绑核 | 核 1 | 核 0(单核) | 核 1 |
+
+- 板型 Kconfig:微雪板/定制 PCB `depends on IDF_TARGET_ESP32S3`;新增
+  `BOARD_GENERIC_SPI`(通用 SPI 屏,引脚全 Kconfig,无触摸/IMU/PMU,能力位如实 false)
+  与 `BOARD_HEADLESS`(无屏调试)。
+- 大缓冲分配统一走 `hal_common/px_alloc.h` 的 `px_alloc_prefer_psram()` 系列:
+  有 PSRAM 优先 PSRAM,无 PSRAM 目标自动落内部堆。
+- 无网络目标的条件编译以 `CONFIG_SOC_WIFI_SUPPORTED` 为准(CMake 源文件级切换 + 桩实现)。
+
 ## 4. 固件架构
 
 - ESP-IDF **v5.5**,C/C++ 混合,C++ 侧 C++17 及以上(跟随 IDF 默认 gnu++2x),无异常/无 RTTI,错误用 `esp_err_t`。
-- JS 引擎:**quickjs-ng**(vendored 到 `firmware/components/jsvm/quickjs-ng/`,`tools/fetch_deps.sh` 负责 clone,固定 tag)。JS 堆分配走 PSRAM(自定义 malloc),上限 4MB。
+- JS 引擎:**quickjs-ng**(vendored 到 `firmware/components/jsvm/quickjs-ng/`,`tools/fetch_deps.sh` 负责 clone,固定 tag)。JS 堆分配经 `px_alloc_prefer_psram()` 优先 PSRAM,上限 `CONFIG_JSVM_MEM_LIMIT_KB` 按目标取默认(S3/P4 = 4MB;无 PSRAM 的 C6 = 256KB,落内部堆)。
 - 线程模型:
   - `js_task`(pinned core 1,栈默认 32KB **内部 RAM**):唯一执行 JS 的线程。循环 = 取事件队列 → 执行 → 泵 Promise jobs → 检查定时器。
   - 其他任务(audio/net/lvgl-free 渲染等)通过 **事件循环投递** 与 JS 交互,禁止跨线程直接调 JS_*。

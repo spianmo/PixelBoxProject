@@ -14,6 +14,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
+#include "hal_common/px_alloc.h"
 #endif
 
 namespace gfx {
@@ -28,9 +29,8 @@ bool create_surface(Surface *out, int w, int h)
     const size_t bytes = static_cast<size_t>(w) * h * sizeof(uint16_t);
     uint16_t *px = nullptr;
 #ifdef ESP_PLATFORM
-    // 画布优先 PSRAM; 无 PSRAM 时回退内部堆
-    px = static_cast<uint16_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!px) px = static_cast<uint16_t *>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+    // 画布优先 PSRAM; 无 PSRAM 目标 (C6) 自动落内部堆 (hal_common/px_alloc.h)
+    px = static_cast<uint16_t *>(px_alloc_prefer_psram(bytes));
 #else
     px = static_cast<uint16_t *>(malloc(bytes));
 #endif

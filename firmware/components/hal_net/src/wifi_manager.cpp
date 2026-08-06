@@ -107,8 +107,10 @@ esp_err_t WifiManager::connect(const std::string& ssid, const std::string& passw
 
   std::lock_guard<std::recursive_mutex> lk(mtx_);
   wifi_config_t wc = {};
-  std::strncpy(reinterpret_cast<char*>(wc.sta.ssid), ssid.c_str(), sizeof(wc.sta.ssid));
-  std::strncpy(reinterpret_cast<char*>(wc.sta.password), password.c_str(), sizeof(wc.sta.password));
+  // ssid/password 为定长字节数组而非 C 字符串 (长度已在上方校验 ≤ 字段宽度,
+  // wc={} 已整体清零), 用 memcpy 避免 RISC-V GCC 的 stringop-truncation 告警
+  std::memcpy(wc.sta.ssid, ssid.data(), ssid.size());
+  std::memcpy(wc.sta.password, password.data(), password.size());
   wc.sta.threshold.authmode = password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
   wc.sta.pmf_cfg.capable = true;
   wc.sta.pmf_cfg.required = false;
@@ -222,12 +224,13 @@ esp_err_t WifiManager::start_ap(const std::string& ssid, const std::string& pass
     esp_netif_create_default_wifi_ap();
   }
   wifi_config_t wc = {};
-  std::strncpy(reinterpret_cast<char*>(wc.ap.ssid), ssid.c_str(), sizeof(wc.ap.ssid));
+  // 同 connect(): 定长字节数组用 memcpy (长度已校验, wc={} 已清零)
+  std::memcpy(wc.ap.ssid, ssid.data(), ssid.size());
   wc.ap.ssid_len = ssid.size();
   wc.ap.channel = 1;
   wc.ap.max_connection = 4;
   if (password.size() >= 8) {
-    std::strncpy(reinterpret_cast<char*>(wc.ap.password), password.c_str(), sizeof(wc.ap.password));
+    std::memcpy(wc.ap.password, password.data(), password.size());
     wc.ap.authmode = WIFI_AUTH_WPA2_PSK;
   } else {
     wc.ap.authmode = WIFI_AUTH_OPEN;

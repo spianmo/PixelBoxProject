@@ -2,20 +2,100 @@
   "app": {
     "title": "PixelBox Simulator"
   },
-  "toolbar": {
-    "openWorkspace": "Open Workspace",
+  "titlebar": {
+    "project": "Project",
+    "noProject": "No workspace",
+    "openWorkspace": "Open Workspace…",
+    "recentWorkspaces": "Recent workspaces",
+    "workspaceGone": "That workspace folder no longer exists",
+    "branch": "git branch",
+    "runOn": "Select target device",
+    "chip": "Target chip",
     "run": "Run",
     "stop": "Stop",
+    "buildFirmware": "Build Firmware",
     "push": "Push to Device",
-    "devices": "Select device",
+    "more": "More",
+    "search": "Search files",
+    "settings": "Settings",
+    "notifications": "Notifications",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close",
+    "rescanDevices": "Rescan devices",
+    "simulatorDevice": "PixelBox Simulator",
+    "virtualDevices": "Virtual devices",
+    "realDevices": "Physical (mDNS)",
     "noDevices": "No devices found",
-    "refreshDevices": "Rescan",
-    "scanning": "Scanning…",
-    "language": "Switch language"
+    "scanning": "Scanning…"
+  },
+  "rail": {
+    "project": "Project",
+    "devices": "Device Manager",
+    "build": "Build",
+    "logs": "Logs",
+    "problems": "Problems",
+    "runningDevices": "Running Devices"
+  },
+  "toolwindow": {
+    "hide": "Hide"
+  },
+  "deviceManager": {
+    "new": "Create Virtual Device",
+    "newEllipsis": "Create Virtual Device…",
+    "count": "{{count}} profiles",
+    "col": {
+      "name": "Name",
+      "chip": "Chip",
+      "screen": "Resolution",
+      "actions": "Actions"
+    },
+    "edit": "Edit",
+    "copy": "Duplicate",
+    "delete": "Delete",
+    "copySuffix": " copy",
+    "builtinHint": "Built-in profile: cannot be edited or deleted (duplicate instead)",
+    "deleteConfirm": "Delete virtual device \"{{name}}\"? This cannot be undone.",
+    "created": "Created \"{{name}}\"",
+    "saved": "Saved \"{{name}}\"",
+    "copied": "Duplicated \"{{name}}\"",
+    "deleted": "Deleted \"{{name}}\"",
+    "chipHint": {
+      "p4Hosted": "ESP32-P4 has no on-chip WiFi/BLE: in the simulator wifi.connect throws ENOTSUP and ble is unavailable; real hardware needs a companion ESP32-C6 hosted module"
+    },
+    "wizard": {
+      "title": "Create Virtual Device",
+      "editTitle": "Edit Virtual Device",
+      "create": "Create",
+      "defaultName": "New Simulator",
+      "name": "Name",
+      "namePlaceholder": "Simulator name",
+      "chip": "Chip",
+      "dualCore": "dual-core",
+      "screen": "Screen resolution",
+      "custom": "Custom…",
+      "screenRangeHint": "range {{min}}–{{max}}",
+      "psramNone": "None",
+      "psramUnsupported": "This chip has no PSRAM; fixed to \"None\"",
+      "note": "Notes",
+      "notePlaceholder": "Optional notes (hardware form / purpose)"
+    },
+    "errors": {
+      "nameRequired": "Name is required",
+      "chipInvalid": "Invalid chip",
+      "screenRange": "Resolution must be an integer between {{min}} and {{max}}",
+      "psramInvalid": "PSRAM option is invalid for this chip",
+      "flashInvalid": "Invalid flash size",
+      "builtinReadonly": "Built-in profile cannot be edited",
+      "builtinUndeletable": "Built-in profile cannot be deleted",
+      "saveFailed": "Save failed",
+      "deleteFailed": "Delete failed"
+    }
   },
   "fileTree": {
     "empty": "No workspace opened",
-    "openHint": "Click \"Open Workspace\" above to select an app project folder",
+    "openHint": "Click \"Open Workspace\" to select an app project folder",
     "newFile": "New File",
     "newFolder": "New Folder",
     "rename": "Rename",
@@ -27,24 +107,53 @@
     "deleteConfirm": "Delete {{name}}? This cannot be undone."
   },
   "editor": {
-    "welcome": "Open a workspace, then double-click a file on the left to edit",
+    "welcome": "Open a workspace, then double-click a file on the left (⌘P quick open)",
     "unsaved": "Unsaved",
     "closeDirtyConfirm": "{{name}} has unsaved changes. Close anyway?"
   },
   "console": {
-    "appLog": "App Logs",
-    "buildOutput": "Build Output",
+    "appLog": "Logs",
+    "buildOutput": "Build",
     "clear": "Clear",
     "empty": "No output yet"
   },
+  "logs": {
+    "device": "Log source device",
+    "filterPlaceholder": "Filter: tag:net level:warn free text",
+    "scrollLock": "Scroll lock (auto scroll to end)"
+  },
+  "problems": {
+    "title": "Problems",
+    "empty": "No problems"
+  },
+  "statusbar": {
+    "spaces": "Spaces: {{count}}",
+    "building": "Building…",
+    "pushing": "Pushing…",
+    "pushingPercent": "Pushing {{percent}}%"
+  },
+  "quickOpen": {
+    "placeholder": "Type a file name to fuzzy search…",
+    "noWorkspace": "Open a workspace first",
+    "empty": "No matching files"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "clear": "Clear",
+    "empty": "No notifications"
+  },
+  "settings": {
+    "language": "Language"
+  },
   "device": {
-    "panelTitle": "Device Preview",
-    "simNotReady": "Device simulation engine not attached",
-    "simNotReadyHint": "Once device-sim is implemented, the 368×448 pixel screen and virtual peripherals render here"
+    "noRunning": "No running device"
   },
   "sim": {
     "running": "Running",
     "stopped": "Not running",
+    "closeTab": "Close this simulator",
+    "noSession": "No simulator is running",
+    "noSessionHint": "Pick a virtual device in the title bar and press ▶; the Device Manager creates profiles with different resolutions/chips",
     "micOn": "Mic",
     "voice": {
       "connecting": "Voice · connecting",
@@ -52,6 +161,18 @@
       "thinking": "Voice · thinking",
       "speaking": "Voice · speaking"
     },
+    "toolbar": {
+      "power": "Stop (power)",
+      "reload": "Reload app",
+      "screenshot": "Screenshot (save to Downloads)",
+      "rotate": "Rotate 90°",
+      "volume": "Toggle volume",
+      "zoomFit": "Zoom to fit",
+      "zoom100": "100%"
+    },
+    "screenshotSaved": "Screenshot saved: {{path}}",
+    "screenshotEmpty": "No screen frame to capture yet",
+    "screenshotFailed": "Screenshot failed: {{message}}",
     "group": {
       "power": "Power",
       "buttons": "Buttons",
@@ -72,14 +193,76 @@
   },
   "run": {
     "noWorkspace": "Open a workspace first",
-    "buildFailed": "Build failed, see Build Output",
+    "noProfile": "Selected virtual device profile not found",
+    "buildFailed": "Build failed, see Build output",
     "simMissing": "Device simulation engine is not ready",
     "started": "App is running in the simulator",
+    "startedOn": "App is running on \"{{name}}\"",
     "stopped": "Stopped",
     "reloaded": "Hot-reloaded latest build"
   },
+  "fw": {
+    "menuGroup": "Firmware ({{chip}})",
+    "menuPackage": "Package merged.bin",
+    "menuFlash": "Flash…",
+    "menuClean": "Clean build",
+    "cancelTask": "Cancel firmware task",
+    "kind": {
+      "build": "build",
+      "merge": "package",
+      "flash": "flash",
+      "clean": "clean"
+    },
+    "status": {
+      "build": "Building firmware…",
+      "merge": "Packaging firmware…",
+      "flash": "Flashing…",
+      "clean": "Cleaning build…"
+    },
+    "cancelled": "Firmware {{kind}} cancelled",
+    "failed": "Firmware {{kind}} failed ({{chip}}), see Build output",
+    "buildDone": "Firmware build finished ({{chip}}): {{name}} {{size}}",
+    "buildDoneBare": "Firmware task finished ({{chip}})",
+    "mergeDone": "Merged binary created: {{path}} ({{size}})",
+    "flashDone": "Flash finished ({{chip}}); device rebooted into the new firmware",
+    "cleanDone": "Cleaned {{chip}} build directory; the next build reconfigures from scratch",
+    "errors": {
+      "busy": "A firmware task is already running; wait or cancel it first",
+      "badTarget": "Invalid target chip",
+      "badPort": "Invalid serial port path",
+      "idfNotFound": "ESP-IDF not found: install to ~/esp/esp-idf, set $IDF_PATH, or override the path in Settings",
+      "exportMissing": "export.sh is missing from the ESP-IDF directory",
+      "firmwareMissing": "Repository firmware/ project directory not found",
+      "unsupportedPlatform": "In-IDE firmware builds are not supported on this platform (macOS / Linux only)",
+      "startFailed": "Failed to start the firmware task"
+    },
+    "flashDialog": {
+      "title": "Flash Firmware ({{chip}})",
+      "port": "Port",
+      "baud": "Baud rate",
+      "scanning": "Scanning serial ports…",
+      "noPorts": "No serial device detected (still scanning…)",
+      "bootHint": "Enter download mode: hold the BOOT button, plug in the USB data cable (or tap RESET while holding BOOT), then release BOOT. Make sure it is a data cable; typical port names: usbmodem / wchusbserial / SLAB.",
+      "start": "Start Flashing"
+    },
+    "settings": {
+      "open": "IDE Settings…",
+      "title": "Settings",
+      "groupToolchain": "Firmware toolchain",
+      "idfPath": "ESP-IDF path",
+      "idfPathPlaceholder": "Leave empty to auto-detect ($IDF_PATH or ~/esp/esp-idf)",
+      "detecting": "Detecting ESP-IDF…",
+      "detected": "Detected ESP-IDF {{version}}: {{path}}",
+      "defaultTarget": "Default target chip",
+      "defaultTargetHint": "Initial value of the title-bar chip dropdown (manual choice wins afterwards)",
+      "baud": "Flash baud rate",
+      "save": "Save",
+      "savedOk": "Settings saved (ESP-IDF {{version}})",
+      "savedNoIdf": "Settings saved, but no usable ESP-IDF was detected"
+    }
+  },
   "push": {
-    "noDevice": "Select a target device in the dropdown first",
+    "noDevice": "Select a physical device in the title-bar device dropdown first",
     "connecting": "Connecting to device…",
     "uploading": "Uploading {{file}}",
     "finalizing": "Verifying and switching app…",

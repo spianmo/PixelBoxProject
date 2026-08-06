@@ -8,13 +8,17 @@ IDE 外壳(sim-shell)只依赖本文档描述的三个契约点(§1–§3,保持
 `index.ts` 导出:
 
 ```ts
-export function setupDeviceSim(container: HTMLElement): PixelboxSimApi | null
+export function setupDeviceSim(
+  container: HTMLElement,
+  opts?: SetupDeviceSimOptions // 兼容参数;阶段 2 起分辨率由会话档案驱动,详见 §8
+): PixelboxSimApi | null
 ```
 
-- 外壳在右侧「设备面板」挂载后调用一次,`container` 是一个已铺满面板可用区域的空 `div`。
-- 引擎在其中渲染:**368×448 像素屏 canvas**(整数倍缩放、`image-rendering: pixelated`、
-  白色圆角盒子外框)与虚拟外设控件(BOOT / 摇一摇 / 电量 / IMU / GPS / 灯带 / 摄像头,
-  触摸即鼠标)。
+- 外壳在右侧「运行的设备」面板挂载后调用一次,`container` 是一个已铺满面板可用区域的空 `div`。
+- 引擎在其中渲染:**像素屏 canvas**(分辨率取当前会话的设备档案,内置档案 368×448;
+  整数倍缩放优先、`image-rendering: pixelated`、白色圆角盒子外框、右下角缩放百分比标签)、
+  左缘竖排工具条(电源/重载/截图/旋转/音量/缩放)与虚拟外设控件(BOOT / 摇一摇 / 电量 /
+  IMU / GPS / 灯带 / 摄像头,触摸即鼠标);无会话时为空态提示。
 - 初始化完成后:挂 `window.__pixelboxSim` → 派发 `pixelbox-sim:ready` → 返回同一 API 对象。
 
 ## 2. window.__pixelboxSim(运行控制)
@@ -108,3 +112,36 @@ device-sim/
 - `npm run selfcheck`:demo 构建 → 运行时打包 → shim 表面静态核对(16+13)→ srcdoc
   逃逸 → 语法解析,全绿;
 - GUI 手测步骤见 `simulator/README.md`「验证」一节与 `simulator/demo/README.md`。
+
+## 8. 阶段 2:设备管理器与多实例(已落地)
+
+阶段 1 预留的接入点已在 v2 阶段 2 全部接入,当前形态:
+
+1. **多实例会话**(`sessions.ts`):每个「运行的设备」tab = 一个 `SimSession`
+   = 一个 `SimEngine` 实例 = 一个沙箱 iframe(消息按 `ev.source` 过滤互不串扰)。
+   `simSessionsStore` 可订阅(tab 条 / SimHost 共用);`ensureSession(profile)` 按档案
+   建/复用会话,`closeSession(key)` 停止并 `engine.dispose()`(移除全局监听防泄漏)。
+2. **facade API**(`index.ts`):`setupDeviceSim(container)` 渲染 `panel/SimHost.tsx`
+   (激活会话的 SimPanel / 空态),`window.__pixelboxSim` 为 facade:
+   - `load()`:按 `window.__pixelboxSimContext.device`(`DeviceProfile`,外壳运行前写入)
+     选择/创建会话后对其热重载;缺省回退内置档案(368×448);
+   - `stop()`:停止全部会话;`running`:任一会话运行中。
+   §1–§3 既有契约签名未动;`getSimEngine()` 兼容保留(= 激活会话引擎)。
+   watch 热重载走 `reloadRunningSessions()`(对全部运行中的会话热重载)。
+3. **设备档案注入**:`SimEngine` 构造需 `{ profile, deviceKey }`;`protocol.ts` 的
+   `SandboxInitPayload.device: SimDeviceInit` 携带 `{chip,screenW,screenH,psramMB,flashMB,
+   capabilities,wifi}`(由 `src/shared/chipCapabilities.ts` 单一数据源派生),驱动沙箱:
+   - `screen.ts`:`ScreenImpl` 分辨率动态(帧缓冲/flush/onFrame 全部经 `this.width/height`);
+   - `periph.ts`:`system.info()` 的 chip/screen/capabilities 按档案返回;
+     `memory().psramFree` 按 psramMB 模拟(0 = 无 PSRAM,恒 0,大分配走内部堆语义);
+   - `net.ts`:`createWifi(log, hasWifi)`,无片上 WiFi(ESP32-P4)时 connect/scan/startAP
+     报 ENOTSUP、status 恒离线;ble 维持 available()===false(真机默认 Kconfig)。
+4. **日志按设备路由**:引擎在 `pixelbox-sim:log` / `pixelbox-sim:state` 的 detail 上附加
+   `SimDeviceTag { deviceKey, deviceName }`(types.ts 末尾追加的可选字段,旧监听方兼容);
+   外壳底部日志按设备下拉(`shellDeviceStore.selectedKey`)过滤。
+5. **外壳数据源**:`shell/store.ts` 的 `deviceProfilesStore`(main 进程
+   `devices.json` 持久化,内置档案「PixelBox S3」不可编辑/删除);
+   `selectedKey` = `'sim:<profileId>'` 或真机 `ip:port`,运行/推送按 key 分流。
+
+仍留给阶段 3:`chip` 目标芯片与固件构建(`idf.py set-target`)联动(标题栏 🔨 当前仍为
+esbuild 应用构建);真机日志流接入底部日志设备下拉。

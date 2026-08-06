@@ -12,7 +12,8 @@ import type {
   PeriphSnapshot,
   TouchEventPayload,
   ButtonEventPayload,
-  CameraFramePayload
+  CameraFramePayload,
+  SimDeviceInit
 } from '../../protocol'
 
 // ---------------------------------------------------------------
@@ -394,7 +395,8 @@ export function createSystem(
   mirror: PeriphMirror,
   deviceId: string,
   screenCtl: { setPower(on: boolean): void },
-  logInfo: (msg: string) => void
+  logInfo: (msg: string) => void,
+  device: SimDeviceInit
 ): Record<string, unknown> {
   const sysEvents = new NamedEmitter()
   let lastLevel = mirror.snapshot.battery.level
@@ -421,28 +423,27 @@ export function createSystem(
       return {
         model: 'pixelbox-sim',
         firmwareVersion: '0.1.0',
-        chip: 'esp32s3-sim',
+        // 芯片型号 = 设备档案(d.ts chip 为 string,可承载新芯片)
+        chip: device.chip,
         deviceId,
-        screen: { width: 368, height: 448 },
+        // 屏幕分辨率 = 设备档案(不再硬编码 368×448)
+        screen: { width: device.screenW, height: device.screenH },
+        // 能力开关来自 chipCapabilities 单一数据源;led 运行期由外设面板覆写
         capabilities: {
-          camera: true,
-          gps: true,
-          ble: false,
-          led: mirror.snapshot.led.available,
-          imu: true,
-          touch: true,
-          battery: true,
-          mic: true,
-          speaker: true
+          ...device.capabilities,
+          led: mirror.snapshot.led.available
         }
       }
     },
     memory(): Record<string, number> {
       // Chromium 专有 performance.memory,存在则映射 JS 堆
       const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+      // psramFree 按档案容量模拟:无 PSRAM(psramMB=0,如 C6/C3)时恒为 0,
+      // 与真机语义一致 —— 大分配(帧缓冲/解码缓冲)回落内部堆,heapFree 相应吃紧
+      const psramTotal = device.psramMB * 1024 * 1024
       return {
         heapFree: 220 * 1024,
-        psramFree: 6 * 1024 * 1024,
+        psramFree: psramTotal > 0 ? Math.floor(psramTotal * 0.75) : 0,
         jsHeapUsed: mem?.usedJSHeapSize ?? 2 * 1024 * 1024
       }
     },

@@ -1,5 +1,6 @@
 /**
- * 编辑器标签栏:多标签切换 / 关闭,未保存显示圆点
+ * 编辑器标签栏(JetBrains 风格:标签栏 #2B2D30,激活标签下缘 2px 蓝条)
+ * 多标签切换 / 关闭,未保存显示圆点,中键关闭
  */
 import { VscClose, VscCircleFilled } from 'react-icons/vsc'
 
@@ -34,15 +35,15 @@ export function EditorTabs({ tabs, activePath, dirtyPaths, onSelect, onClose }: 
                 onClose(tab.path)
               }
             }}
-            className={`group flex cursor-pointer items-center gap-1.5 border-r border-ink-700 px-3 text-sm ${
+            className={`group relative flex cursor-pointer items-center gap-1.5 px-3 text-[13px] ${
               active
-                ? 'bg-ink-900 text-gray-100 shadow-[inset_0_2px_0_0_theme(colors.accent.DEFAULT)]'
-                : 'bg-ink-850 text-gray-400 hover:bg-ink-800 hover:text-gray-200'
+                ? 'bg-ink-900 text-jb-text'
+                : 'bg-ink-850 text-jb-muted hover:bg-ink-800 hover:text-jb-text'
             }`}
           >
             <span className="max-w-[180px] truncate">{tab.name}</span>
             <button
-              className="flex h-4 w-4 items-center justify-center rounded hover:bg-ink-600"
+              className="flex h-4 w-4 items-center justify-center rounded hover:bg-ink-700"
               onClick={(e) => {
                 e.stopPropagation()
                 onClose(tab.path)
@@ -55,6 +56,8 @@ export function EditorTabs({ tabs, activePath, dirtyPaths, onSelect, onClose }: 
               )}
               {dirty && <VscClose className="hidden group-hover:block" />}
             </button>
+            {/* 激活标签下缘 2px 蓝条 */}
+            {active && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
           </div>
         )
       })}

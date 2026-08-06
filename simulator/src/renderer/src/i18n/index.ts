@@ -23,8 +23,13 @@ void i18n.use(initReactI18next).init({
 /** 切换语言并持久化 */
 export function toggleLanguage(): void {
   const next = i18n.language === 'zh-CN' ? 'en' : 'zh-CN'
-  void i18n.changeLanguage(next)
-  localStorage.setItem(STORAGE_KEY, next)
+  setLanguage(next)
+}
+
+/** 设置指定语言并持久化(设置菜单) */
+export function setLanguage(lang: 'zh-CN' | 'en'): void {
+  void i18n.changeLanguage(lang)
+  localStorage.setItem(STORAGE_KEY, lang)
 }
 
 export default i18n

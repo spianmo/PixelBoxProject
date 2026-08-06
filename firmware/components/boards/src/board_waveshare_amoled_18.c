@@ -43,6 +43,8 @@ static const board_display_config_t s_display = {
     .pin_d3 = CONFIG_BOARD_WS18_LCD_D3,
     .pin_reset = BOARD_PIN_NC, /* 复位走 TCA9554, board_init 已释放 */
     .pin_te = BOARD_PIN_NC,
+    .pin_dc = BOARD_PIN_NC,        /* QSPI 无 DC 线 */
+    .pin_backlight = BOARD_PIN_NC, /* AMOLED 无背光, 亮度走面板命令 */
 };
 
 static const board_audio_config_t s_audio = {

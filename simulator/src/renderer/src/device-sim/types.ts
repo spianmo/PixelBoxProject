@@ -82,4 +82,22 @@ export interface SimRunContext {
   workspaceRoot: string
   /** 构建产物 dist/ 绝对路径(/app 只读包来源) */
   outDir: string
+  /**
+   * 【阶段 2 追加,可选】目标虚拟设备档案:
+   * 外壳运行前写入,facade 据此选择/创建对应的引擎实例(多模拟器 tab);
+   * 未提供时回退内置默认档案(PixelBox S3 368×448)
+   */
+  device?: import('../../../shared/ipc-types').DeviceProfile
+}
+
+/**
+ * 【阶段 2 追加】日志/状态事件的设备归属标签(多实例路由)。
+ * 引擎在 'pixelbox-sim:log' / 'pixelbox-sim:state' 的 detail 上附加这些可选字段,
+ * 旧监听方可安全忽略;底部日志工具窗按 deviceKey 路由到设备下拉。
+ */
+export interface SimDeviceTag {
+  /** 外壳设备 key('sim:<profileId>') */
+  deviceKey?: string
+  /** 设备档案显示名 */
+  deviceName?: string
 }

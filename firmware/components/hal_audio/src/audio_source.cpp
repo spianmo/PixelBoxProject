@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "hal_common/px_alloc.h"
 #include "freertos/task.h"
 
 namespace hal_audio {
@@ -17,12 +18,8 @@ namespace hal_audio {
 static const char* TAG = "hal_audio.src";
 
 void* big_alloc(size_t size) {
-    void* p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!p) {
-        // 无 PSRAM 或耗尽时回退内部堆
-        p = heap_caps_malloc(size, MALLOC_CAP_8BIT);
-    }
-    return p;
+    // PSRAM 优先, 无 PSRAM 目标或耗尽时自动落内部堆 (hal_common/px_alloc.h)
+    return px_alloc_prefer_psram(size);
 }
 
 void big_free(void* p) {

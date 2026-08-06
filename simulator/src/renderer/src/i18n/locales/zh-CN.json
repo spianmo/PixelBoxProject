@@ -2,20 +2,100 @@
   "app": {
     "title": "PixelBox 模拟器"
   },
-  "toolbar": {
-    "openWorkspace": "打开工作区",
+  "titlebar": {
+    "project": "项目",
+    "noProject": "未打开工作区",
+    "openWorkspace": "打开工作区…",
+    "recentWorkspaces": "最近工作区",
+    "workspaceGone": "该工作区目录已不存在",
+    "branch": "git 分支",
+    "runOn": "选择运行设备",
+    "chip": "目标芯片",
     "run": "运行",
     "stop": "停止",
+    "buildFirmware": "构建固件",
     "push": "推送到设备",
-    "devices": "选择设备",
+    "more": "更多",
+    "search": "搜索文件",
+    "settings": "设置",
+    "notifications": "通知",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭",
+    "rescanDevices": "重新扫描设备",
+    "simulatorDevice": "PixelBox 模拟器",
+    "virtualDevices": "虚拟设备",
+    "realDevices": "真机(mDNS)",
     "noDevices": "未发现设备",
-    "refreshDevices": "重新扫描",
-    "scanning": "扫描中…",
-    "language": "切换语言"
+    "scanning": "扫描中…"
+  },
+  "rail": {
+    "project": "项目",
+    "devices": "设备管理器",
+    "build": "构建",
+    "logs": "日志",
+    "problems": "问题",
+    "runningDevices": "运行的设备"
+  },
+  "toolwindow": {
+    "hide": "隐藏"
+  },
+  "deviceManager": {
+    "new": "新建模拟器",
+    "newEllipsis": "新建模拟器…",
+    "count": "{{count}} 个档案",
+    "col": {
+      "name": "名称",
+      "chip": "芯片",
+      "screen": "分辨率",
+      "actions": "操作"
+    },
+    "edit": "编辑",
+    "copy": "复制",
+    "delete": "删除",
+    "copySuffix": " 副本",
+    "builtinHint": "内置默认档案:不可编辑或删除(可复制)",
+    "deleteConfirm": "确定删除模拟器「{{name}}」吗?该操作不可撤销。",
+    "created": "已创建模拟器「{{name}}」",
+    "saved": "已保存「{{name}}」",
+    "copied": "已复制「{{name}}」",
+    "deleted": "已删除「{{name}}」",
+    "chipHint": {
+      "p4Hosted": "ESP32-P4 无片上 WiFi/BLE:模拟中 wifi.connect 报 ENOTSUP、ble 不可用;真机需配套 ESP32-C6 hosted 模块"
+    },
+    "wizard": {
+      "title": "新建模拟器",
+      "editTitle": "编辑模拟器",
+      "create": "创建",
+      "defaultName": "新建模拟器",
+      "name": "名称",
+      "namePlaceholder": "模拟器名称",
+      "chip": "芯片",
+      "dualCore": "双核",
+      "screen": "屏幕分辨率",
+      "custom": "自定义…",
+      "screenRangeHint": "范围 {{min}}–{{max}}",
+      "psramNone": "无",
+      "psramUnsupported": "该芯片不支持 PSRAM,已固定为「无」",
+      "note": "备注",
+      "notePlaceholder": "可选说明(硬件形态 / 用途)"
+    },
+    "errors": {
+      "nameRequired": "请输入名称",
+      "chipInvalid": "芯片型号无效",
+      "screenRange": "分辨率必须是 {{min}}–{{max}} 的整数",
+      "psramInvalid": "PSRAM 档位对该芯片无效",
+      "flashInvalid": "Flash 档位无效",
+      "builtinReadonly": "内置档案不可编辑",
+      "builtinUndeletable": "内置档案不可删除",
+      "saveFailed": "保存失败",
+      "deleteFailed": "删除失败"
+    }
   },
   "fileTree": {
     "empty": "尚未打开工作区",
-    "openHint": "点击上方「打开工作区」选择应用项目文件夹",
+    "openHint": "点击「打开工作区」选择应用项目文件夹",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",
     "rename": "重命名",
@@ -27,24 +107,53 @@
     "deleteConfirm": "确定删除 {{name}} 吗?该操作不可撤销。"
   },
   "editor": {
-    "welcome": "打开工作区后,双击左侧文件开始编辑",
+    "welcome": "打开工作区后,双击左侧文件开始编辑(⌘P 快速打开)",
     "unsaved": "未保存",
     "closeDirtyConfirm": "{{name}} 有未保存的修改,确定关闭吗?"
   },
   "console": {
-    "appLog": "应用日志",
-    "buildOutput": "构建输出",
+    "appLog": "日志",
+    "buildOutput": "构建",
     "clear": "清空",
     "empty": "暂无输出"
   },
+  "logs": {
+    "device": "日志来源设备",
+    "filterPlaceholder": "过滤:tag:net level:warn 自由文本",
+    "scrollLock": "滚动锁定(自动滚到底)"
+  },
+  "problems": {
+    "title": "问题",
+    "empty": "没有问题"
+  },
+  "statusbar": {
+    "spaces": "空格: {{count}}",
+    "building": "构建中…",
+    "pushing": "推送中…",
+    "pushingPercent": "推送中 {{percent}}%"
+  },
+  "quickOpen": {
+    "placeholder": "输入文件名进行模糊搜索…",
+    "noWorkspace": "请先打开工作区",
+    "empty": "没有匹配的文件"
+  },
+  "notifications": {
+    "title": "通知",
+    "clear": "清空",
+    "empty": "暂无通知"
+  },
+  "settings": {
+    "language": "语言"
+  },
   "device": {
-    "panelTitle": "设备预览",
-    "simNotReady": "设备模拟引擎尚未接入",
-    "simNotReadyHint": "device-sim 模块实现后将在此渲染 368×448 像素屏与虚拟外设"
+    "noRunning": "无运行中的设备"
   },
   "sim": {
     "running": "运行中",
     "stopped": "未运行",
+    "closeTab": "关闭该模拟器",
+    "noSession": "没有运行中的模拟器",
+    "noSessionHint": "在标题栏选择虚拟设备后点击 ▶ 运行;设备管理器可新建不同分辨率/芯片的档案",
     "micOn": "麦克风",
     "voice": {
       "connecting": "语音·连接中",
@@ -52,6 +161,18 @@
       "thinking": "语音·思考",
       "speaking": "语音·播报"
     },
+    "toolbar": {
+      "power": "停止(电源)",
+      "reload": "重载应用",
+      "screenshot": "截图(保存到下载)",
+      "rotate": "旋转 90°",
+      "volume": "音量开关",
+      "zoomFit": "缩放适应",
+      "zoom100": "100%"
+    },
+    "screenshotSaved": "截图已保存:{{path}}",
+    "screenshotEmpty": "暂无屏幕画面可截图",
+    "screenshotFailed": "截图失败:{{message}}",
     "group": {
       "power": "电源",
       "buttons": "按键",
@@ -72,14 +193,76 @@
   },
   "run": {
     "noWorkspace": "请先打开工作区",
+    "noProfile": "未找到所选虚拟设备档案",
     "buildFailed": "构建失败,详见构建输出",
     "simMissing": "设备模拟引擎未就绪,无法运行",
     "started": "应用已在模拟器中运行",
+    "startedOn": "应用已在「{{name}}」中运行",
     "stopped": "已停止运行",
     "reloaded": "已热重载最新构建"
   },
+  "fw": {
+    "menuGroup": "固件({{chip}})",
+    "menuPackage": "打包 merged.bin",
+    "menuFlash": "烧录…",
+    "menuClean": "清理构建",
+    "cancelTask": "取消固件任务",
+    "kind": {
+      "build": "构建",
+      "merge": "打包",
+      "flash": "烧录",
+      "clean": "清理"
+    },
+    "status": {
+      "build": "构建固件中…",
+      "merge": "打包固件中…",
+      "flash": "烧录中…",
+      "clean": "清理构建中…"
+    },
+    "cancelled": "已取消固件{{kind}}",
+    "failed": "固件{{kind}}失败({{chip}}),详见「构建」输出",
+    "buildDone": "固件构建完成({{chip}}):{{name}} {{size}}",
+    "buildDoneBare": "固件任务完成({{chip}})",
+    "mergeDone": "已生成合并固件:{{path}}({{size}})",
+    "flashDone": "烧录完成({{chip}}),设备已重启运行新固件",
+    "cleanDone": "已清理 {{chip}} 构建目录,下次构建将全量重新配置",
+    "errors": {
+      "busy": "已有固件任务在进行中,请等待完成或先取消",
+      "badTarget": "目标芯片名无效",
+      "badPort": "串口路径无效",
+      "idfNotFound": "未检测到 ESP-IDF:请安装到 ~/esp/esp-idf、设置 $IDF_PATH,或在设置页覆盖路径",
+      "exportMissing": "ESP-IDF 目录缺少 export.sh",
+      "firmwareMissing": "未找到仓库 firmware/ 工程目录",
+      "unsupportedPlatform": "当前平台暂不支持 IDE 内固件构建(需 macOS / Linux)",
+      "startFailed": "固件任务启动失败"
+    },
+    "flashDialog": {
+      "title": "烧录固件({{chip}})",
+      "port": "串口",
+      "baud": "波特率",
+      "scanning": "正在扫描串口…",
+      "noPorts": "未检测到串口设备(持续扫描中…)",
+      "bootHint": "进入下载模式:按住 BOOT 键不放,插入 USB 数据线(或按住 BOOT 时轻点 RESET),再松开 BOOT。请确认使用数据线而非充电线;常见端口名:usbmodem / wchusbserial / SLAB。",
+      "start": "开始烧录"
+    },
+    "settings": {
+      "open": "IDE 设置…",
+      "title": "设置",
+      "groupToolchain": "固件工具链",
+      "idfPath": "ESP-IDF 路径",
+      "idfPathPlaceholder": "留空自动检测($IDF_PATH 或 ~/esp/esp-idf)",
+      "detecting": "正在检测 ESP-IDF…",
+      "detected": "已检测到 ESP-IDF {{version}}:{{path}}",
+      "defaultTarget": "默认目标芯片",
+      "defaultTargetHint": "标题栏芯片下拉的初始值(手动切换后以手选为准)",
+      "baud": "烧录波特率",
+      "save": "保存",
+      "savedOk": "设置已保存(ESP-IDF {{version}})",
+      "savedNoIdf": "设置已保存,但未检测到可用的 ESP-IDF"
+    }
+  },
   "push": {
-    "noDevice": "请先在设备下拉框中选择目标设备",
+    "noDevice": "请先在标题栏设备下拉中选择目标真机",
     "connecting": "正在连接设备…",
     "uploading": "上传中 {{file}}",
     "finalizing": "校验并切换应用…",

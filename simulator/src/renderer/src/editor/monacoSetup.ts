@@ -15,9 +15,53 @@ import pixelboxDts from '../../../../../sdk/types/pixelbox.d.ts?raw'
 
 let initialized = false
 
+/** 自定义主题:对齐 IDE 外壳的 JetBrains dark 色板(编辑器背景 #1E1F22) */
+function definePixelboxTheme(): void {
+  monaco.editor.defineTheme('pixelbox-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      // token 配色贴近 JetBrains Darcula(New UI)
+      { token: 'comment', foreground: '7A7E85' },
+      { token: 'keyword', foreground: 'CF8E6D' },
+      { token: 'string', foreground: '6AAB73' },
+      { token: 'number', foreground: '2AACB8' },
+      { token: 'regexp', foreground: '42C3D4' },
+      { token: 'type.identifier', foreground: 'C77DBB' },
+      { token: 'delimiter', foreground: 'BCBEC4' }
+    ],
+    colors: {
+      'editor.background': '#1E1F22',
+      'editor.foreground': '#DFE1E5',
+      'editorLineNumber.foreground': '#4E5157',
+      'editorLineNumber.activeForeground': '#A1A3AB',
+      'editor.lineHighlightBackground': '#26282E',
+      'editor.selectionBackground': '#2E436E',
+      'editor.inactiveSelectionBackground': '#2E436E66',
+      'editorCursor.foreground': '#CED0D6',
+      'editorIndentGuide.background1': '#313438',
+      'editorIndentGuide.activeBackground1': '#4E5157',
+      'editorWidget.background': '#2B2D30',
+      'editorWidget.border': '#393B40',
+      'editorSuggestWidget.background': '#2B2D30',
+      'editorSuggestWidget.border': '#393B40',
+      'editorSuggestWidget.selectedBackground': '#2E436E',
+      'editorHoverWidget.background': '#2B2D30',
+      'editorHoverWidget.border': '#393B40',
+      'scrollbarSlider.background': '#393B4080',
+      'scrollbarSlider.hoverBackground': '#4B4E54A0',
+      'scrollbarSlider.activeBackground': '#4B4E54C0',
+      'editorGutter.background': '#1E1F22',
+      'minimap.background': '#1E1F22'
+    }
+  })
+}
+
 export function setupMonaco(): void {
   if (initialized) return
   initialized = true
+
+  definePixelboxTheme()
 
   self.MonacoEnvironment = {
     getWorker(_workerId: string, label: string): Worker {
