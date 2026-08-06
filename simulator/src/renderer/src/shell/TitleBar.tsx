@@ -6,7 +6,7 @@
  *   macOS 预留 80px 红绿灯位(main 进程 titleBarStyle: hiddenInset)
  * - 中右区(运行工具组):设备下拉(虚拟 + mDNS 真机分组)| 目标芯片下拉 |
  *   ▶ 运行 | ⏹ 停止 | 🔨 构建固件 | 📤 推送 | ⋮ 更多
- * - 右区:🔍 搜索(Cmd+P)| ⚙ 设置(语言切换)| 🔔 通知 | Win/Linux 窗口控制
+ * - 右区:🔍 搜索(Cmd+P)| ⚙ 设置(语言快捷切换 + IDE 设置独立窗口)| 🔔 通知 | Win/Linux 窗口控制
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -37,7 +37,7 @@ import {
 } from 'react-icons/lu'
 import { VscChromeMaximize, VscChromeRestore, VscLoading } from 'react-icons/vsc'
 import type { FirmwareTaskKind } from '../../../shared/ipc-types'
-import i18n, { setLanguage } from '../i18n'
+import i18n from '../i18n'
 import {
   CHIP_TARGETS,
   chipLabel,
@@ -84,7 +84,7 @@ interface Props {
   onFirmwareClean: () => void
   /** 取消进行中的固件任务(杀进程树) */
   onFirmwareCancel: () => void
-  /** ⚙ 打开 IDE 设置页 */
+  /** ⚙ 菜单「IDE 设置…」→ 打开设置独立窗口(旧页内 SettingsModal 已移除) */
   onOpenSettings: () => void
   onPush: () => void
   onRefreshDevices: () => void
@@ -377,7 +377,7 @@ export function TitleBar(props: Props): React.JSX.Element {
     }
   ]
 
-  // ---- ⚙ 设置(语言切换 + IDE 设置页) ----
+  // ---- ⚙ 设置(语言快捷切换经 SettingsService 落盘;「IDE 设置…」开独立设置窗口) ----
   const settingsItems: DropdownItem[] = [
     {
       key: 'zh-CN',
@@ -385,7 +385,7 @@ export function TitleBar(props: Props): React.JSX.Element {
       icon: <LuLanguages />,
       group: t('settings.language'),
       checked: i18n.language === 'zh-CN',
-      onSelect: () => setLanguage('zh-CN')
+      onSelect: () => void window.api.settingsSetMany({ 'appearance.language': 'zh-CN' })
     },
     {
       key: 'en',
@@ -393,11 +393,11 @@ export function TitleBar(props: Props): React.JSX.Element {
       icon: <LuLanguages />,
       group: t('settings.language'),
       checked: i18n.language === 'en',
-      onSelect: () => setLanguage('en')
+      onSelect: () => void window.api.settingsSetMany({ 'appearance.language': 'en' })
     },
     {
       key: 'ide-settings',
-      label: t('fw.settings.open'),
+      label: t('settings.open'),
       icon: <LuSlidersHorizontal />,
       group: '',
       onSelect: props.onOpenSettings

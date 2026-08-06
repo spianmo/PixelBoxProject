@@ -4,6 +4,7 @@
  */
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
+  AppSettings,
   BuildLogLine,
   BuildResult,
   DevdDevice,
@@ -17,6 +18,9 @@ import type {
   ProjectCreateResult,
   PushProgress,
   SerialPortInfo,
+  SessionStartupInfo,
+  SessionUpdatePayload,
+  SettingsChangedEvent,
   StandaloneToolId,
   TerminalBackend,
   TerminalCreateOptions,
@@ -24,8 +28,7 @@ import type {
   TerminalExitEvent,
   TerminalSessionInfo,
   ToolWindowClosedEvent,
-  ToolchainInfo,
-  ToolchainSettings
+  ToolchainInfo
 } from '../shared/ipc-types'
 import { simApi } from './simApi'
 
@@ -96,9 +99,41 @@ const api = {
   onBuildLog: (cb: (line: BuildLogLine) => void): (() => void) => subscribe('build:log', cb),
   onBuildDone: (cb: (result: BuildResult) => void): (() => void) => subscribe('build:done', cb),
 
+  // ---- IDE 设置(SettingsService,单一 JSON 落盘 + 全窗口广播) ----
+  /** 全量读取设置 */
+  settingsGetAll: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get-all'),
+  /** dot-path 补丁写入(如 {'editor.minimap': false});返回最新全量设置 */
+  settingsSetMany: (patch: Record<string, unknown>): Promise<AppSettings> =>
+    ipcRenderer.invoke('settings:set-many', patch),
+  /** 全量重置为默认值 */
+  settingsReset: (): Promise<AppSettings> => ipcRenderer.invoke('settings:reset'),
+  /** 设置变更广播(全窗口;消费方订阅即时生效) */
+  onSettingsChanged: (cb: (ev: SettingsChangedEvent) => void): (() => void) =>
+    subscribe('settings:changed', cb),
+  /** 打开(或聚焦)IDE 设置独立窗口 */
+  settingsWindowOpen: (): Promise<void> => ipcRenderer.invoke('settings:window-open'),
+  /** 设置窗口:确认后强制关闭(草稿由 renderer 自行丢弃) */
+  settingsWindowClose: (): Promise<void> => ipcRenderer.invoke('settings:window-close'),
+  /** 设置窗口 ✕ 拦截:main 请求 renderer 决定(有未应用修改时弹确认框) */
+  onSettingsCloseRequest: (cb: () => void): (() => void) =>
+    subscribe('settings:close-request', cb),
+
+  // ---- 会话恢复(阶段 2:窗口状态 / 上次工作区 / 编辑器标签) ----
+  /** 启动恢复信息(restore 开关位 + 上次工作区 + 编辑器会话;App 挂载时查询一次) */
+  sessionStartup: (): Promise<SessionStartupInfo> => ipcRenderer.invoke('session:startup'),
+  /** 会话状态去抖推送(fire-and-forget;main 内存即时 + 去抖落盘 + 退出双保险) */
+  sessionUpdate: (payload: SessionUpdatePayload): void =>
+    ipcRenderer.send('session:update', payload),
+  /** 恢复摘要 → 主进程终端日志(前缀 [session-restore],dev 冒烟断言证据) */
+  sessionReport: (text: string): void => ipcRenderer.send('session:report', text),
+  /** 冒烟钩子:main 请求 renderer 打开指定工作区与文件(PIXELBOX_SMOKE_SESSION=1) */
+  onSmokeSessionPrepare: (cb: (payload: { root: string; file: string }) => void): (() => void) =>
+    subscribe('smoke:session-prepare', cb),
+
   // ---- 固件工具链(阶段 3:编译/打包/烧录) ----
-  /** 检测 ESP-IDF 环境(路径 + 版本) */
-  toolchainDetect: (): Promise<ToolchainInfo> => ipcRenderer.invoke('toolchain:detect'),
+  /** 检测 ESP-IDF 环境(路径 + 版本);可传设置窗口草稿路径做不落盘试探 */
+  toolchainDetect: (overridePath?: string): Promise<ToolchainInfo> =>
+    ipcRenderer.invoke('toolchain:detect', overridePath),
   /** 启动固件任务(build/merge/flash/clean);完成经 onFirmwareDone 事件回报 */
   firmwareStart: (opts: {
     kind: FirmwareTaskKind
@@ -112,11 +147,6 @@ const api = {
   firmwareStatus: (): Promise<FirmwareStatus> => ipcRenderer.invoke('toolchain:status'),
   /** 扫描串口设备(烧录对话框轮询) */
   serialPorts: (): Promise<SerialPortInfo[]> => ipcRenderer.invoke('toolchain:ports'),
-  /** 工具链设置读写(IDF 路径覆盖 / 默认目标 / 波特率) */
-  toolchainSettingsGet: (): Promise<ToolchainSettings> =>
-    ipcRenderer.invoke('toolchain:settings-get'),
-  toolchainSettingsSet: (s: ToolchainSettings): Promise<void> =>
-    ipcRenderer.invoke('toolchain:settings-set', s),
   /** 固件任务输出流(批量行,「构建」tab 消费) */
   onFirmwareLog: (cb: (lines: BuildLogLine[]) => void): (() => void) =>
     subscribe('toolchain:log', cb),

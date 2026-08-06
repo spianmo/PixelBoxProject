@@ -12,6 +12,7 @@ import { useSyncExternalStore } from 'react'
 import { createStore, type Store } from '../device-sim/store'
 import type { TerminalBackend, TerminalSessionInfo } from '../../../shared/ipc-types'
 import { createTermInstance, disposeTermInstance, writeToTerm } from './xtermRegistry'
+import { getAppSettings } from '../settings/store'
 
 // ---------------------------------------------------------------
 // 树模型
@@ -128,6 +129,130 @@ function clampRatio(r: number): number {
 }
 
 // ---------------------------------------------------------------
+// 分栏树形状持久化(会话恢复阶段 2:形状还原,会话为新 shell)
+// ---------------------------------------------------------------
+
+const SHAPE_KEY = 'pixelbox-sim.terminal-layout'
+/** 形状防呆上限:组数 / 组内 tab 数 / 树深度 */
+const SHAPE_MAX_GROUPS = 8
+const SHAPE_MAX_TABS = 8
+const SHAPE_MAX_DEPTH = 6
+
+/** 树形状(不含会话 id;叶子只记 tab 数,恢复时逐个新建 shell) */
+type ShapeNode =
+  | { kind: 'split'; dir: 'row' | 'column'; ratio: number; a: ShapeNode; b: ShapeNode }
+  | { kind: 'group'; tabs: number }
+
+function captureShape(node: TermNode): ShapeNode {
+  if (node.kind === 'group') return { kind: 'group', tabs: node.tabs.length }
+  return {
+    kind: 'split',
+    dir: node.dir,
+    ratio: node.ratio,
+    a: captureShape(node.a),
+    b: captureShape(node.b)
+  }
+}
+
+/** 读取并校验持久化形状(损坏 / 超限返回 null) */
+function loadShape(): ShapeNode | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SHAPE_KEY) ?? 'null') as unknown
+    let groups = 0
+    const validate = (n: unknown, depth: number): ShapeNode | null => {
+      if (typeof n !== 'object' || n === null || depth > SHAPE_MAX_DEPTH) return null
+      const o = n as Record<string, unknown>
+      if (o.kind === 'group') {
+        if (++groups > SHAPE_MAX_GROUPS) return null
+        const tabs = typeof o.tabs === 'number' ? Math.floor(o.tabs) : 0
+        if (tabs < 1 || tabs > SHAPE_MAX_TABS) return null
+        return { kind: 'group', tabs }
+      }
+      if (o.kind === 'split' && (o.dir === 'row' || o.dir === 'column')) {
+        const a = validate(o.a, depth + 1)
+        const b = validate(o.b, depth + 1)
+        if (!a || !b) return null
+        const ratio = typeof o.ratio === 'number' ? clampRatio(o.ratio) : 0.5
+        return { kind: 'split', dir: o.dir, ratio, a, b }
+      }
+      return null
+    }
+    return validate(raw, 0)
+  } catch {
+    return null
+  }
+}
+
+/** 形状落盘启用位:恢复/重载对账完成且出现过会话后才写,避免空初值覆盖旧形状 */
+let shapePersistEnabled = false
+let shapeTimer: number | null = null
+
+function persistShapeSoon(): void {
+  if (!shapePersistEnabled) return
+  if (shapeTimer !== null) window.clearTimeout(shapeTimer)
+  shapeTimer = window.setTimeout(() => {
+    shapeTimer = null
+    try {
+      localStorage.setItem(SHAPE_KEY, JSON.stringify(captureShape(terminalStore.get().root)))
+    } catch {
+      // localStorage 不可用:静默
+    }
+  }, 500)
+}
+
+/**
+ * 按持久化形状重建分栏树(每个叶子组新建对应数量的 shell 会话)。
+ * 仅在「恢复上次会话」开启、当前无任何会话、且形状比默认(单组单会话)复杂时执行;
+ * 成功返回 true(调用方不再走默认 newSession)。
+ */
+async function restoreShapeLayout(): Promise<boolean> {
+  if (!getAppSettings().system.restoreSession) return false
+  const shape = loadShape()
+  if (!shape) return false
+  if (shape.kind === 'group' && shape.tabs <= 1) return false // 默认形状:走常规 newSession
+
+  let groupCount = 0
+  let sessionCount = 0
+  const created: Record<string, TerminalSessionInfo> = {}
+
+  const build = async (n: ShapeNode): Promise<TermNode | null> => {
+    if (n.kind === 'group') {
+      const tabs: string[] = []
+      for (let i = 0; i < n.tabs; i++) {
+        try {
+          const info = await window.api.terminalCreate({ cwd: terminalCwd ?? undefined })
+          createTermInstance(info)
+          created[info.id] = info
+          tabs.push(info.id)
+          sessionCount++
+        } catch {
+          // 单个会话创建失败:跳过(组空则由下方拼合)
+        }
+      }
+      if (tabs.length === 0) return null
+      groupCount++
+      return { kind: 'group', id: nextNodeId(), tabs, active: tabs[tabs.length - 1] }
+    }
+    const a = await build(n.a)
+    const b = await build(n.b)
+    if (a && b) return { kind: 'split', id: nextNodeId(), dir: n.dir, ratio: n.ratio, a, b }
+    return a ?? b // 一侧全失败:由兄弟顶替(与运行期拼合语义一致)
+  }
+
+  const root = await build(shape)
+  if (!root || sessionCount === 0) return false
+  const st = terminalStore.get()
+  terminalStore.set({
+    root,
+    sessions: { ...st.sessions, ...created },
+    focusedGroup: firstGroup(root).id,
+    backend: Object.values(created)[0]?.backend ?? st.backend
+  })
+  window.api.sessionReport(`终端布局已还原:${groupCount} 组 / ${sessionCount} 会话(新 shell)`)
+  return true
+}
+
+// ---------------------------------------------------------------
 // 初始化(幂等):事件订阅 + 后端探测 + 重载恢复
 // ---------------------------------------------------------------
 
@@ -144,6 +269,15 @@ export function setTerminalCwd(root: string | null): void {
 export function initTerminals(): void {
   if (initialized) return
   initialized = true
+
+  // 分栏树形状持久化:出现过会话后,任何树变化 500ms 去抖落盘
+  // (启用位防止启动空初值覆盖上次形状;形状不含会话 id,恢复时新建 shell)
+  terminalStore.subscribe(() => {
+    if (!shapePersistEnabled && Object.keys(terminalStore.get().sessions).length > 0) {
+      shapePersistEnabled = true
+    }
+    persistShapeSoon()
+  })
 
   // 输出流(16ms 批量)→ 对应 xterm
   window.api.onTerminalData((chunks) => {
@@ -232,10 +366,12 @@ export function ensureSession(): void {
   if (ensureInFlight) return
   if (Object.keys(terminalStore.get().sessions).length > 0) return
   ensureInFlight = (restorePromise ?? Promise.resolve())
-    .then(() => {
+    .then(async () => {
       // 恢复完成后再判空:独立终端窗口打开时主窗已有会话,不再误建
-      if (Object.keys(terminalStore.get().sessions).length > 0) return undefined
-      return newSession().then(() => undefined)
+      if (Object.keys(terminalStore.get().sessions).length > 0) return
+      // 会话恢复:上次的分栏树形状先于默认单会话还原(会话为新 shell)
+      if (await restoreShapeLayout()) return
+      await newSession()
     })
     .finally(() => {
       ensureInFlight = null

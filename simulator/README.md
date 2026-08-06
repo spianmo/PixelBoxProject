@@ -223,6 +223,52 @@ GUI 手测步骤(完整链路):
 5. 关闭独立窗口(✕ 或工具窗 — 按钮):对应工具窗自动回「停靠固定」;模式按工具窗持久化
    (localStorage),重启 IDE 后除独立窗口外均恢复;主窗关闭时独立窗口级联关闭。
 
+设置窗口 GUI 手测(JetBrains Settings 复刻,独立窗口;无 GUI 自检见 `npm run check:settings`):
+
+1. 标题栏 ⚙(或再次点击即聚焦既有窗口):独立设置窗口约 980×700,左 240px 分类树
+   (圆角搜索框过滤 + 高亮 + 回车跳转,可折叠分类,选中整行蓝底)+ 面包屑与 ←/→ 历史;
+2. 草稿语义:改任意项后「应用」点亮,OK = 应用 + 关窗,Cancel/Esc 丢弃,切页草稿保留,
+   带草稿点 ✕ 弹确认框;界面语言切换在本窗口立即预览(Apply 才落盘广播);
+3. 消费方即时生效(无需重启):编辑器 minimap/字号/Tab/字体族 → Monaco;终端字号 →
+   已开会话;IDF 路径 → 实时检测回显;默认芯片 → 标题栏芯片下拉;快捷键页只读键位表;
+4. 位置/尺寸记忆:挪动/调整设置窗口 → 关闭重开还原(统一 windowState 机制,见下)。
+
+字体手测(Inter + JetBrains Mono,@fontsource 内嵌,离线可用):
+
+1. 断网启动 `npm run dev`:UI 文字(标题栏/菜单/设置表单)为 Inter(数字 1 无衬线平底、
+   R 直腿;中文回退 PingFang SC/微软雅黑,13px 密度不变);
+2. 编辑器打开 .ts 文件:代码为 JetBrains Mono(小写 l 带尾勾、0 内点),
+   设置 › 编辑器 › 字体族清空/改名后仍回退 JetBrains Mono,字号项联动生效;
+3. 终端 xterm、Markdown 预览代码块、底部日志/构建输出同为 JetBrains Mono。
+
+会话恢复手测(启动恢复上次状态;设置 › 系统设置 › 「启动时恢复上次会话」默认开):
+
+1. 打开工作区 + 打开若干文件并滚动/移动光标 → 挪动主窗位置、调整左右栏宽/底部区高、
+   切换底部到终端并拆分若干组 → 正常退出(⌘Q);
+2. 再次 `npm run dev`:主窗回到上次位置尺寸(最大化状态亦还原,越界显示器自动校正),
+   自动重开上次工作区与全部标签(激活标签、滚动与光标位置一致;已删除文件静默跳过),
+   布局(栏宽/开关/底部视图)与终端分栏树形状还原(会话为全新 shell);
+   dev 终端可见 `[session-restore] …` 恢复摘要日志;
+3. 上次工作区被删除后启动:toast 通知「上次的工作区已不存在」并回欢迎页;
+4. 关闭「启动时恢复上次会话」后重启:默认布局 + 欢迎页(不重开工作区/标签/窗口位置);
+5. 无 UI 驱动的冒烟:`PIXELBOX_SMOKE_SESSION=1 npm run dev`(第一轮:自动改窗口位置 +
+   打开 demo 工作区与文件后正常退出)→ `PIXELBOX_SMOKE_SESSION=2 npm run dev`
+   (第二轮:观察 `[session-restore]` 恢复日志后自动退出)。
+
+## 字体与许可致谢
+
+IDE 全局 UI 字体与 JetBrains New UI 一致:**Inter**(UI,400/500/600/700)与
+**JetBrains Mono**(代码/终端/日志/MD 代码块,400/700),经 `@fontsource/inter`、
+`@fontsource/jetbrains-mono` 随包内嵌(woff2 由 vite 打包,完全离线可用),中文回退系统字体
+(PingFang SC / 微软雅黑)。两款字体均以 **SIL Open Font License 1.1(OFL)** 授权:
+
+- Inter — Copyright 2016 The Inter Project Authors(<https://github.com/rsms/inter>)
+- JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors
+  (<https://github.com/JetBrains/JetBrainsMono>)
+
+OFL 允许自由使用/内嵌/再分发(不得单独出售字体本身);完整许可文本见
+`node_modules/@fontsource/inter/LICENSE` 与 `node_modules/@fontsource/jetbrains-mono/LICENSE`。
+
 ## 真机推送
 
 标题栏「推送到设备」:mDNS 扫描 `_pixelbox._tcp` → 设备下拉选择真机 → esbuild 构建 →

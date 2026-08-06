@@ -53,7 +53,6 @@ import { DeviceManagerPanel } from './shell/DeviceManagerPanel'
 import { DeviceWizardHost } from './shell/DeviceWizardModal'
 import { QuickOpen } from './shell/QuickOpen'
 import { FlashDialog } from './shell/FlashDialog'
-import { SettingsModal } from './shell/SettingsModal'
 import { NewProjectModal } from './shell/NewProjectModal'
 import { StructureView } from './editor/StructureView'
 import { MarkdownPreview } from './editor/MarkdownPreview'
@@ -67,8 +66,13 @@ import {
   refreshDeviceProfiles,
   shellDeviceStore
 } from './shell/store'
+import { getAppSettings, subscribeSettings } from './settings/store'
+import { loadMainLayout, saveMainLayout } from './shell/layoutState'
 
 const MAX_LOG_LINES = 2000
+
+/** 启动恢复只跑一次(StrictMode 双挂载 / 热重载防重入) */
+let sessionRestoreStarted = false
 
 /** 左侧工具窗:项目树 / 设备管理器(阶段 2) */
 type LeftTool = 'project' | 'devices' | null
@@ -97,18 +101,22 @@ export default function App(): React.JSX.Element {
   const { t } = useTranslation()
 
   // ---- 布局尺寸 / 工具窗开关 ----
-  const [leftWidth, setLeftWidth] = useState(260)
+  // 初值 = 上次布局(localStorage,「恢复上次会话」关闭时为默认布局;
+  // main.tsx 已等设置镜像就绪,此处同步读取即真实开关值)
+  const initialLayout = useRef(loadMainLayout()).current
+  const [leftWidth, setLeftWidth] = useState(initialLayout.leftWidth)
   // 430 = 368px 屏幕 1x 整数缩放 + 白框与边距(device-sim 需要)
-  const [rightWidth, setRightWidth] = useState(430)
-  const [bottomHeight, setBottomHeight] = useState(220)
-  const [leftTool, setLeftTool] = useState<LeftTool>('project')
-  const [rightOpen, setRightOpen] = useState(true)
-  const [bottomOpen, setBottomOpen] = useState(true)
-  const [bottomTab, setBottomTab] = useState<BottomTab>('logs')
+  const [rightWidth, setRightWidth] = useState(initialLayout.rightWidth)
+  const [bottomHeight, setBottomHeight] = useState(initialLayout.bottomHeight)
+  const [leftTool, setLeftTool] = useState<LeftTool>(initialLayout.leftTool)
+  const [rightOpen, setRightOpen] = useState(initialLayout.rightOpen)
+  const [bottomOpen, setBottomOpen] = useState(initialLayout.bottomOpen)
+  const [bottomTab, setBottomTab] = useState<BottomTab>(initialLayout.bottomTab)
   // 底部区当前视图:日志/构建/问题 窗 ⇄ 终端窗(切换互不销毁,见底部渲染)
-  const [bottomView, setBottomView] = useState<'logs' | 'terminal'>('logs')
-  // 终端窗是否打开过(打开过即保持挂载,隐藏用 CSS,xterm 会话常驻)
-  const [terminalOpened, setTerminalOpened] = useState(false)
+  const [bottomView, setBottomView] = useState<'logs' | 'terminal'>(initialLayout.bottomView)
+  // 终端窗是否打开过(打开过即保持挂载,隐藏用 CSS,xterm 会话常驻;
+  // 上次退出时开着终端则恢复挂载,分栏树形状由 terminal/store.ts 还原)
+  const [terminalOpened, setTerminalOpened] = useState(initialLayout.terminalOpened)
   // 终端浮动面板可见性(视图模式 float 时脱离底部槽位仲裁,可与日志窗同时显示)
   const [termFloatVisible, setTermFloatVisible] = useState(false)
 
@@ -120,8 +128,37 @@ export default function App(): React.JSX.Element {
   const bottomOverlayRef = useRef<HTMLDivElement>(null)
   const [quickOpenVisible, setQuickOpenVisible] = useState(false)
   // 结构视图(左侧面板下分栏;允许只开结构)
-  const [structureOpen, setStructureOpen] = useState(false)
-  const [structTopHeight, setStructTopHeight] = useState(300)
+  const [structureOpen, setStructureOpen] = useState(initialLayout.structureOpen)
+  const [structTopHeight, setStructTopHeight] = useState(initialLayout.structTopHeight)
+
+  // 布局变化 → localStorage 去抖落盘(下次启动经 loadMainLayout 恢复)
+  useEffect(() => {
+    saveMainLayout({
+      leftWidth,
+      rightWidth,
+      bottomHeight,
+      structTopHeight,
+      leftTool,
+      structureOpen,
+      rightOpen,
+      bottomOpen,
+      bottomView,
+      bottomTab,
+      terminalOpened
+    })
+  }, [
+    leftWidth,
+    rightWidth,
+    bottomHeight,
+    structTopHeight,
+    leftTool,
+    structureOpen,
+    rightOpen,
+    bottomOpen,
+    bottomView,
+    bottomTab,
+    terminalOpened
+  ])
 
   // ---- 工作区 / 编辑器 ----
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
@@ -148,10 +185,9 @@ export default function App(): React.JSX.Element {
   const workspaceRootRef = useRef<string | null>(null)
   workspaceRootRef.current = workspaceRoot
 
-  // ---- 固件工具链(阶段 3):任务状态 / 烧录对话框 / 设置页 ----
+  // ---- 固件工具链(阶段 3):任务状态 / 烧录对话框 ----
   const [fwTask, setFwTask] = useState<FirmwareTaskKind | null>(null)
   const [flashOpen, setFlashOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   // 新建项目向导
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   // Markdown 查看模式(仅活动文件为 md 时生效;切文件时从记忆恢复)
@@ -344,16 +380,20 @@ export default function App(): React.JSX.Element {
       .firmwareStatus()
       .then((s) => setFwTask(s.running))
       .catch(() => undefined)
-    // 工具链设置:默认目标芯片(本地无记忆时生效)+ 默认波特率
-    window.api
-      .toolchainSettingsGet()
-      .then((s) => {
-        applyDefaultChip(s.defaultTarget)
-        setDefaultBaud(s.baudRate)
-      })
-      .catch(() => undefined)
     // eslint 无此工程:仅首挂载执行一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // IDE 设置镜像消费(settings:changed 即时生效,无需重启):
+  // 默认目标芯片(标题栏芯片下拉,本地无记忆时生效)+ 烧录默认波特率
+  useEffect(() => {
+    const apply = (): void => {
+      const s = getAppSettings().toolchain
+      applyDefaultChip(s.defaultTarget)
+      setDefaultBaud(s.baudRate)
+    }
+    apply()
+    return subscribeSettings(apply)
   }, [])
 
   // 所有会话都停止(逐 tab 关闭 / 崩溃)后,同步停掉 watch 重建
@@ -363,13 +403,37 @@ export default function App(): React.JSX.Element {
     prevRunningRef.current = running
   }, [running])
 
-  // Cmd/Ctrl+P 快速打开(capture 阶段拦截,避免 Monaco 吃掉按键)
+  // 全局快捷键(capture 阶段拦截,避免 Monaco 吃掉按键;键位表见 设置 › 快捷键):
+  // ⌘/Ctrl+P 快速打开;运行 ⌃R(mac)/ Shift+F10;停止 ⌘F2(mac)/ Ctrl+F2
+  const runShortcutRef = useRef<() => void>(() => {})
+  const stopShortcutRef = useRef<() => void>(() => {})
   useEffect(() => {
+    const isMac = window.api.platform === 'darwin'
     const onKey = (e: KeyboardEvent): void => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
         e.preventDefault()
         e.stopPropagation()
         setQuickOpenVisible((v) => !v)
+        return
+      }
+      // 运行(JetBrains 默认键位):macOS ⌃R;其他平台 ⇧F10
+      const runHit = isMac
+        ? e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'r'
+        : e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'F10'
+      if (runHit) {
+        e.preventDefault()
+        e.stopPropagation()
+        runShortcutRef.current()
+        return
+      }
+      // 停止:macOS ⌘F2;其他平台 Ctrl+F2
+      const stopHit = isMac
+        ? e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'F2'
+        : e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'F2'
+      if (stopHit) {
+        e.preventDefault()
+        e.stopPropagation()
+        stopShortcutRef.current()
       }
     }
     window.addEventListener('keydown', onKey, true)
@@ -425,6 +489,136 @@ export default function App(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tabs, running]
   )
+  // 启动恢复 / 冒烟钩子经 ref 调用(挂载一次的 effect 不依赖其闭包版本)
+  const applyWorkspaceRef = useRef(applyWorkspace)
+  applyWorkspaceRef.current = applyWorkspace
+
+  // ---- 会话恢复:编辑器会话(标签 / 激活 / viewState)去抖推送 main 落盘 ----
+  // main 侧内存即时 + 500ms 去抖写 sessions/,退出时 close/before-quit 双保险同步兜底
+  const sessionReadyRef = useRef(false) // 恢复完成前不推送(避免空初值覆盖上次会话)
+  const sessionSaveTimerRef = useRef<number | null>(null)
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const activePathValRef = useRef(activePath)
+  activePathValRef.current = activePath
+
+  const pushSessionUpdate = useCallback((): void => {
+    const root = workspaceRootRef.current
+    if (!root) {
+      window.api.sessionUpdate({ workspaceRoot: null }) // 欢迎页:启动不再恢复工作区
+      return
+    }
+    window.api.sessionUpdate({
+      workspaceRoot: root,
+      session: {
+        root,
+        // 脏文件内容不落盘(以保存过的为准),只记路径与 viewState(滚动/光标)
+        tabs: tabsRef.current.map((tb) => ({
+          path: tb.path,
+          viewState: editorRef.current?.getViewState(tb.path) ?? null
+        })),
+        activePath: activePathValRef.current,
+        savedAt: Date.now()
+      }
+    })
+  }, [])
+
+  const scheduleSessionSave = useCallback((): void => {
+    if (!sessionReadyRef.current) return
+    if (sessionSaveTimerRef.current !== null) window.clearTimeout(sessionSaveTimerRef.current)
+    sessionSaveTimerRef.current = window.setTimeout(() => {
+      sessionSaveTimerRef.current = null
+      pushSessionUpdate()
+    }, 600)
+  }, [pushSessionUpdate])
+
+  // 标签 / 激活 / 工作区 / 光标变化 → 去抖推送(滚动经 EditorHost onViewStateChange)
+  useEffect(() => {
+    scheduleSessionSave()
+  }, [tabs, activePath, workspaceRoot, cursor, scheduleSessionSave])
+
+  // ---- 会话恢复:启动时重开上次工作区 + 编辑器标签(受「恢复上次会话」开关控制) ----
+  useEffect(() => {
+    if (sessionRestoreStarted) return
+    sessionRestoreStarted = true
+    void (async () => {
+      try {
+        const info = await window.api.sessionStartup()
+        if (!info.restore) {
+          window.api.sessionReport('恢复未启用(设置关闭)→ 默认布局欢迎页')
+          return
+        }
+        if (info.lastWorkspaceMissing) {
+          showToast(t('session.workspaceGone'), 'warn')
+          window.api.sessionReport('上次工作区已不存在 → 欢迎页(已通知)')
+          return
+        }
+        if (!info.lastWorkspace) {
+          window.api.sessionReport('无上次工作区记录 → 欢迎页')
+          return
+        }
+        // 计入最近列表 + 二次存在性校验(与手动打开同链路)
+        const root = await window.api.openWorkspacePath(info.lastWorkspace)
+        if (!root) {
+          showToast(t('session.workspaceGone'), 'warn')
+          window.api.sessionReport('上次工作区已不存在 → 欢迎页(已通知)')
+          return
+        }
+        await applyWorkspaceRef.current(root)
+        let opened = 0
+        let skipped = 0
+        const restoredTabs: TabInfo[] = []
+        for (const tab of info.session?.tabs ?? []) {
+          try {
+            await editorRef.current?.openFile(tab.path)
+            if (tab.viewState) editorRef.current?.restoreViewState(tab.path, tab.viewState)
+            restoredTabs.push({ path: tab.path, name: baseName(tab.path) })
+            opened++
+          } catch {
+            skipped++ // 文件已删除:静默跳过
+          }
+        }
+        let active: string | null = null
+        if (restoredTabs.length > 0) {
+          setTabs(restoredTabs)
+          const wanted = info.session?.activePath
+          active =
+            wanted && restoredTabs.some((tb) => tb.path === wanted)
+              ? wanted
+              : restoredTabs[restoredTabs.length - 1].path
+          setActivePath(active)
+          editorRef.current?.setActive(active)
+        }
+        window.api.sessionReport(
+          `已恢复工作区 ${root}:标签 ${opened} 个(缺失跳过 ${skipped}),激活 ${active ? baseName(active) : '(无)'}`
+        )
+      } catch (err) {
+        window.api.sessionReport(
+          `恢复失败(回欢迎页):${err instanceof Error ? err.message : String(err)}`
+        )
+      } finally {
+        sessionReadyRef.current = true // 恢复流程结束后才开始记录新会话
+      }
+    })()
+    // eslint 无此工程:仅首挂载执行一次(模块级 sessionRestoreStarted 防重入)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 冒烟钩子(PIXELBOX_SMOKE_SESSION=1):main 请求打开指定工作区与文件,
+  // 走与用户操作完全相同的链路(openWorkspacePath → applyWorkspace → openFile)
+  useEffect(() => {
+    return window.api.onSmokeSessionPrepare(({ root, file }) => {
+      void (async () => {
+        const r = await window.api.openWorkspacePath(root)
+        if (!r) return
+        await applyWorkspaceRef.current(r)
+        handleOpenFile(file)
+        window.api.sessionReport(`冒烟准备:已打开工作区 ${r} 与文件 ${file}`)
+      })()
+    })
+    // eslint 无此工程:handleOpenFile 为稳定 useCallback,仅首挂载订阅一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleOpenWorkspace(): Promise<void> {
     const root = await window.api.openWorkspace()
@@ -549,14 +743,9 @@ export default function App(): React.JSX.Element {
     [t, openBottomTab]
   )
 
-  /** 烧录…:先刷新默认波特率再打开端口选择对话框 */
-  async function handleFirmwareFlashOpen(): Promise<void> {
-    try {
-      const s = await window.api.toolchainSettingsGet()
-      setDefaultBaud(s.baudRate)
-    } catch {
-      // 读取失败沿用当前默认值
-    }
+  /** 烧录…:先按设置镜像刷新默认波特率再打开端口选择对话框 */
+  function handleFirmwareFlashOpen(): void {
+    setDefaultBaud(getAppSettings().toolchain.baudRate)
     setFlashOpen(true)
   }
 
@@ -620,6 +809,14 @@ export default function App(): React.JSX.Element {
     window.__pixelboxSim?.stop() // 停止全部会话(逐 tab 的 ✕ 只关单个)
     void window.api.buildWatchStop()
     showToast(t('run.stopped'), 'info')
+  }
+
+  // 快捷键 → 动作(经 ref 桥接:capture 监听器仅挂载一次;禁用态与标题栏按钮一致)
+  runShortcutRef.current = () => {
+    if (busy !== 'build') void handleRun()
+  }
+  stopShortcutRef.current = () => {
+    if (running) handleStop()
   }
 
   async function handlePush(): Promise<void> {
@@ -943,10 +1140,10 @@ export default function App(): React.JSX.Element {
         onStop={handleStop}
         onFirmwareBuild={() => void startFirmwareTask('build')}
         onFirmwarePackage={() => void startFirmwareTask('merge')}
-        onFirmwareFlash={() => void handleFirmwareFlashOpen()}
+        onFirmwareFlash={handleFirmwareFlashOpen}
         onFirmwareClean={() => void startFirmwareTask('clean')}
         onFirmwareCancel={handleFirmwareCancel}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => void window.api.settingsWindowOpen()}
         onPush={() => void handlePush()}
         onRefreshDevices={() => void refreshDevices()}
         onQuickOpen={() => setQuickOpenVisible(true)}
@@ -1027,7 +1224,12 @@ export default function App(): React.JSX.Element {
               <div className="relative flex min-h-0 flex-1">
                 {/* 预览模式:编辑器隐藏但保持挂载(monaco 实例/模型不销毁) */}
                 <div className={`h-full min-w-0 ${isMdFile && mdMode === 'preview' ? 'hidden' : 'flex-1'}`}>
-                  <EditorHost ref={editorRef} onDirtyChange={handleDirtyChange} onCursorChange={(line, column) => setCursor({ line, column })} />
+                  <EditorHost
+                    ref={editorRef}
+                    onDirtyChange={handleDirtyChange}
+                    onCursorChange={(line, column) => setCursor({ line, column })}
+                    onViewStateChange={scheduleSessionSave}
+                  />
                 </div>
                 {isMdFile && activePath && mdMode !== 'edit' && (
                   <>
@@ -1188,8 +1390,7 @@ export default function App(): React.JSX.Element {
         />
       )}
 
-      {/* IDE 设置页(编辑器 minimap / IDF 路径覆盖 / 默认目标 / 波特率) */}
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {/* IDE 设置已迁移到独立设置窗口(?window=settings,main/settingsWindow.ts) */}
 
       {/* 新建项目向导(标题栏项目下拉「新建项目…」触发) */}
       {newProjectOpen && (

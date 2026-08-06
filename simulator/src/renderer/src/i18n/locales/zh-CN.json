@@ -138,6 +138,9 @@
     "unsaved": "未保存",
     "closeDirtyConfirm": "{{name}} 有未保存的修改,确定关闭吗?"
   },
+  "session": {
+    "workspaceGone": "上次的工作区已不存在,已返回欢迎页"
+  },
   "console": {
     "appLog": "日志",
     "buildOutput": "构建",
@@ -177,10 +180,72 @@
     }
   },
   "settings": {
+    "title": "设置",
+    "open": "IDE 设置…",
     "language": "语言",
-    "groupEditor": "编辑器",
     "minimap": "代码缩略图",
-    "minimapHint": "显示 minimap(色块模式,保存后即时生效)"
+    "minimapHint": "显示 minimap(色块模式,应用后即时生效)",
+    "searchPlaceholder": "搜索设置",
+    "back": "后退",
+    "forward": "前进",
+    "apply": "应用",
+    "discardConfirm": "存在未应用的修改,确定丢弃并关闭吗?",
+    "pageMissing": "未找到设置页",
+    "cat": {
+      "appearanceBehavior": "外观与行为",
+      "tools": "工具"
+    },
+    "page": {
+      "appearance": "外观",
+      "system": "系统设置",
+      "editor": "编辑器",
+      "toolchain": "固件工具链",
+      "terminal": "终端",
+      "keymap": "快捷键"
+    },
+    "appearance": {
+      "sectionUi": "界面",
+      "language": "界面语言",
+      "languageHint": "选择后本窗口立即预览;点击「应用」或「确定」后全窗口生效并保存",
+      "theme": "主题",
+      "themeDark": "深色",
+      "themeLight": "亮色(规划中)",
+      "themeHint": "亮色主题规划中,当前仅提供深色"
+    },
+    "system": {
+      "sectionStartup": "启动与退出",
+      "restoreSession": "启动时恢复上次会话(工作区 / 标签 / 窗口)",
+      "restoreSessionHint": "重新打开上次的工作区、编辑器标签与窗口布局(阶段 2 生效,当前先记录)",
+      "quitOnClose": "关闭主窗口时退出应用",
+      "quitOnCloseHint": "macOS 默认关闭窗口后应用驻留 Dock;勾选后关闭主窗口即完全退出"
+    },
+    "editor": {
+      "sectionDisplay": "显示",
+      "sectionFont": "字体",
+      "fontSize": "字号",
+      "tabSize": "Tab 宽度",
+      "fontFamily": "编辑器字体族",
+      "fontFamilyHint": "默认 JetBrains Mono;自定义字体文件将在阶段 2 引入后本地生效"
+    },
+    "terminal": {
+      "shellOverride": "Shell 路径",
+      "shellOverridePlaceholder": "留空使用系统默认($SHELL)",
+      "shellOverrideHint": "仅对新建会话生效;路径不存在时回退系统默认",
+      "fontSize": "终端字号",
+      "fontSizeHint": "对全部已打开会话即时生效"
+    },
+    "keymap": {
+      "readonlyHint": "键位表当前为只读(自定义快捷键规划中)",
+      "colAction": "操作",
+      "colKeys": "快捷键",
+      "quickOpen": "快速打开文件",
+      "save": "保存当前文件",
+      "run": "运行",
+      "stop": "停止",
+      "terminalClear": "终端清屏",
+      "terminalSearch": "终端搜索",
+      "escape": "关闭弹层 / 搜索条 / 取消设置窗口"
+    }
   },
   "newProject": {
     "title": "新建项目",
@@ -322,8 +387,6 @@
       "start": "开始烧录"
     },
     "settings": {
-      "open": "IDE 设置…",
-      "title": "设置",
       "groupToolchain": "固件工具链",
       "idfPath": "ESP-IDF 路径",
       "idfPathPlaceholder": "留空自动检测($IDF_PATH 或 ~/esp/esp-idf)",
@@ -331,10 +394,7 @@
       "detected": "已检测到 ESP-IDF {{version}}:{{path}}",
       "defaultTarget": "默认目标芯片",
       "defaultTargetHint": "标题栏芯片下拉的初始值(手动切换后以手选为准)",
-      "baud": "烧录波特率",
-      "save": "保存",
-      "savedOk": "设置已保存(ESP-IDF {{version}})",
-      "savedNoIdf": "设置已保存,但未检测到可用的 ESP-IDF"
+      "baud": "烧录波特率"
     }
   },
   "push": {

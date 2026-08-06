@@ -12,7 +12,8 @@
  *   合成单文件 firmware/dist/<target>-merged.bin
  * - 烧录:`idf.py -B <dir> -p <port> -b <baud> flash`;串口扫描(usbmodem/wchusbserial/SLAB)
  * - 全程 stdout/stderr 流式经 IPC(toolchain:log)到「构建」tab;可取消(杀进程组)
- * - 设置持久化:userData/pixelbox-sim/toolchain.json(IDF 路径覆盖/默认目标/波特率)
+ * - 设置来源:SettingsService(settings.json 的 toolchain 段;旧 toolchain.json
+ *   已由 SettingsService 首启迁移并标记弃用),变更即时生效无需重启
  */
 import { app, ipcMain, BrowserWindow } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -30,42 +31,11 @@ import type {
   ToolchainInfo,
   ToolchainSettings
 } from '../shared/ipc-types'
+import { getSettings } from './settings'
 
-// ---------------------------------------------------------------
-// 设置持久化
-// ---------------------------------------------------------------
-
-const DEFAULT_SETTINGS: ToolchainSettings = {
-  idfPathOverride: '',
-  defaultTarget: 'esp32s3',
-  baudRate: 460800
-}
-
-function settingsFile(): string {
-  return join(app.getPath('userData'), 'pixelbox-sim', 'toolchain.json')
-}
-
+/** 工具链设置(SettingsService 的 toolchain 段) */
 async function loadSettings(): Promise<ToolchainSettings> {
-  try {
-    const raw = JSON.parse(await fsp.readFile(settingsFile(), 'utf8')) as Partial<ToolchainSettings>
-    return {
-      idfPathOverride: typeof raw.idfPathOverride === 'string' ? raw.idfPathOverride : '',
-      defaultTarget:
-        typeof raw.defaultTarget === 'string' && raw.defaultTarget.length > 0
-          ? raw.defaultTarget
-          : DEFAULT_SETTINGS.defaultTarget,
-      baudRate:
-        typeof raw.baudRate === 'number' && raw.baudRate >= 9600 ? raw.baudRate : DEFAULT_SETTINGS.baudRate
-    }
-  } catch {
-    return { ...DEFAULT_SETTINGS } // 缺失/损坏回退默认
-  }
-}
-
-async function saveSettings(s: ToolchainSettings): Promise<void> {
-  const file = settingsFile()
-  await fsp.mkdir(dirname(file), { recursive: true })
-  await fsp.writeFile(file, JSON.stringify(s, null, 2), 'utf8')
+  return (await getSettings()).toolchain
 }
 
 // ---------------------------------------------------------------
@@ -120,8 +90,12 @@ async function findPythonEnv(version: string | null): Promise<string | null> {
   }
 }
 
-/** 检测 ESP-IDF 环境(设置覆盖 > $IDF_PATH > ~/esp/esp-idf) */
-export async function detectToolchain(): Promise<ToolchainInfo> {
+/**
+ * 检测 ESP-IDF 环境(设置覆盖 > $IDF_PATH > ~/esp/esp-idf)。
+ * overridePath:设置窗口草稿路径实时检测用 —— 传入(含空串)时替代持久化覆盖值,
+ * 不落盘;undefined 时用已保存设置。
+ */
+export async function detectToolchain(overridePath?: string): Promise<ToolchainInfo> {
   const fw = firmwareDir()
   const base: Omit<ToolchainInfo, 'ok' | 'error'> = {
     idfPath: '',
@@ -134,7 +108,7 @@ export async function detectToolchain(): Promise<ToolchainInfo> {
   }
   const settings = await loadSettings()
   const candidates = [
-    settings.idfPathOverride,
+    overridePath !== undefined ? overridePath.trim() : settings.idfPathOverride,
     process.env.IDF_PATH ?? '',
     join(homedir(), 'esp', 'esp-idf')
   ].filter((p) => p.length > 0)
@@ -499,8 +473,12 @@ export async function scanSerialPorts(): Promise<SerialPortInfo[]> {
 // ---------------------------------------------------------------
 
 export function registerToolchainIpc(): void {
-  // 环境检测(设置页「检测」按钮 / 构建前预检)
-  ipcMain.handle('toolchain:detect', async (): Promise<ToolchainInfo> => detectToolchain())
+  // 环境检测(设置页实时回显 / 构建前预检);可传草稿覆盖路径做不落盘试探
+  ipcMain.handle(
+    'toolchain:detect',
+    async (_e, overridePath?: string): Promise<ToolchainInfo> =>
+      detectToolchain(typeof overridePath === 'string' ? overridePath : undefined)
+  )
 
   // 启动任务(构建/打包/烧录/清理);完成经 toolchain:done 事件回报
   ipcMain.handle('toolchain:start', async (_e, opts: StartTaskOptions): Promise<void> => {
@@ -517,16 +495,7 @@ export function registerToolchainIpc(): void {
 
   // 串口扫描(烧录对话框轮询刷新)
   ipcMain.handle('toolchain:ports', async (): Promise<SerialPortInfo[]> => scanSerialPorts())
-
-  // 设置读写
-  ipcMain.handle('toolchain:settings-get', async (): Promise<ToolchainSettings> => loadSettings())
-  ipcMain.handle('toolchain:settings-set', async (_e, s: ToolchainSettings): Promise<void> => {
-    await saveSettings({
-      idfPathOverride: String(s.idfPathOverride ?? '').trim(),
-      defaultTarget: String(s.defaultTarget ?? DEFAULT_SETTINGS.defaultTarget),
-      baudRate: Number(s.baudRate) >= 9600 ? Number(s.baudRate) : DEFAULT_SETTINGS.baudRate
-    })
-  })
+  // 设置读写已收敛到 SettingsService(settings:get-all / settings:set-many)
 }
 
 /** 退出前兜底:不留后台构建进程 */

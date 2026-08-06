@@ -138,6 +138,9 @@
     "unsaved": "Unsaved",
     "closeDirtyConfirm": "{{name}} has unsaved changes. Close anyway?"
   },
+  "session": {
+    "workspaceGone": "The last workspace no longer exists. Returned to the welcome screen."
+  },
   "console": {
     "appLog": "Logs",
     "buildOutput": "Build",
@@ -177,10 +180,72 @@
     }
   },
   "settings": {
+    "title": "Settings",
+    "open": "IDE Settings…",
     "language": "Language",
-    "groupEditor": "Editor",
     "minimap": "Minimap",
-    "minimapHint": "Show the code minimap (block mode; applies right after saving)"
+    "minimapHint": "Show the code minimap (block mode; applies right after Apply)",
+    "searchPlaceholder": "Search settings",
+    "back": "Back",
+    "forward": "Forward",
+    "apply": "Apply",
+    "discardConfirm": "There are unapplied changes. Discard them and close?",
+    "pageMissing": "Settings page not found",
+    "cat": {
+      "appearanceBehavior": "Appearance & Behavior",
+      "tools": "Tools"
+    },
+    "page": {
+      "appearance": "Appearance",
+      "system": "System Settings",
+      "editor": "Editor",
+      "toolchain": "Firmware Toolchain",
+      "terminal": "Terminal",
+      "keymap": "Keymap"
+    },
+    "appearance": {
+      "sectionUi": "UI",
+      "language": "UI language",
+      "languageHint": "Previews immediately in this window; applies everywhere and persists after Apply / OK",
+      "theme": "Theme",
+      "themeDark": "Dark",
+      "themeLight": "Light (planned)",
+      "themeHint": "Light theme is planned; only Dark is available for now"
+    },
+    "system": {
+      "sectionStartup": "Startup & Exit",
+      "restoreSession": "Restore last session on startup (workspace / tabs / windows)",
+      "restoreSessionHint": "Reopen the last workspace, editor tabs and window layout (takes effect in phase 2; recorded for now)",
+      "quitOnClose": "Quit the app when the main window closes",
+      "quitOnCloseHint": "On macOS the app stays in the Dock by default; check to fully quit on close"
+    },
+    "editor": {
+      "sectionDisplay": "Display",
+      "sectionFont": "Font",
+      "fontSize": "Font size",
+      "tabSize": "Tab width",
+      "fontFamily": "Editor font family",
+      "fontFamilyHint": "Defaults to JetBrains Mono; custom font files take local effect once bundled in phase 2"
+    },
+    "terminal": {
+      "shellOverride": "Shell path",
+      "shellOverridePlaceholder": "Leave empty to use the system default ($SHELL)",
+      "shellOverrideHint": "Applies to new sessions only; falls back to the system default if the path does not exist",
+      "fontSize": "Terminal font size",
+      "fontSizeHint": "Applies immediately to all open sessions"
+    },
+    "keymap": {
+      "readonlyHint": "The keymap is read-only for now (custom shortcuts are planned)",
+      "colAction": "Action",
+      "colKeys": "Shortcut",
+      "quickOpen": "Quick open file",
+      "save": "Save current file",
+      "run": "Run",
+      "stop": "Stop",
+      "terminalClear": "Clear terminal",
+      "terminalSearch": "Search in terminal",
+      "escape": "Close popup / search bar / cancel settings window"
+    }
   },
   "newProject": {
     "title": "New Project",
@@ -322,8 +387,6 @@
       "start": "Start Flashing"
     },
     "settings": {
-      "open": "IDE Settings…",
-      "title": "Settings",
       "groupToolchain": "Firmware toolchain",
       "idfPath": "ESP-IDF path",
       "idfPathPlaceholder": "Leave empty to auto-detect ($IDF_PATH or ~/esp/esp-idf)",
@@ -331,10 +394,7 @@
       "detected": "Detected ESP-IDF {{version}}: {{path}}",
       "defaultTarget": "Default target chip",
       "defaultTargetHint": "Initial value of the title-bar chip dropdown (manual choice wins afterwards)",
-      "baud": "Flash baud rate",
-      "save": "Save",
-      "savedOk": "Settings saved (ESP-IDF {{version}})",
-      "savedNoIdf": "Settings saved, but no usable ESP-IDF was detected"
+      "baud": "Flash baud rate"
     }
   },
   "push": {

@@ -30,6 +30,22 @@ module.exports = {
         }
       },
       fontFamily: {
+        // UI 字体:Inter 优先(JetBrains New UI 同款,@fontsource 离线内嵌),
+        // 中文回退系统字体(PingFang SC / 微软雅黑);全局 13px 密度见 assets/main.css
+        sans: [
+          'Inter',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'system-ui',
+          '"Segoe UI"',
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          '"Microsoft YaHei"',
+          '"Helvetica Neue"',
+          'Arial',
+          'sans-serif'
+        ],
+        // 代码字体:JetBrains Mono(@fontsource 离线内嵌;Monaco/xterm/MD 代码块/日志同链)
         mono: ['"JetBrains Mono"', '"SF Mono"', 'Menlo', 'Consolas', '"Courier New"', 'monospace']
       }
     }

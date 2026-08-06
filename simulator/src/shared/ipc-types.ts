@@ -148,7 +148,7 @@ export interface SerialPortInfo {
   label: string
 }
 
-/** 工具链设置(userData/pixelbox-sim/toolchain.json 持久化) */
+/** 工具链设置(settings.json 的 toolchain 段;旧 toolchain.json 已迁移弃用) */
 export interface ToolchainSettings {
   /** ESP-IDF 路径覆盖(空串 = 自动检测 $IDF_PATH / ~/esp/esp-idf) */
   idfPathOverride: string
@@ -156,6 +156,109 @@ export interface ToolchainSettings {
   defaultTarget: string
   /** 烧录串口波特率 */
   baudRate: number
+}
+
+// ---------------------------------------------------------------
+// IDE 设置(SettingsService,userData/pixelbox-sim/settings.json 单一落盘)
+// ---------------------------------------------------------------
+
+/** 界面语言 */
+export type UiLanguage = 'zh-CN' | 'en'
+
+/**
+ * 全量 IDE 设置(类型化 schema;默认值与逐项校验见 shared/settingsSchema.ts)。
+ * 读写走 dot-path 补丁(如 'editor.fontSize'),新增设置项在 settingsSchema.ts
+ * 登记默认值 + 校验器即可,IPC/落盘/广播框架零改动。
+ */
+export interface AppSettings {
+  /** 外观与行为 › 外观 */
+  appearance: {
+    /** 界面语言(设置窗口内立即预览,Apply 落盘) */
+    language: UiLanguage
+    /** 主题(当前仅深色;亮色规划中) */
+    theme: 'dark'
+  }
+  /** 外观与行为 › 系统设置 */
+  system: {
+    /** 启动时恢复上次会话(工作区/标签/窗口;阶段 2 消费) */
+    restoreSession: boolean
+    /** 关闭主窗口时退出应用(macOS 默认驻留 Dock) */
+    quitOnMainWindowClose: boolean
+  }
+  /** 编辑器(Monaco) */
+  editor: {
+    /** 代码缩略图 */
+    minimap: boolean
+    /** 字号 12-20 */
+    fontSize: number
+    /** Tab 宽度 2/4 */
+    tabSize: number
+    /** 编辑器字体族(默认 JetBrains Mono;字体文件阶段 2 引入) */
+    fontFamily: string
+  }
+  /** 工具 › 固件工具链(迁移自旧 toolchain.json,能力等价) */
+  toolchain: ToolchainSettings
+  /** 工具 › 终端 */
+  terminal: {
+    /** shell 覆盖(空串 = $SHELL;仅对新建会话生效) */
+    shellOverride: string
+    /** 终端字号(对已打开会话即时生效) */
+    fontSize: number
+  }
+}
+
+/** settings:changed 全窗口广播事件 */
+export interface SettingsChangedEvent {
+  /** 变更后的全量设置 */
+  settings: AppSettings
+  /** 实际发生变化的 dot-path 键(如 'editor.minimap') */
+  changedKeys: string[]
+}
+
+// ---------------------------------------------------------------
+// 会话恢复(阶段 2:窗口状态 / 上次工作区 / 编辑器标签;受 system.restoreSession 控制)
+// ---------------------------------------------------------------
+
+/** 编辑器会话中的一个标签(viewState = Monaco saveViewState() 的 JSON 序列化,滚动/光标) */
+export interface SessionTab {
+  /** 文件绝对路径(恢复时已删除的文件静默跳过) */
+  path: string
+  viewState: unknown | null
+}
+
+/**
+ * 按工作区持久化的编辑器会话(userData/pixelbox-sim/sessions/ws-<hash>.json)。
+ * 脏文件内容不落盘(以最后保存到磁盘的内容为准),只记打开的标签与视图状态。
+ */
+export interface WorkspaceSession {
+  /** 工作区根(绝对路径) */
+  root: string
+  /** 打开的标签(有序) */
+  tabs: SessionTab[]
+  /** 激活标签路径(无则 null) */
+  activePath: string | null
+  /** 落盘时间(Unix 毫秒) */
+  savedAt: number
+}
+
+/** session:update 载荷(renderer 去抖推送;main 内存即时 + 去抖落盘 + 退出双保险) */
+export interface SessionUpdatePayload {
+  /** 当前工作区根(null = 欢迎页,启动不再恢复工作区) */
+  workspaceRoot: string | null
+  /** 当前工作区的编辑器会话(workspaceRoot 非空时携带) */
+  session?: WorkspaceSession
+}
+
+/** 启动恢复信息(session:startup;renderer 据此恢复上次会话或回欢迎页) */
+export interface SessionStartupInfo {
+  /** 设置「启动时恢复上次会话」当前值(false = 回默认布局欢迎页) */
+  restore: boolean
+  /** 上次工作区根(目录仍存在);无记录或已不存在为 null */
+  lastWorkspace: string | null
+  /** 有记录但目录已不存在(renderer 通知用户后回欢迎页) */
+  lastWorkspaceMissing: boolean
+  /** 上次工作区的编辑器会话(无则 null) */
+  session: WorkspaceSession | null
 }
 
 // ---------------------------------------------------------------

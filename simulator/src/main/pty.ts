@@ -23,6 +23,7 @@ import type {
   TerminalExitEvent,
   TerminalSessionInfo
 } from '../shared/ipc-types'
+import { getSettings } from './settings'
 
 // ---------------------------------------------------------------
 // node-pty 运行时探测(加载失败 → pipe 兜底)
@@ -79,9 +80,13 @@ function currentBackend(): TerminalBackend {
 // 会话管理
 // ---------------------------------------------------------------
 
-/** 用户默认 shell(POSIX:$SHELL;缺省 zsh/bash;Windows 直接用 COMSPEC) */
-function defaultShell(): string {
+/**
+ * 会话 shell 解析:设置覆盖(工具 › 终端,仅对新建会话生效)> $SHELL > zsh/bash;
+ * 覆盖路径不存在时静默回退系统默认(Windows 直接用 COMSPEC)
+ */
+function defaultShell(override: string): string {
   if (process.platform === 'win32') return process.env.COMSPEC ?? 'cmd.exe'
+  if (override.length > 0 && existsSync(override)) return override
   const sh = process.env.SHELL
   if (sh && existsSync(sh)) return sh
   return existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash'
@@ -266,19 +271,23 @@ function createPipeSession(
 
 export function registerTerminalIpc(): void {
   // 新建会话:pty 优先,失败回退 pipe(逐会话探测,状态在返回值 backend 中)
-  ipcMain.handle('terminal:create', (_e, opts?: TerminalCreateOptions): TerminalSessionInfo => {
-    const shell = defaultShell()
-    const cwd = opts?.cwd && existsSync(opts.cwd) ? opts.cwd : homedir()
-    const cols = opts?.cols && opts.cols > 1 ? Math.floor(opts.cols) : 80
-    const rows = opts?.rows && opts.rows > 0 ? Math.floor(opts.rows) : 24
-    const id = `term-${++idSeq}`
-    const { num, name } = allocName()
-    const session =
-      createPtySession(id, name, num, shell, cwd, cols, rows) ??
-      createPipeSession(id, name, num, shell, cwd)
-    sessions.set(id, session)
-    return session.info
-  })
+  ipcMain.handle(
+    'terminal:create',
+    async (_e, opts?: TerminalCreateOptions): Promise<TerminalSessionInfo> => {
+      // shell 覆盖来自设置(工具 › 终端);settings:changed 后的新会话即用新值
+      const shell = defaultShell((await getSettings()).terminal.shellOverride)
+      const cwd = opts?.cwd && existsSync(opts.cwd) ? opts.cwd : homedir()
+      const cols = opts?.cols && opts.cols > 1 ? Math.floor(opts.cols) : 80
+      const rows = opts?.rows && opts.rows > 0 ? Math.floor(opts.rows) : 24
+      const id = `term-${++idSeq}`
+      const { num, name } = allocName()
+      const session =
+        createPtySession(id, name, num, shell, cwd, cols, rows) ??
+        createPipeSession(id, name, num, shell, cwd)
+      sessions.set(id, session)
+      return session.info
+    }
+  )
 
   // 键盘输入 → shell(send 通道,不需要往返确认)
   ipcMain.on('terminal:write', (_e, id: string, data: string): void => {

@@ -13,6 +13,7 @@
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import type { StandaloneToolId, ToolWindowClosedEvent } from '../shared/ipc-types'
+import { trackWindowState, windowStateFor } from './windowState'
 
 /** 支持独立窗口的工具窗白名单(与 renderer shell/viewMode.ts 的 WINDOWABLE 一致) */
 const SUPPORTED: ReadonlySet<string> = new Set<StandaloneToolId>(['terminal', 'build'])
@@ -34,9 +35,15 @@ function openToolWindow(id: StandaloneToolId): void {
     return
   }
 
+  // 位置/尺寸记忆(统一 windowState 机制,按工具窗 id 分键;
+  // 「恢复上次会话」关闭时用默认值;越界显示器已校正)
+  const saved = windowStateFor(`toolwindow-${id}`, { minWidth: 520, minHeight: 320 })
   const win = new BrowserWindow({
-    width: id === 'terminal' ? 980 : 900,
-    height: 620,
+    width: saved?.bounds.width ?? (id === 'terminal' ? 980 : 900),
+    height: saved?.bounds.height ?? 620,
+    ...(saved?.bounds.x !== undefined && saved.bounds.y !== undefined
+      ? { x: saved.bounds.x, y: saved.bounds.y }
+      : {}),
     minWidth: 520,
     minHeight: 320,
     show: false,
@@ -58,8 +65,11 @@ function openToolWindow(id: StandaloneToolId): void {
     }
   })
   wins.set(id, win)
+  if (saved?.maximized) win.maximize() // show 前最大化,避免普通态闪帧
 
   win.on('ready-to-show', () => win.show())
+  // 位置/尺寸 500ms 去抖落盘(统一 windowState 机制)
+  trackWindowState(win, `toolwindow-${id}`)
   // 关闭(任何途径)→ 广播,renderer 将该工具窗回 Dock Pinned
   win.on('closed', () => {
     wins.delete(id)

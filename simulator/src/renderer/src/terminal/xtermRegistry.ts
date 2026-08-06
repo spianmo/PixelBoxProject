@@ -5,7 +5,8 @@
  * TermPane 挂载时把 holder 接入布局、卸载时摘下,工具窗隐藏/底部区切换
  * (日志 ⇄ 终端)期间实例与滚回缓冲全程保留。
  *
- * 主题:JetBrains Dark 近似 ANSI 16 色,背景对齐编辑器 #1E1F22,字号 12,
+ * 主题:JetBrains Dark 近似 ANSI 16 色,背景对齐编辑器 #1E1F22,
+ * 字号走 IDE 设置(工具 › 终端;settings:changed 对全部已开会话即时生效),
  * JetBrains Mono 优先的等宽回退链(与 tailwind fontFamily.mono 一致)。
  */
 import { Terminal } from '@xterm/xterm'
@@ -14,6 +15,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalSessionInfo } from '../../../shared/ipc-types'
+import { getAppSettings, subscribeSettings } from '../settings/store'
 
 /** JetBrains Dark(Darcula console 系)近似 ANSI 色板;背景/前景对齐 IDE 色板 */
 const JETBRAINS_DARK_THEME = {
@@ -42,6 +44,28 @@ const JETBRAINS_DARK_THEME = {
 
 const FONT_FAMILY = '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace'
 
+/**
+ * JetBrains Mono(@fontsource woff2)异步加载:若实例在字体就绪前创建,
+ * xterm 已按回退字体量字 —— 字体就绪后重设 fontFamily 触发重新量字 + fit。
+ * (options 同值赋值会被 xterm 去重,先切 monospace 再切回强制刷新)
+ */
+function remeasureAfterFontLoad(id: string, fontSize: number): void {
+  try {
+    void document.fonts
+      .load(`${fontSize}px "JetBrains Mono"`)
+      .then(() => {
+        const inst = registry.get(id)
+        if (!inst) return
+        inst.term.options.fontFamily = 'monospace'
+        inst.term.options.fontFamily = FONT_FAMILY
+        fitTerm(id)
+      })
+      .catch(() => undefined)
+  } catch {
+    // FontFaceSet 不可用:跳过,回退字体链兜底
+  }
+}
+
 export interface TermInstance {
   info: TerminalSessionInfo
   term: Terminal
@@ -54,6 +78,16 @@ export interface TermInstance {
 }
 
 const registry = new Map<string, TermInstance>()
+
+// 终端字号即时生效:设置镜像变化 → 全部实例 options.fontSize + 重排(fit)
+let appliedFontSize: number | null = null
+subscribeSettings(() => {
+  const size = getAppSettings().terminal.fontSize
+  if (size === appliedFontSize) return
+  appliedFontSize = size
+  for (const inst of registry.values()) inst.term.options.fontSize = size
+  fitAllTerms()
+})
 
 /** ⌘F 请求回调(UI 层注入,打开对应会话的搜索条) */
 let searchRequestHandler: ((sessionId: string) => void) | null = null
@@ -71,7 +105,7 @@ export function createTermInstance(info: TerminalSessionInfo): TermInstance {
   holder.style.height = '100%'
 
   const term = new Terminal({
-    fontSize: 12,
+    fontSize: getAppSettings().terminal.fontSize,
     fontFamily: FONT_FAMILY,
     theme: JETBRAINS_DARK_THEME,
     cursorBlink: true,
@@ -110,6 +144,8 @@ export function createTermInstance(info: TerminalSessionInfo): TermInstance {
 
   const inst: TermInstance = { info, term, fit, search, holder, opened: false }
   registry.set(info.id, inst)
+  // 字体文件就绪后重新量字(已就绪时立即 resolve,近乎零开销)
+  remeasureAfterFontLoad(info.id, term.options.fontSize ?? 12)
   return inst
 }
 

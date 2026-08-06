@@ -63,6 +63,17 @@ export function setupMonaco(): void {
 
   definePixelboxTheme()
 
+  // 代码字体 JetBrains Mono 经 @fontsource 异步加载(woff2):字体就绪后让 Monaco
+  // 重新量字,避免编辑器先以回退字体测宽导致光标/选区错位(load 对已就绪字体立即 resolve)
+  try {
+    void document.fonts
+      .load('13px "JetBrains Mono"')
+      .then(() => monaco.editor.remeasureFonts())
+      .catch(() => undefined)
+  } catch {
+    // FontFaceSet 不可用的环境(理论上 Chromium 恒有):跳过,回退字体链兜底
+  }
+
   self.MonacoEnvironment = {
     getWorker(_workerId: string, label: string): Worker {
       switch (label) {

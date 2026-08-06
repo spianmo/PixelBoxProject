@@ -51,6 +51,7 @@ const electronStubPlugin = {
     build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
       contents: `
         module.exports = {
+          app: globalThis.__electronStub.app,
           ipcMain: globalThis.__electronStub.ipcMain,
           BrowserWindow: globalThis.__electronStub.BrowserWindow
         }
@@ -82,6 +83,11 @@ const dataById = new Map()
 const exitById = new Map()
 
 globalThis.__electronStub = {
+  // pty.ts → settings.ts(shell 覆盖设置)需要 userData 路径:指向临时目录,
+  // SettingsService 走默认值(shellOverride 空 = $SHELL,原 19 项断言语义不变)
+  app: {
+    getPath: () => tmpDir
+  },
   ipcMain: {
     handle: (channel, fn) => handlers.set(channel, fn),
     on: (channel, fn) => handlers.set(channel, fn)
