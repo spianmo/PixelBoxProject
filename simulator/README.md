@@ -255,6 +255,30 @@ GUI 手测步骤(完整链路):
    打开 demo 工作区与文件后正常退出)→ `PIXELBOX_SMOKE_SESSION=2 npm run dev`
    (第二轮:观察 `[session-restore]` 恢复日志后自动退出)。
 
+macOS 全屏手测(伪全屏方案,对齐 IntelliJ IDEA 全屏观感;实现见 `src/main/fullscreen.ts`):
+
+1. 绿灯 / ⌃⌘F / 菜单「进入全屏」任一入口:窗口铺满当前显示器工作区(多显示器按窗口
+   所在屏)——系统菜单栏保持可见(若系统设置未在全屏下隐藏菜单栏),菜单栏之下直接是
+   应用自绘标题栏,红绿灯在标题栏行内常驻可见,全程无系统灰色标题条(不出现居中的
+   PixelBox Simulator 灰条);
+2. 全屏中再按 ⌃⌘F 或点绿灯:退出并精确恢复进入前的窗口位置尺寸(最大化态亦还原);
+   全屏期间窗口不可拖动(标题栏拖拽区同步禁用);
+3. 全屏中退出应用(⌘Q)后重启:随会话恢复直接回到全屏(设置 › 系统设置 ›
+   「启动时恢复上次会话」开启时;v2.4 旧 simpleFullScreen 持久化字段兼容读取);
+4. 与 IDEA 的已知差异(如实说明):非独立 macOS 全屏 Space;Dock 未设自动隐藏时仍
+   占据工作区边缘(窗口填满的是菜单栏与 Dock 之外的 workArea)。为什么不用原生全屏:
+   实测(截屏像素断言)hiddenInset 在原生全屏 Space 下无灰条,但 AppKit 会把红绿灯
+   移入顶部悬停显示条,常驻不可见,不满足「红绿灯行内可见」;simpleFullScreen 则会
+   隐藏系统菜单栏与红绿灯(v2.4 用户反馈),两者均被否决;
+5. 无 UI 驱动的冒烟:`PIXELBOX_SMOKE_FS=1 npm run dev`(模拟原生全屏请求 → 断言收敛
+   伪全屏、bounds ≈ workArea、退出回窗口态、bounds 恢复,4 项);
+6. 视觉级验证(真实 mac GUI,`npm run check:fullscreen`):dev 启动 → 程序化进全屏 →
+   `screencapture` 截屏(无屏幕录制权限时自动经 Terminal.app 助手降级;两路均不可用
+   则如实降级为 AppKit 状态断言并打印授权指引)→ PIL 像素断言:红绿灯三色簇
+   (红 #FF5F57 / 黄 #FEBC2E / 绿 #28C840,截图经内嵌 ICC 转 sRGB 后匹配)、
+   标题栏横带众数 ≈ 主题色(dark #2B2D30 / light #F7F8FA,无灰条)、退出 bounds 恢复,
+   打印 `[fs-visual] PASS/FAIL`。
+
 ## 字体与许可致谢
 
 IDE 全局 UI 字体与 JetBrains New UI 一致:**Inter**(UI,400/500/600/700)与

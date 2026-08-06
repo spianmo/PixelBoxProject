@@ -49,7 +49,7 @@ const api = {
   windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke('win:is-maximized'),
   onWindowMaximized: (cb: (maximized: boolean) => void): (() => void) =>
     subscribe('win:maximized', cb),
-  /** 查询当前窗口全屏态(macOS simpleFullScreen / Win-Linux 原生全屏) */
+  /** 查询当前窗口全屏态(macOS 伪全屏 / Win-Linux 原生全屏) */
   windowIsFullScreen: (): Promise<boolean> => ipcRenderer.invoke('win:is-fullscreen'),
   /** 全屏态变化订阅(TitleBar 全屏下禁用拖拽区等样式微调) */
   onWindowFullScreen: (cb: (fullscreen: boolean) => void): (() => void) =>

@@ -15,13 +15,14 @@ import { app, screen, type BrowserWindow, type Rectangle } from 'electron'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getSettingsSync } from './settings'
+import { isPseudoFullScreen } from './fullscreen'
 
 export interface SavedWindowState {
   /** 非最大化时的窗口矩形(最大化时为还原矩形 getNormalBounds) */
   bounds: Rectangle
   maximized: boolean
-  /** macOS simpleFullScreen 全屏态(mac-fullscreen 收敛;启动经 fullscreen.ts 恢复) */
-  simpleFullScreen: boolean
+  /** macOS 全屏态(伪全屏,fullscreen.ts 收敛;启动经 fullscreen.ts 恢复) */
+  fullscreen: boolean
   /** 记录时所在显示器 id(日志参考;越界校正以 bounds 相交判定为准) */
   displayId: number
 }
@@ -69,7 +70,8 @@ function load(): StateMap {
           height: Math.round(e.bounds.height)
         },
         maximized: e.maximized === true,
-        simpleFullScreen: e.simpleFullScreen === true,
+        // 兼容读取 v2.4 的 simpleFullScreen 字段(旧方案已删除,全屏语义迁移)
+        fullscreen: e.fullscreen === true || e.simpleFullScreen === true,
         displayId: typeof e.displayId === 'number' ? e.displayId : -1
       }
     }
@@ -122,8 +124,8 @@ export interface RestoredWindowState {
   /** 校正后的矩形;x/y 可能缺省(越界时丢坐标交系统默认摆放) */
   bounds: Partial<Rectangle> & { width: number; height: number }
   maximized: boolean
-  /** 上次退出时处于 macOS simpleFullScreen(index.ts 经 wireFullscreen 恢复) */
-  simpleFullScreen: boolean
+  /** 上次退出时处于 macOS 全屏(伪全屏;index.ts 经 wireFullscreen 恢复) */
+  fullscreen: boolean
 }
 
 /**
@@ -149,10 +151,10 @@ export function windowStateFor(name: string, defs: WindowStateDefaults): Restore
 
   console.log(
     `[session-restore] 窗口 "${name}" 还原 bounds=${bounds.x ?? '?'},${bounds.y ?? '?'} ${width}x${height}` +
-      ` maximized=${saved.maximized} simpleFullScreen=${saved.simpleFullScreen}` +
+      ` maximized=${saved.maximized} fullscreen=${saved.fullscreen}` +
       `${onScreen ? '' : '(越界已校正)'}`
   )
-  return { bounds, maximized: saved.maximized, simpleFullScreen: saved.simpleFullScreen }
+  return { bounds, maximized: saved.maximized, fullscreen: saved.fullscreen }
 }
 
 /**
@@ -162,17 +164,17 @@ export function windowStateFor(name: string, defs: WindowStateDefaults): Restore
 export function trackWindowState(win: BrowserWindow, name: string): void {
   const update = (): void => {
     if (win.isDestroyed() || win.isMinimized()) return
-    // 原生全屏为瞬态(macOS 由 fullscreen.ts 立即收敛为 simpleFullScreen;
+    // 原生全屏为瞬态(macOS 由 fullscreen.ts 立即收敛为伪全屏;
     // Win/Linux F11 不持久化):期间的 move/resize 一律不落盘
     if (win.isFullScreen()) return
     const prev = load()[name]
-    const simpleFullScreen = process.platform === 'darwin' && win.isSimpleFullScreen()
-    if (simpleFullScreen) {
-      // simpleFullScreen 铺满屏:不覆写普通态矩形(保留进入前记录),仅置全屏位
+    const fullscreen = process.platform === 'darwin' && isPseudoFullScreen(win)
+    if (fullscreen) {
+      // 伪全屏铺满 workArea:不覆写普通态矩形(保留进入前记录),仅置全屏位
       load()[name] = {
         bounds: prev?.bounds ?? win.getNormalBounds(),
         maximized: prev?.maximized ?? false,
-        simpleFullScreen: true,
+        fullscreen: true,
         displayId: screen.getDisplayMatching(win.getBounds()).id
       }
     } else {
@@ -181,7 +183,7 @@ export function trackWindowState(win: BrowserWindow, name: string): void {
         // 最大化时记还原矩形(取消最大化 / 下次以普通态启动时用)
         bounds: maximized ? win.getNormalBounds() : win.getBounds(),
         maximized,
-        simpleFullScreen: false,
+        fullscreen: false,
         displayId: screen.getDisplayMatching(win.getBounds()).id
       }
     }

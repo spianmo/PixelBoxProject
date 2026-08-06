@@ -24,7 +24,12 @@ import {
 } from './settingsWindow'
 import { registerSessionIpc, flushSessionState } from './sessionState'
 import { trackWindowState, windowStateFor, flushWindowStates } from './windowState'
-import { registerFullscreenIpc, wireFullscreen, runFullscreenSmoke } from './fullscreen'
+import {
+  registerFullscreenIpc,
+  wireFullscreen,
+  runFullscreenSmoke,
+  runFullscreenVisualSmoke
+} from './fullscreen'
 
 // device-sim:沙箱 iframe 隐藏在页面中,禁用 Chromium 对后台/离屏帧的定时器与渲染节流,
 // 否则沙箱内 setTimeout/setInterval(动画、IMU、GPS 定时回调)会被限到 1Hz
@@ -66,10 +71,10 @@ function createWindow(): BrowserWindow {
 
   win.on('ready-to-show', () => win.show())
   wireShellWindowEvents(win)
-  // mac-fullscreen:原生全屏全入口(绿灯/⌃⌘F/菜单)收敛 simpleFullScreen,
-  // 红绿灯保持窗体内自绘标题栏行内,无原生灰条;Win/Linux 补 F11 原生全屏。
-  // 上次退出处于 simpleFullScreen 时随会话恢复(windowState 落盘位)
-  wireFullscreen(win, { restoreSimpleFullScreen: saved?.simpleFullScreen === true })
+  // mac-fullscreen:原生全屏全入口(绿灯/⌃⌘F/菜单)收敛伪全屏(窗口铺满
+  // workArea,系统菜单栏保持可见,红绿灯在自绘标题栏行内常驻,无原生灰条);
+  // Win/Linux 补 F11 原生全屏。上次退出处于全屏时随会话恢复(windowState 落盘位)
+  wireFullscreen(win, { restoreFullScreen: saved?.fullscreen === true })
   // 会话恢复:主窗 bounds/最大化 500ms 去抖落盘
   trackWindowState(win, 'main')
   // 退出双保险之一:主窗关闭即同步兜底落盘(before-quit 为另一道,见下)
@@ -137,9 +142,17 @@ app.whenReady().then(async () => {
   if (process.env.PIXELBOX_OPEN_SETTINGS === '1') void openSettingsWindow()
 
   // 冒烟钩子(mac-fullscreen,无 UI 驱动环境):模拟原生全屏请求 → 断言收敛为
-  // simpleFullScreen → 再触发退出 → 断言回窗口态与 bounds 恢复(详见 fullscreen.ts)
+  // 伪全屏(bounds ≈ workArea)→ 再触发退出 → 断言回窗口态与 bounds 恢复
+  // (详见 fullscreen.ts)
   if (process.env.PIXELBOX_SMOKE_FS === '1') {
     mainWin.once('ready-to-show', () => runFullscreenSmoke(mainWin))
+  }
+
+  // 视觉冒烟钩子(mac-fullscreen,配套 scripts/fullscreen-visual-check.mjs):
+  // 进伪全屏 → 打印 [fs-visual] entered(外部脚本截屏做红绿灯/无灰条像素断言)
+  // → 哨兵文件出现后退出 → 打印 bounds 恢复结果(详见 fullscreen.ts)
+  if (process.env.PIXELBOX_SMOKE_FS_VISUAL === '1') {
+    mainWin.once('ready-to-show', () => runFullscreenVisualSmoke(mainWin))
   }
 
   // 冒烟钩子(light-theme,无 UI 驱动环境):经 SettingsService 依次切

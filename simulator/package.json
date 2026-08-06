@@ -17,6 +17,7 @@
     "check:toolchain": "node scripts/toolchain-check.mjs",
     "check:terminal": "node scripts/terminal-check.mjs",
     "check:settings": "node scripts/settings-check.mjs",
+    "check:fullscreen": "node scripts/fullscreen-visual-check.mjs",
     "postinstall": "node scripts/pty-postinstall.mjs",
     "rebuild:pty": "electron-rebuild -f -w node-pty",
     "dist:mac": "npm run build && electron-builder --mac",
