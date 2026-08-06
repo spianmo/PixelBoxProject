@@ -37,11 +37,36 @@
     "devices": "设备管理器",
     "build": "构建",
     "logs": "日志",
+    "terminal": "终端",
     "problems": "问题",
     "runningDevices": "运行的设备"
   },
   "toolwindow": {
-    "hide": "隐藏"
+    "hide": "隐藏",
+    "options": "视图选项",
+    "viewMode": "视图模式",
+    "modeDockPinned": "停靠固定",
+    "modeDockUnpinned": "停靠自动隐藏",
+    "modeUndock": "取消停靠",
+    "modeFloat": "浮动",
+    "modeWindow": "独立窗口",
+    "windowUnsupported": "该窗口暂不支持独立窗口",
+    "unknownStandalone": "未知工具窗:{{id}}"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "newSession": "新建会话",
+    "sessionList": "会话列表",
+    "more": "更多",
+    "splitRight": "向右拆分",
+    "splitDown": "向下拆分",
+    "close": "关闭会话",
+    "clear": "清屏",
+    "searchPlaceholder": "搜索…",
+    "searchPrev": "上一个(Shift+Enter)",
+    "searchNext": "下一个(Enter)",
+    "searchClose": "关闭(Esc)",
+    "pipeBanner": "node-pty 不可用,已回退 pipe 兜底模式:无行编辑与窗口尺寸,体验受限"
   },
   "deviceManager": {
     "new": "新建模拟器",

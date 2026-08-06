@@ -10,7 +10,14 @@ import { sandboxRuntimePlugin } from './src/renderer/src/device-sim/sandbox/esbu
  */
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        // node-pty 为原生模块(devDependencies,externalizeDepsPlugin 只处理 dependencies),
+        // 必须显式外部化:运行期从 node_modules require,失败时 PtyService 回退 pipe 模式
+        external: ['node-pty']
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()]

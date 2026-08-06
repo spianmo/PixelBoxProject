@@ -37,11 +37,36 @@
     "devices": "Device Manager",
     "build": "Build",
     "logs": "Logs",
+    "terminal": "Terminal",
     "problems": "Problems",
     "runningDevices": "Running Devices"
   },
   "toolwindow": {
-    "hide": "Hide"
+    "hide": "Hide",
+    "options": "View options",
+    "viewMode": "View Mode",
+    "modeDockPinned": "Dock Pinned",
+    "modeDockUnpinned": "Dock Unpinned",
+    "modeUndock": "Undock",
+    "modeFloat": "Float",
+    "modeWindow": "Window",
+    "windowUnsupported": "This tool window does not support a separate window yet",
+    "unknownStandalone": "Unknown tool window: {{id}}"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "newSession": "New Session",
+    "sessionList": "Sessions",
+    "more": "More",
+    "splitRight": "Split Right",
+    "splitDown": "Split Down",
+    "close": "Close Session",
+    "clear": "Clear Buffer",
+    "searchPlaceholder": "Search…",
+    "searchPrev": "Previous (Shift+Enter)",
+    "searchNext": "Next (Enter)",
+    "searchClose": "Close (Esc)",
+    "pipeBanner": "node-pty unavailable — running in pipe fallback mode: no line editing or window size, limited experience"
   },
   "deviceManager": {
     "new": "Create Virtual Device",

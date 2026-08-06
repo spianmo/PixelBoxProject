@@ -51,6 +51,8 @@ function RailButton({ item, side }: { item: RailItem; side: 'left' | 'right' }):
 export function ToolWindowRail({ side, topItems, bottomItems }: Props): React.JSX.Element {
   return (
     <div
+      // data-tw-rail:Dock Unpinned 覆盖层「点外部自动收起」的豁免标记(点轨道图标不算外部)
+      data-tw-rail
       className={`flex w-11 shrink-0 flex-col bg-ink-850 ${
         side === 'left' ? 'border-r border-ink-700' : 'border-l border-ink-700'
       }`}

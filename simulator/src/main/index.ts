@@ -4,6 +4,7 @@
  */
 import { app, BrowserWindow, shell, session } from 'electron'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { registerWorkspaceIpc, disposeWorkspace } from './workspace'
 import { registerBuilderIpc, disposeBuilder } from './builder'
 import { registerDevdIpc, disposeDevd } from './devd'
@@ -12,6 +13,8 @@ import { registerShellIpc, wireShellWindowEvents } from './shell'
 import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProfiles'
 import { registerToolchainIpc, disposeToolchain } from './toolchain'
 import { registerProjectScaffoldIpc } from './projectScaffold'
+import { registerTerminalIpc, disposeTerminal } from './pty'
+import { registerToolWindowIpc, disposeToolWindows } from './toolWindows'
 
 // device-sim:沙箱 iframe 隐藏在页面中,禁用 Chromium 对后台/离屏帧的定时器与渲染节流,
 // 否则沙箱内 setTimeout/setInterval(动画、IMU、GPS 定时回调)会被限到 1Hz
@@ -47,6 +50,8 @@ function createWindow(): void {
 
   win.on('ready-to-show', () => win.show())
   wireShellWindowEvents(win)
+  // 独立工具窗生命周期从属主窗:主窗关闭时一并关闭(macOS 下避免残留孤儿工具窗)
+  win.on('closed', () => disposeToolWindows())
 
   // 外部链接一律交给系统浏览器
   win.webContents.setWindowOpenHandler((details) => {
@@ -62,6 +67,13 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // dev 模式 macOS Dock 图标(打包版由 electron-builder 的 icns 提供)。
+  // 用 icon-mac.png(824 内容居中 + 185 圆角 + 透明留白, Apple 图标网格),
+  // 直接用全幅方形 icon.png 会在 Dock 里显得过大且无圆角。
+  if (process.platform === 'darwin' && app.dock) {
+    const dockIcon = join(__dirname, '../../build/icon-mac.png')
+    if (existsSync(dockIcon)) app.dock.setIcon(dockIcon)
+  }
   registerWorkspaceIpc()
   registerBuilderIpc()
   registerDevdIpc()
@@ -70,6 +82,8 @@ app.whenReady().then(() => {
   registerDeviceProfilesIpc()
   registerToolchainIpc()
   registerProjectScaffoldIpc()
+  registerTerminalIpc()
+  registerToolWindowIpc()
   void ensureDeviceProfilesDir()
 
   // 设备模拟需要麦克风/摄像头(getUserMedia):本地开发工具,直接放行 media 权限
@@ -94,4 +108,6 @@ app.on('before-quit', () => {
   disposeDevd()
   disposeSimBridge()
   disposeToolchain() // 不留后台固件构建/烧录进程
+  disposeTerminal() // 杀净全部集成终端会话
+  disposeToolWindows() // 关净全部独立工具窗
 })

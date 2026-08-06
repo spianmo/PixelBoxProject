@@ -17,6 +17,13 @@ import type {
   ProjectCreateResult,
   PushProgress,
   SerialPortInfo,
+  StandaloneToolId,
+  TerminalBackend,
+  TerminalCreateOptions,
+  TerminalDataChunk,
+  TerminalExitEvent,
+  TerminalSessionInfo,
+  ToolWindowClosedEvent,
   ToolchainInfo,
   ToolchainSettings
 } from '../shared/ipc-types'
@@ -126,6 +133,45 @@ const api = {
   /** 删除档案(内置档案拒绝);返回更新后的完整列表 */
   deviceProfilesDelete: (id: string): Promise<DeviceProfile[]> =>
     ipcRenderer.invoke('devices:delete', id),
+
+  // ---- 集成终端(PtyService,阶段 1/2) ----
+  /** 新建终端会话(cwd 传工作区根;返回会话信息含后端类型) */
+  terminalCreate: (opts?: TerminalCreateOptions): Promise<TerminalSessionInfo> =>
+    ipcRenderer.invoke('terminal:create', opts),
+  /** 键盘输入 → shell(send 通道,高频无往返) */
+  terminalWrite: (id: string, data: string): void => ipcRenderer.send('terminal:write', id, data),
+  /** 尺寸变化(fit 后回传 cols/rows) */
+  terminalResize: (id: string, cols: number, rows: number): Promise<void> =>
+    ipcRenderer.invoke('terminal:resize', id, cols, rows),
+  /** 关闭会话(杀 shell 进程;退出经 onTerminalExit 回流) */
+  terminalClose: (id: string): Promise<void> => ipcRenderer.invoke('terminal:close', id),
+  /** 重命名会话 */
+  terminalRename: (id: string, name: string): Promise<void> =>
+    ipcRenderer.invoke('terminal:rename', id, name),
+  /** 存活会话列表(renderer 重载后恢复 tab) */
+  terminalList: (): Promise<TerminalSessionInfo[]> => ipcRenderer.invoke('terminal:list'),
+  /** 后端探测结果(pipe 模式 UI 提示体验受限) */
+  terminalBackend: (): Promise<{ backend: TerminalBackend; error: string }> =>
+    ipcRenderer.invoke('terminal:backend'),
+  /** 终端输出流(16ms 批量聚合) */
+  onTerminalData: (cb: (chunks: TerminalDataChunk[]) => void): (() => void) =>
+    subscribe('terminal:data', cb),
+  /** 会话退出事件 */
+  onTerminalExit: (cb: (ev: TerminalExitEvent) => void): (() => void) =>
+    subscribe('terminal:exit', cb),
+
+  // ---- 工具窗独立窗口(视图模式 Window,阶段 2/2) ----
+  /** 打开(或聚焦)独立工具窗;非白名单 id 返回 false */
+  toolwindowOpen: (id: StandaloneToolId): Promise<boolean> =>
+    ipcRenderer.invoke('toolwindow:open', id),
+  /** 关闭独立工具窗(closed 广播回流后该工具窗回 Dock Pinned) */
+  toolwindowClose: (id: StandaloneToolId): Promise<void> =>
+    ipcRenderer.invoke('toolwindow:close', id),
+  /** 当前打开的独立工具窗(renderer 重载后对账恢复 window 视图模式) */
+  toolwindowList: (): Promise<StandaloneToolId[]> => ipcRenderer.invoke('toolwindow:list'),
+  /** 独立工具窗关闭事件 */
+  onToolWindowClosed: (cb: (ev: ToolWindowClosedEvent) => void): (() => void) =>
+    subscribe('toolwindow:closed', cb),
 
   // ---- 真机(devd) ----
   devdDiscover: (timeoutMs?: number): Promise<DevdDevice[]> =>

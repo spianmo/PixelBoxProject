@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
+import appIconUrl from '../assets/app-icon.png'
 import {
   LuBell,
   LuChevronDown,
@@ -93,6 +94,28 @@ interface Props {
 function baseName(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
   return i >= 0 ? p.slice(i + 1) : p
+}
+
+/**
+ * 路径中间省略:保留开头段与末尾目录名,中段折叠为 …(JetBrains 最近项目风格)。
+ * 家目录先压缩为 ~;仍超长时按段折叠(~/Projects/…/esp32_devices);
+ * 单段仍超长则对字符串做硬性中间截断,保证开头结尾都可见。
+ */
+function middleEllipsisPath(p: string, max = 44): string {
+  const sep = p.includes('\\') ? '\\' : '/'
+  let s = p.replace(/^\/(?:Users|home)\/[^/]+/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+/, '~')
+  if (s.length <= max) return s
+  const parts = s.split(sep).filter((seg, i) => seg !== '' || i === 0)
+  if (parts.length > 3) {
+    const head = parts.slice(0, 2).join(sep)
+    const tail = parts[parts.length - 1]
+    s = `${head}${sep}…${sep}${tail}`
+  }
+  if (s.length > max) {
+    const keep = Math.max(6, Math.floor((max - 1) / 2))
+    s = `${s.slice(0, keep)}…${s.slice(-keep)}`
+  }
+  return s
 }
 
 /** 运行工具组的图标按钮(紧凑,24px 图标热区 28px) */
@@ -230,7 +253,8 @@ export function TitleBar(props: Props): React.JSX.Element {
       .map((p) => ({
         key: p,
         label: baseName(p),
-        hint: p,
+        hint: middleEllipsisPath(p), // 中间省略防横向溢出
+        title: p, // 悬停可见完整路径
         group: t('titlebar.recentWorkspaces'),
         onSelect: () => props.onOpenWorkspacePath(p)
       })),
@@ -389,13 +413,15 @@ export function TitleBar(props: Props): React.JSX.Element {
         if (!isMac && e.target === e.currentTarget) window.api.windowToggleMaximize()
       }}
     >
-      {/* 应用图标 */}
-      <div
-        className="mr-1 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-accent text-[11px] font-bold text-white"
+      {/* 应用图标(像素夜空,build/icon.png 同源) */}
+      <img
+        src={appIconUrl}
+        alt="PixelBox"
         title="PixelBox"
-      >
-        P
-      </div>
+        className="mr-1 h-[18px] w-[18px] shrink-0 rounded-[4px] object-cover"
+        style={{ imageRendering: 'pixelated' }}
+        draggable={false}
+      />
 
       {/* 项目名下拉 */}
       <MenuButton items={projectItems} title={t('titlebar.project')}>

@@ -12,12 +12,12 @@ asarUnpack:
   - node_modules/esbuild/**
   - node_modules/@esbuild/**
 mac:
-  icon: build/icon.png
+  icon: build/icon.icns # 圆角+留白, Apple 图标网格
   category: public.app-category.developer-tools
   target:
     - dmg
 win:
-  icon: build/icon.png
+  icon: build/icon.ico # 多尺寸全幅方形
   target:
     - nsis
 linux:

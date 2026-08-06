@@ -21,6 +21,7 @@ import {
   LuPencil,
   LuScrollText,
   LuSmartphone,
+  LuSquareTerminal,
   LuTriangleAlert
 } from 'react-icons/lu'
 import type { SimDeviceTag, SimManifest } from './device-sim/types'
@@ -36,7 +37,17 @@ import { TitleBar } from './shell/TitleBar'
 import { StatusBar } from './shell/StatusBar'
 import { ToolWindow } from './shell/ToolWindow'
 import { ToolWindowRail, type RailItem } from './shell/ToolWindowRail'
+import { DockOverlay } from './shell/DockOverlay'
+import { FloatPanel } from './shell/FloatPanel'
+import {
+  initViewModes,
+  useViewModes,
+  type ToolWindowId,
+  type ToolWindowViewMode
+} from './shell/viewMode'
 import { LogsToolWindow, LogsTabStrip, type BottomTab, type LogLine } from './shell/LogsToolWindow'
+import { TerminalHeader, TerminalHeaderActions, TerminalPanel } from './terminal/TerminalToolWindow'
+import { initTerminals, setTerminalCwd } from './terminal/store'
 import { RunningDevicesPanel } from './shell/RunningDevicesPanel'
 import { DeviceManagerPanel } from './shell/DeviceManagerPanel'
 import { DeviceWizardHost } from './shell/DeviceWizardModal'
@@ -71,6 +82,11 @@ function baseName(p: string): string {
   return i >= 0 ? p.slice(i + 1) : p
 }
 
+/** 覆盖式停靠模式(Dock Unpinned / Undock 都以覆盖层呈现,区别仅在外点是否自动收起) */
+function isOverlayMode(m: ToolWindowViewMode): boolean {
+  return m === 'dockUnpinned' || m === 'undock'
+}
+
 /** 体积友好显示(通知 / 构建汇报) */
 function fmtSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
@@ -89,6 +105,19 @@ export default function App(): React.JSX.Element {
   const [rightOpen, setRightOpen] = useState(true)
   const [bottomOpen, setBottomOpen] = useState(true)
   const [bottomTab, setBottomTab] = useState<BottomTab>('logs')
+  // 底部区当前视图:日志/构建/问题 窗 ⇄ 终端窗(切换互不销毁,见底部渲染)
+  const [bottomView, setBottomView] = useState<'logs' | 'terminal'>('logs')
+  // 终端窗是否打开过(打开过即保持挂载,隐藏用 CSS,xterm 会话常驻)
+  const [terminalOpened, setTerminalOpened] = useState(false)
+  // 终端浮动面板可见性(视图模式 float 时脱离底部槽位仲裁,可与日志窗同时显示)
+  const [termFloatVisible, setTermFloatVisible] = useState(false)
+
+  // ---- 工具窗视图模式(五态;模式与 Float 矩形持久化在 shell/viewMode.ts) ----
+  const viewModes = useViewModes()
+  // 覆盖式停靠层 DOM(Dock Unpinned 外点自动收起的 contains 判定)
+  const leftOverlayRef = useRef<HTMLDivElement>(null)
+  const rightOverlayRef = useRef<HTMLDivElement>(null)
+  const bottomOverlayRef = useRef<HTMLDivElement>(null)
   const [quickOpenVisible, setQuickOpenVisible] = useState(false)
   // 结构视图(左侧面板下分栏;允许只开结构)
   const [structureOpen, setStructureOpen] = useState(false)
@@ -129,6 +158,13 @@ export default function App(): React.JSX.Element {
   const [mdMode, setMdModeState] = useState<MdViewMode>('split')
   /** 烧录默认波特率(设置页持久化;打开烧录对话框时刷新) */
   const [defaultBaud, setDefaultBaud] = useState(460800)
+
+  /** 打开底部区并切到指定日志类 tab(视图切回日志窗;终端窗状态保留) */
+  const openBottomTab = useCallback((tab: BottomTab): void => {
+    setBottomView('logs')
+    setBottomTab(tab)
+    setBottomOpen(true)
+  }, [])
 
   const appendLog = useCallback((target: 'app' | 'build', line: LogLine | LogLine[]): void => {
     const add = Array.isArray(line) ? line : [line]
@@ -256,6 +292,48 @@ export default function App(): React.JSX.Element {
 
     return () => unsubs.forEach((u) => u())
   }, [appendLog, t])
+
+  // 集成终端:事件订阅 + renderer 重载后恢复 main 进程存活会话(幂等)
+  useEffect(() => {
+    initTerminals()
+  }, [])
+
+  // 视图模式:独立窗口关闭回 Dock Pinned + renderer 重载后 toolwindow:list 对账(幂等)
+  useEffect(() => {
+    initViewModes()
+  }, [])
+
+  // 终端视图模式切换的槽位联动:
+  // - float:离开底部槽位仲裁(bottomView 回日志),浮动面板立即可见
+  // - window:主窗不再渲染(独立窗口接管;数据在 main 侧全窗口广播)
+  // - 回停靠系(独立窗口关闭 / 手动切回):回底部槽位并展开
+  const bottomViewRef = useRef(bottomView)
+  bottomViewRef.current = bottomView
+  const prevTermModeRef = useRef(viewModes.terminal)
+  useEffect(() => {
+    const prev = prevTermModeRef.current
+    const cur = viewModes.terminal
+    if (prev === cur) return
+    prevTermModeRef.current = cur
+    if (cur === 'float') {
+      setTerminalOpened(true)
+      setTermFloatVisible(true)
+      if (bottomViewRef.current === 'terminal') setBottomView('logs')
+    } else if (cur === 'window') {
+      setTermFloatVisible(false)
+      if (bottomViewRef.current === 'terminal') setBottomView('logs')
+    } else if (prev === 'float' || prev === 'window') {
+      setTerminalOpened(true)
+      setTermFloatVisible(false)
+      setBottomView('terminal')
+      setBottomOpen(true)
+    }
+  }, [viewModes.terminal])
+
+  // 新终端会话的 cwd 跟随当前工作区根(无工作区回退 HOME)
+  useEffect(() => {
+    setTerminalCwd(workspaceRoot)
+  }, [workspaceRoot])
 
   // 启动时先扫一轮设备 + 加载虚拟设备档案(设备管理器数据源)
   useEffect(() => {
@@ -457,8 +535,7 @@ export default function App(): React.JSX.Element {
   const startFirmwareTask = useCallback(
     async (kind: FirmwareTaskKind, port?: string, baud?: number): Promise<void> => {
       const target = shellDeviceStore.get().chip
-      setBottomOpen(true)
-      setBottomTab('build')
+      openBottomTab('build')
       setFwTask(kind) // 先置忙防重入(双击/菜单连点)
       try {
         await window.api.firmwareStart({ kind, target, port, baud })
@@ -469,7 +546,7 @@ export default function App(): React.JSX.Element {
         showToast(t(`fw.errors.${code}`, { defaultValue: t('fw.errors.startFailed') }), 'error')
       }
     },
-    [t]
+    [t, openBottomTab]
   )
 
   /** 烧录…:先刷新默认波特率再打开端口选择对话框 */
@@ -506,8 +583,7 @@ export default function App(): React.JSX.Element {
       showToast(t('run.noProfile'), 'warn')
       return
     }
-    setBottomOpen(true)
-    setBottomTab('build')
+    openBottomTab('build')
     await editorRef.current?.saveAll() // 运行前自动保存
     setBusy('build')
     let result: Awaited<ReturnType<typeof window.api.build>>
@@ -532,7 +608,7 @@ export default function App(): React.JSX.Element {
       window.__pixelboxSimContext = { workspaceRoot: root, outDir: result.outDir, device: profile }
       await sim.load(result.code, result.manifest as SimManifest)
       setRightOpen(true)
-      setBottomTab('logs')
+      openBottomTab('logs')
       showToast(t('run.startedOn', { name: profile.name }), 'success')
       await window.api.buildWatchStart(root) // 开启 watch 热重载
     } catch (err) {
@@ -560,8 +636,7 @@ export default function App(): React.JSX.Element {
       showToast(t('push.noDevice'), 'warn')
       return
     }
-    setBottomOpen(true)
-    setBottomTab('build')
+    openBottomTab('build')
     await editorRef.current?.saveAll()
     setBusy('push')
     setPushPercent(0)
@@ -604,33 +679,70 @@ export default function App(): React.JSX.Element {
   ]
 
   const toggleBottom = (tab: BottomTab): void => {
-    if (bottomOpen && bottomTab === tab) setBottomOpen(false)
+    if (bottomOpen && bottomView === 'logs' && bottomTab === tab) setBottomOpen(false)
+    else openBottomTab(tab)
+  }
+
+  /**
+   * 终端窗开关,按视图模式分流:
+   * - window:聚焦独立窗口(main 侧幂等)
+   * - float:开关浮动面板(不参与底部槽位仲裁,可与日志窗并存)
+   * - 停靠系:底部区在 日志/构建/问题 窗与终端窗之间切换,状态互不销毁
+   */
+  const toggleTerminal = (): void => {
+    if (viewModes.terminal === 'window') {
+      void window.api.toolwindowOpen('terminal')
+      return
+    }
+    if (viewModes.terminal === 'float') {
+      setTerminalOpened(true)
+      setTermFloatVisible((v) => !v)
+      return
+    }
+    if (bottomOpen && bottomView === 'terminal') setBottomOpen(false)
     else {
-      setBottomTab(tab)
+      setTerminalOpened(true)
+      setBottomView('terminal')
       setBottomOpen(true)
     }
   }
+
+  /** 终端轨道图标激活态(独立窗口开着即视为激活) */
+  const terminalRailActive =
+    viewModes.terminal === 'window'
+      ? true
+      : viewModes.terminal === 'float'
+        ? termFloatVisible
+        : bottomOpen && bottomView === 'terminal'
 
   const leftRailBottom: RailItem[] = [
     {
       key: 'build',
       icon: <LuHammer />,
       label: t('rail.build'),
-      active: bottomOpen && bottomTab === 'build',
+      active: bottomOpen && bottomView === 'logs' && bottomTab === 'build',
       onClick: () => toggleBottom('build')
     },
     {
       key: 'logs',
       icon: <LuScrollText />,
       label: t('rail.logs'),
-      active: bottomOpen && bottomTab === 'logs',
+      active: bottomOpen && bottomView === 'logs' && bottomTab === 'logs',
       onClick: () => toggleBottom('logs')
+    },
+    {
+      // 集成终端(问题图标上方)
+      key: 'terminal',
+      icon: <LuSquareTerminal />,
+      label: t('rail.terminal'),
+      active: terminalRailActive,
+      onClick: toggleTerminal
     },
     {
       key: 'problems',
       icon: <LuTriangleAlert />,
       label: t('rail.problems'),
-      active: bottomOpen && bottomTab === 'problems',
+      active: bottomOpen && bottomView === 'logs' && bottomTab === 'problems',
       badge: problems.length,
       onClick: () => toggleBottom('problems')
     }
@@ -645,6 +757,173 @@ export default function App(): React.JSX.Element {
       onClick: () => setRightOpen((v) => !v)
     }
   ]
+
+  // ---- 视图模式:各工具窗归属位置(停靠槽 / 覆盖层 / 浮动;window 只在独立窗口渲染) ----
+
+  // 左槽当前工具(项目树/设备管理器)与结构视图:pinned 进停靠列,overlay 进左覆盖层
+  const leftToolMode: ToolWindowViewMode | null = leftTool ? viewModes[leftTool] : null
+  const leftPinnedTool = leftTool !== null && leftToolMode === 'dockPinned' ? leftTool : null
+  const leftOverlayTool = leftTool !== null && leftToolMode !== null && isOverlayMode(leftToolMode) ? leftTool : null
+  const structPinned = structureOpen && viewModes.structure === 'dockPinned'
+  const structOverlay = structureOpen && isOverlayMode(viewModes.structure)
+
+  // 右侧「运行的设备」
+  const rightPinned = rightOpen && viewModes.running === 'dockPinned'
+  const rightOverlay = rightOpen && isOverlayMode(viewModes.running)
+
+  // 底部槽位(bottomView 仲裁);终端 float/window 时脱离仲裁(见 toggleTerminal)
+  const bottomDockView: 'logs' | 'terminal' | null = bottomOpen
+    ? bottomView === 'logs' && viewModes.logs === 'dockPinned'
+      ? 'logs'
+      : bottomView === 'terminal' && viewModes.terminal === 'dockPinned'
+        ? 'terminal'
+        : null
+    : null
+  const bottomOverlayTool: ToolWindowId | null = bottomOpen
+    ? bottomView === 'logs' && isOverlayMode(viewModes.logs)
+      ? 'logs'
+      : bottomView === 'terminal' && terminalOpened && isOverlayMode(viewModes.terminal)
+        ? 'terminal'
+        : null
+    : null
+
+  // Dock Unpinned:全局 mousedown 外点自动收起(轨道图标 [data-tw-rail] 豁免;
+  // Undock 常驻不收;覆盖层内部点击经 contains 判定豁免)
+  const leftUnpinnedShown =
+    (leftOverlayTool !== null && viewModes[leftOverlayTool] === 'dockUnpinned') ||
+    (structOverlay && viewModes.structure === 'dockUnpinned')
+  const rightUnpinnedShown = rightOverlay && viewModes.running === 'dockUnpinned'
+  const bottomUnpinnedShown = bottomOverlayTool !== null && viewModes[bottomOverlayTool] === 'dockUnpinned'
+  useEffect(() => {
+    if (!leftUnpinnedShown && !rightUnpinnedShown && !bottomUnpinnedShown) return
+    const onDown = (e: MouseEvent): void => {
+      const target = e.target as HTMLElement
+      if (target.closest('[data-tw-rail]')) return
+      if (leftUnpinnedShown && !leftOverlayRef.current?.contains(target)) {
+        if (leftOverlayTool !== null && viewModes[leftOverlayTool] === 'dockUnpinned') setLeftTool(null)
+        if (structOverlay && viewModes.structure === 'dockUnpinned') setStructureOpen(false)
+      }
+      if (rightUnpinnedShown && !rightOverlayRef.current?.contains(target)) setRightOpen(false)
+      if (bottomUnpinnedShown && !bottomOverlayRef.current?.contains(target)) setBottomOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [leftUnpinnedShown, rightUnpinnedShown, bottomUnpinnedShown, leftOverlayTool, structOverlay, viewModes])
+
+  /**
+   * 按 id 渲染工具窗(停靠槽 / 覆盖层 / FloatPanel 三种落点共用同一份内容;
+   * dragStart 由 FloatPanel 注入,接到头部空白区拖动)
+   */
+  const renderTool = (id: ToolWindowId, dragStart?: (e: React.MouseEvent) => void): React.JSX.Element | null => {
+    switch (id) {
+      case 'project':
+      case 'devices':
+        return (
+          <ToolWindow
+            title={id === 'project' ? t('rail.project') : t('rail.devices')}
+            icon={id === 'project' ? <LuFolderTree /> : <LuMonitorSmartphone />}
+            toolId={id}
+            onHeaderMouseDown={dragStart}
+            onHide={() => setLeftTool(null)}
+          >
+            {id === 'project' ? (
+              workspaceRoot ? (
+                <FileTree
+                  root={workspaceRoot}
+                  onOpenFile={handleOpenFile}
+                  dirtyPaths={dirtyPaths}
+                  onFileRemoved={handleFileRemoved}
+                  activePath={activePath}
+                />
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+                  <LuFolderOpen className="text-3xl text-ink-500" />
+                  <div className="text-[13px] text-jb-muted">{t('fileTree.empty')}</div>
+                  <button
+                    className="rounded bg-accent px-3 py-1 text-xs text-white hover:bg-accent-dim"
+                    onClick={() => void handleOpenWorkspace()}
+                  >
+                    {t('titlebar.openWorkspace')}
+                  </button>
+                </div>
+              )
+            ) : (
+              // 设备管理器(虚拟设备档案表格 + 新建模拟器向导,阶段 2 落地)
+              <DeviceManagerPanel />
+            )}
+          </ToolWindow>
+        )
+      case 'structure':
+        return (
+          <ToolWindow
+            title={t('rail.structure')}
+            icon={<LuListTree />}
+            toolId="structure"
+            onHeaderMouseDown={dragStart}
+            onHide={() => setStructureOpen(false)}
+          >
+            <StructureView
+              path={activePath}
+              cursorLine={cursor?.line ?? null}
+              onNavigate={(line, column) => editorRef.current?.revealAt(line, column)}
+            />
+          </ToolWindow>
+        )
+      case 'running':
+        return (
+          <ToolWindow
+            title={t('rail.runningDevices')}
+            icon={<LuSmartphone />}
+            toolId="running"
+            onHeaderMouseDown={dragStart}
+            onHide={() => setRightOpen(false)}
+          >
+            <RunningDevicesPanel />
+          </ToolWindow>
+        )
+      case 'logs':
+        return (
+          <ToolWindow
+            title={t('console.appLog')}
+            header={<LogsTabStrip activeTab={bottomTab} problems={problems.length} onTabChange={setBottomTab} />}
+            toolId="logs"
+            // 「独立窗口」项作用于 构建输出(build:log/toolchain:log 全窗口广播,可跨窗镜像);
+            // 日志/问题 tab 状态在主窗 renderer 内,项置灰
+            windowToolId="build"
+            windowEnabled={bottomTab === 'build'}
+            onHeaderMouseDown={dragStart}
+            onHide={() => setBottomOpen(false)}
+          >
+            <LogsToolWindow
+              activeTab={bottomTab}
+              appLogs={appLogs}
+              buildLogs={buildLogs}
+              problems={problems}
+              onClear={(tab) => (tab === 'logs' ? setAppLogs([]) : setBuildLogs([]))}
+            />
+          </ToolWindow>
+        )
+      case 'terminal':
+        return (
+          <ToolWindow
+            title={t('terminal.title')}
+            header={<TerminalHeader />}
+            // 终端自身 ⋮ 并入视图模式组(viewMode),ToolWindow 不再渲染第二个 ⋮
+            actions={<TerminalHeaderActions viewMode />}
+            toolId="terminal"
+            viewModeButton={false}
+            onHeaderMouseDown={dragStart}
+            onHide={
+              viewModes.terminal === 'float' ? () => setTermFloatVisible(false) : () => setBottomOpen(false)
+            }
+          >
+            <TerminalPanel />
+          </ToolWindow>
+        )
+      default:
+        return null
+    }
+  }
 
   // ---- 渲染 ----
   return (
@@ -677,71 +956,28 @@ export default function App(): React.JSX.Element {
         {/* 左工具窗轨道 */}
         <ToolWindowRail side="left" topItems={leftRailTop} bottomItems={leftRailBottom} />
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        {/* 中央内容容器:相对定位,覆盖式停靠层(Unpinned/Undock)挂在其上不挤压布局 */}
+        <div className="relative flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1">
-            {/* 左:项目树 / 设备管理器(上)+ 结构视图(下,纵向分栏高度可拖拽) */}
-            {(leftTool !== null || structureOpen) && (
+            {/* 左:项目树 / 设备管理器(上)+ 结构视图(下,纵向分栏高度可拖拽);仅 dockPinned 占槽位 */}
+            {(leftPinnedTool !== null || structPinned) && (
               <>
                 <div style={{ width: leftWidth }} className="flex shrink-0 flex-col overflow-hidden">
-                  {leftTool && (
+                  {leftPinnedTool && (
                     <div
-                      className={structureOpen ? 'shrink-0 overflow-hidden' : 'min-h-0 flex-1'}
-                      style={structureOpen ? { height: structTopHeight } : undefined}
+                      className={structPinned ? 'shrink-0 overflow-hidden' : 'min-h-0 flex-1'}
+                      style={structPinned ? { height: structTopHeight } : undefined}
                     >
-                      <ToolWindow
-                        title={leftTool === 'project' ? t('rail.project') : t('rail.devices')}
-                        icon={leftTool === 'project' ? <LuFolderTree /> : <LuMonitorSmartphone />}
-                        onHide={() => setLeftTool(null)}
-                      >
-                        {leftTool === 'project' ? (
-                          workspaceRoot ? (
-                            <FileTree
-                              root={workspaceRoot}
-                              onOpenFile={handleOpenFile}
-                              dirtyPaths={dirtyPaths}
-                              onFileRemoved={handleFileRemoved}
-                              activePath={activePath}
-                            />
-                          ) : (
-                            <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-                              <LuFolderOpen className="text-3xl text-ink-500" />
-                              <div className="text-[13px] text-jb-muted">{t('fileTree.empty')}</div>
-                              <button
-                                className="rounded bg-accent px-3 py-1 text-xs text-white hover:bg-accent-dim"
-                                onClick={() => void handleOpenWorkspace()}
-                              >
-                                {t('titlebar.openWorkspace')}
-                              </button>
-                            </div>
-                          )
-                        ) : (
-                          // 设备管理器(虚拟设备档案表格 + 新建模拟器向导,阶段 2 落地)
-                          <DeviceManagerPanel />
-                        )}
-                      </ToolWindow>
+                      {renderTool(leftPinnedTool)}
                     </div>
                   )}
-                  {leftTool && structureOpen && (
+                  {leftPinnedTool && structPinned && (
                     <DragHandle
                       orientation="horizontal"
                       onDelta={(dy) => setStructTopHeight((h) => clamp(h + dy, 120, 640))}
                     />
                   )}
-                  {structureOpen && (
-                    <div className="min-h-0 flex-1">
-                      <ToolWindow
-                        title={t('rail.structure')}
-                        icon={<LuListTree />}
-                        onHide={() => setStructureOpen(false)}
-                      >
-                        <StructureView
-                          path={activePath}
-                          cursorLine={cursor?.line ?? null}
-                          onNavigate={(line, column) => editorRef.current?.revealAt(line, column)}
-                        />
-                      </ToolWindow>
-                    </div>
-                  )}
+                  {structPinned && <div className="min-h-0 flex-1">{renderTool('structure')}</div>}
                 </div>
                 <DragHandle orientation="vertical" onDelta={(dx) => setLeftWidth((w) => clamp(w + dx, 180, 520))} />
               </>
@@ -807,43 +1043,78 @@ export default function App(): React.JSX.Element {
               </div>
             </div>
 
-            {/* 右:「运行的设备」 */}
-            {rightOpen && (
+            {/* 右:「运行的设备」(仅 dockPinned 占槽位) */}
+            {rightPinned && (
               <>
                 <DragHandle orientation="vertical" onDelta={(dx) => setRightWidth((w) => clamp(w - dx, 280, 680))} />
                 <div style={{ width: rightWidth }} className="shrink-0 overflow-hidden">
-                  <ToolWindow
-                    title={t('rail.runningDevices')}
-                    icon={<LuSmartphone />}
-                    onHide={() => setRightOpen(false)}
-                  >
-                    <RunningDevicesPanel />
-                  </ToolWindow>
+                  {renderTool('running')}
                 </div>
               </>
             )}
           </div>
 
-          {/* 底:日志 / 构建 / 问题 */}
-          {bottomOpen && (
+          {/* 底:日志/构建/问题 窗 ⇄ 终端窗(hidden 切换,两窗状态互不销毁;
+              终端 xterm 实例常驻 xtermRegistry,底部区整体关闭重开会话也不丢;
+              仅 dockPinned 的窗进槽位,overlay/float 模式在下方另行渲染) */}
+          {bottomDockView !== null && (
             <>
               <DragHandle orientation="horizontal" onDelta={(dy) => setBottomHeight((h) => clamp(h - dy, 120, 480))} />
               <div style={{ height: bottomHeight }} className="shrink-0">
-                <ToolWindow
-                  title={t('console.appLog')}
-                  header={<LogsTabStrip activeTab={bottomTab} problems={problems.length} onTabChange={setBottomTab} />}
-                  onHide={() => setBottomOpen(false)}
-                >
-                  <LogsToolWindow
-                    activeTab={bottomTab}
-                    appLogs={appLogs}
-                    buildLogs={buildLogs}
-                    problems={problems}
-                    onClear={(tab) => (tab === 'logs' ? setAppLogs([]) : setBuildLogs([]))}
-                  />
-                </ToolWindow>
+                {viewModes.logs === 'dockPinned' && (
+                  <div className={bottomDockView === 'logs' ? 'h-full' : 'hidden'}>{renderTool('logs')}</div>
+                )}
+                {terminalOpened && viewModes.terminal === 'dockPinned' && (
+                  <div className={bottomDockView === 'terminal' ? 'h-full' : 'hidden'}>{renderTool('terminal')}</div>
+                )}
               </div>
             </>
+          )}
+
+          {/* 覆盖式停靠层(Dock Unpinned / Undock):absolute 覆盖编辑区,z-450 */}
+          {(leftOverlayTool !== null || structOverlay) && (
+            <DockOverlay
+              ref={leftOverlayRef}
+              side="left"
+              size={leftWidth}
+              onResizeDelta={(dx) => setLeftWidth((w) => clamp(w + dx, 180, 520))}
+            >
+              {leftOverlayTool && (
+                <div
+                  className={structOverlay ? 'shrink-0 overflow-hidden' : 'min-h-0 flex-1'}
+                  style={structOverlay ? { height: structTopHeight } : undefined}
+                >
+                  {renderTool(leftOverlayTool)}
+                </div>
+              )}
+              {leftOverlayTool && structOverlay && (
+                <DragHandle
+                  orientation="horizontal"
+                  onDelta={(dy) => setStructTopHeight((h) => clamp(h + dy, 120, 640))}
+                />
+              )}
+              {structOverlay && <div className="min-h-0 flex-1">{renderTool('structure')}</div>}
+            </DockOverlay>
+          )}
+          {rightOverlay && (
+            <DockOverlay
+              ref={rightOverlayRef}
+              side="right"
+              size={rightWidth}
+              onResizeDelta={(dx) => setRightWidth((w) => clamp(w - dx, 280, 680))}
+            >
+              {renderTool('running')}
+            </DockOverlay>
+          )}
+          {bottomOverlayTool !== null && (
+            <DockOverlay
+              ref={bottomOverlayRef}
+              side="bottom"
+              size={bottomHeight}
+              onResizeDelta={(dy) => setBottomHeight((h) => clamp(h - dy, 120, 480))}
+            >
+              {renderTool(bottomOverlayTool)}
+            </DockOverlay>
           )}
         </div>
 
@@ -861,6 +1132,23 @@ export default function App(): React.JSX.Element {
         pushPercent={pushPercent}
         fwTask={fwTask}
       />
+
+      {/* 浮动工具窗(视图模式 Float,z-600;可见性沿用各自槽位开关,终端有独立开关) */}
+      {leftTool !== null && viewModes[leftTool] === 'float' && (
+        <FloatPanel toolId={leftTool}>{(drag) => renderTool(leftTool, drag)}</FloatPanel>
+      )}
+      {structureOpen && viewModes.structure === 'float' && (
+        <FloatPanel toolId="structure">{(drag) => renderTool('structure', drag)}</FloatPanel>
+      )}
+      {rightOpen && viewModes.running === 'float' && (
+        <FloatPanel toolId="running">{(drag) => renderTool('running', drag)}</FloatPanel>
+      )}
+      {bottomOpen && bottomView === 'logs' && viewModes.logs === 'float' && (
+        <FloatPanel toolId="logs">{(drag) => renderTool('logs', drag)}</FloatPanel>
+      )}
+      {terminalOpened && termFloatVisible && viewModes.terminal === 'float' && (
+        <FloatPanel toolId="terminal">{(drag) => renderTool('terminal', drag)}</FloatPanel>
+      )}
 
       {/* Cmd+P 快速打开 */}
       {quickOpenVisible && (

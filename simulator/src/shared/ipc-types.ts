@@ -158,6 +158,65 @@ export interface ToolchainSettings {
   baudRate: number
 }
 
+// ---------------------------------------------------------------
+// 集成终端(JetBrains 式底部终端工具窗,阶段 1/2)
+// ---------------------------------------------------------------
+
+/** 终端后端:pty = node-pty 真伪终端;pipe = child_process 管道兜底(TERM=dumb,体验受限) */
+export type TerminalBackend = 'pty' | 'pipe'
+
+/** 一个终端会话(main 进程 PtyService 持有真实进程) */
+export interface TerminalSessionInfo {
+  /** 会话 ID(term-<自增>) */
+  id: string
+  /** 显示名:Local、Local (2)…(可重命名) */
+  name: string
+  backend: TerminalBackend
+  /** 实际启动的 shell 可执行文件 */
+  shell: string
+  /** 工作目录(工作区根,无工作区为 HOME) */
+  cwd: string
+  /** shell 进程 pid(自检脚本断言进程回收用) */
+  pid: number
+}
+
+/** 终端创建参数 */
+export interface TerminalCreateOptions {
+  /** 工作目录(renderer 传当前工作区根;缺省 HOME) */
+  cwd?: string
+  cols?: number
+  rows?: number
+}
+
+/** 终端数据块(main → renderer,16ms 批量聚合下发) */
+export interface TerminalDataChunk {
+  id: string
+  data: string
+}
+
+/** 终端会话退出事件 */
+export interface TerminalExitEvent {
+  id: string
+  /** 进程退出码(被信号杀死为 null) */
+  exitCode: number | null
+}
+
+// ---------------------------------------------------------------
+// 工具窗独立窗口(视图模式 Window,阶段 2/2)
+// ---------------------------------------------------------------
+
+/**
+ * 支持「独立窗口」的工具窗 id(main 进程白名单):
+ * 终端(PTY 数据)与构建输出(build:log / toolchain:log)在 main 侧均为全窗口广播,
+ * 因此可完整跨窗;其余工具窗状态在主窗 renderer 内,菜单项置灰
+ */
+export type StandaloneToolId = 'terminal' | 'build'
+
+/** 独立工具窗关闭事件(toolwindow:closed 广播;renderer 将该工具窗回 Dock Pinned) */
+export interface ToolWindowClosedEvent {
+  id: StandaloneToolId
+}
+
 /** mDNS 发现的 devd 设备 */
 export interface DevdDevice {
   name: string

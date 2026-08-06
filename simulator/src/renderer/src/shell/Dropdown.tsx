@@ -18,6 +18,8 @@ export interface DropdownItem {
   danger?: boolean
   /** 次级说明(右侧灰字) */
   hint?: string
+  /** 悬停提示(禁用原因等) */
+  title?: string
   onSelect: () => void
 }
 
@@ -113,6 +115,7 @@ export function MenuButton(props: {
                 {groupHeader}
                 <button
                   disabled={it.disabled}
+                  title={it.title}
                   onClick={() => {
                     setOpen(false)
                     it.onSelect()
@@ -129,7 +132,12 @@ export function MenuButton(props: {
                     {it.checked ? <LuCheck className="text-accent" /> : it.icon}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{it.label}</span>
-                  {it.hint && <span className="shrink-0 text-xs text-ink-500">{it.hint}</span>}
+                  {/* max-w+truncate 兜底:即使传入超长 hint 也不撑破菜单宽度 */}
+                  {it.hint && (
+                    <span className="max-w-[300px] shrink-0 truncate text-xs text-ink-500">
+                      {it.hint}
+                    </span>
+                  )}
                 </button>
               </div>
             )
