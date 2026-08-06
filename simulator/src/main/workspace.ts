@@ -153,6 +153,13 @@ export function registerWorkspaceIpc(): void {
     return fsp.readFile(assertInsideRoot(p), 'utf8')
   })
 
+  // 二进制读取(Markdown 预览的相对路径图片 → renderer 转 blob URL)
+  ipcMain.handle('fs:read-file-binary', async (_e, p: string): Promise<ArrayBuffer> => {
+    const buf = await fsp.readFile(assertInsideRoot(p))
+    // 复制为独立 ArrayBuffer(Buffer 池共享内存不能直接跨 IPC 传)
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  })
+
   ipcMain.handle('fs:write-file', async (_e, p: string, content: string): Promise<void> => {
     const abs = assertInsideRoot(p)
     await fsp.mkdir(dirname(abs), { recursive: true })

@@ -6,7 +6,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { LuFile, LuFileCode, LuFileJson, LuFileText, LuSearch } from 'react-icons/lu'
+import { LuSearch } from 'react-icons/lu'
+import { fileIconFor } from '../components/fileIcons'
 
 interface Props {
   /** 工作区根(未打开时列表为空) */
@@ -41,14 +42,6 @@ function fuzzyScore(query: string, target: string): number | null {
   }
   // 目标越短越靠前
   return score - target.length * 0.01
-}
-
-function iconFor(name: string): React.JSX.Element {
-  const n = name.toLowerCase()
-  if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(n)) return <LuFileCode className="shrink-0 text-accent" />
-  if (n.endsWith('.json')) return <LuFileJson className="shrink-0 text-yellow-400/90" />
-  if (n.endsWith('.md')) return <LuFileText className="shrink-0 text-sky-300/90" />
-  return <LuFile className="shrink-0 text-jb-muted" />
 }
 
 const MAX_RESULTS = 50
@@ -146,7 +139,7 @@ export function QuickOpen({ workspaceRoot, onOpen, onClose }: Props): React.JSX.
                     i === selected ? 'bg-jb-selection text-jb-text' : 'text-jb-text'
                   }`}
                 >
-                  {iconFor(name)}
+                  {fileIconFor(name)}
                   <span className="shrink-0">{name}</span>
                   {dir && <span className="min-w-0 truncate text-xs text-ink-500">{dir}</span>}
                 </div>

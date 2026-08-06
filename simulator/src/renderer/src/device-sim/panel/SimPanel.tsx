@@ -2,36 +2,31 @@
  * 虚拟设备面板(「运行的设备」工具窗内容,对齐 AS Running Devices)
  *
  * - 左缘竖排小工具条:电源(停止)/ 重载 / 截图(PNG → ~/Downloads)/ 旋转 / 音量开关 /
- *   缩放适应 / 100%
+ *   缩放适应 / 100%;分隔线下为虚拟外设分组图标(电源/按键/IMU/GPS/LED/摄像头),
+ *   点击在右侧弹出 JetBrains 气泡 popover 承载原分组表单(同时只开一个,点外部/Esc 关闭,
+ *   有活动状态的组图标右上角显示小圆点)
  * - 画布区:设备屏幕居中(尺寸=设备档案分辨率,经 screen props 传入,不再硬编码),
- *   整数倍缩放优先,右下角缩放百分比小标签(如 147%)
+ *   整数倍缩放优先,右下角缩放百分比小标签(如 147%);外设收进 popover 后画布获得
+ *   全部纵向空间(缩放适应经 ResizeObserver 自动复算)
  *   鼠标事件映射为触摸(down/move/up),亮度→CSS filter,熄屏→黑色遮罩,旋转→CSS transform
- * - 下方虚拟外设控件抽屉(折叠分组):电源(电量+充电)/ 按键(BOOT+摇一摇)/
- *   IMU 三轴 / GPS 经纬度 / LED 灯带 / 摄像头(预览)
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
+import { VscCircleFilled, VscMic, VscComment } from 'react-icons/vsc'
 import {
-  VscChevronDown,
-  VscChevronRight,
-  VscCircleFilled,
-  VscDeviceCameraVideo,
-  VscLocation,
-  VscPlug,
-  VscPulse,
-  VscRecordKeys,
-  VscLightbulb,
-  VscMic,
-  VscComment
-} from 'react-icons/vsc'
-import {
+  LuAxis3D,
+  LuBatteryMedium,
   LuCamera,
+  LuKeyboard,
+  LuLightbulb,
+  LuMapPin,
   LuMaximize,
   LuPower,
-  LuRotateCw,
   LuRefreshCw,
+  LuRotateCw,
   LuVolume2,
-  LuVolumeX
+  LuVolumeX,
+  LuWebcam
 } from 'react-icons/lu'
 import type { SimEngine, EngineUiState } from '../engine'
 import type { PeriphSnapshot } from '../protocol'
@@ -46,6 +41,9 @@ export interface ScreenSize {
 /** 缩放模式:适应窗口(整数倍优先)或固定 100% */
 type ZoomMode = 'fit' | 'one'
 
+/** 外设分组(左缘工具条 popover) */
+type PeriphGroup = 'power' | 'buttons' | 'imu' | 'gps' | 'led' | 'camera'
+
 function useUiState(engine: SimEngine): EngineUiState {
   return useSyncExternalStore(engine.uiStore.subscribe, engine.uiStore.get)
 }
@@ -55,30 +53,8 @@ function usePeriph(engine: SimEngine): PeriphSnapshot {
 }
 
 // ---------------------------------------------------------------
-// 折叠分组
+// 表单控件(popover 内容,11-12px 紧凑密度)
 // ---------------------------------------------------------------
-
-function Group(props: {
-  icon: React.ReactNode
-  title: string
-  defaultOpen?: boolean
-  children: React.ReactNode
-}): React.JSX.Element {
-  const [open, setOpen] = useState(props.defaultOpen ?? true)
-  return (
-    <div className="border-b border-ink-700">
-      <button
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-jb-text hover:bg-ink-800"
-        onClick={() => setOpen((o) => !o)}
-      >
-        {open ? <VscChevronDown className="shrink-0" /> : <VscChevronRight className="shrink-0" />}
-        <span className="text-accent">{props.icon}</span>
-        <span className="font-medium">{props.title}</span>
-      </button>
-      {open && <div className="space-y-2 px-3 pb-3 pt-1">{props.children}</div>}
-    </div>
-  )
-}
 
 function Slider(props: {
   label: string
@@ -90,7 +66,7 @@ function Slider(props: {
   onChange: (v: number) => void
 }): React.JSX.Element {
   return (
-    <label className="block text-xs text-jb-muted">
+    <label className="block text-[11px] text-jb-muted">
       <div className="mb-0.5 flex justify-between">
         <span>{props.label}</span>
         <span className="font-mono text-jb-text">
@@ -113,7 +89,7 @@ function Slider(props: {
 
 function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void }): React.JSX.Element {
   return (
-    <label className="flex cursor-pointer items-center justify-between text-xs text-jb-muted">
+    <label className="flex cursor-pointer items-center justify-between text-[11px] text-jb-muted">
       <span>{props.label}</span>
       <input
         type="checkbox"
@@ -126,6 +102,46 @@ function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean)
 }
 
 // ---------------------------------------------------------------
+// JetBrains 气泡 popover(锚定左缘工具条按钮,右侧弹出,小箭头指向按钮)
+// ---------------------------------------------------------------
+
+function PeriphPopover(props: {
+  /** 锚点:按钮右缘中点(视口坐标) */
+  anchor: { x: number; y: number }
+  title: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  const [top, setTop] = useState(props.anchor.y - 18)
+
+  // 首帧测量高度,垂直方向夹取避免越出窗口
+  useLayoutEffect(() => {
+    const h = ref.current?.offsetHeight ?? 0
+    const ideal = props.anchor.y - 18
+    setTop(Math.max(8, Math.min(ideal, window.innerHeight - h - 8)))
+  }, [props.anchor])
+
+  // 箭头相对 popover 顶部的偏移(始终指向按钮中心)
+  const arrowY = Math.max(8, Math.min(props.anchor.y - top - 5, 320))
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-[900] w-[248px] rounded-md border border-ink-700 bg-ink-850 shadow-2xl"
+      style={{ left: props.anchor.x + 10, top }}
+    >
+      {/* 小箭头(旋转方块,指向左侧按钮) */}
+      <span
+        className="absolute -left-[5px] h-2.5 w-2.5 rotate-45 border-b border-l border-ink-700 bg-ink-850"
+        style={{ top: arrowY }}
+      />
+      <div className="border-b border-ink-700 px-3 py-1.5 text-[12px] font-medium text-jb-text">{props.title}</div>
+      <div className="space-y-2 px-3 py-2.5">{props.children}</div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------
 // 左缘工具条
 // ---------------------------------------------------------------
 
@@ -133,7 +149,9 @@ function ToolStripButton(props: {
   title: string
   disabled?: boolean
   active?: boolean
-  onClick: () => void
+  /** 右上角活动状态小圆点(充电中/LED 开等) */
+  dot?: boolean
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void
   children: React.ReactNode
 }): React.JSX.Element {
   return (
@@ -141,7 +159,7 @@ function ToolStripButton(props: {
       title={props.title}
       disabled={props.disabled}
       onClick={props.onClick}
-      className={`flex h-7 w-7 items-center justify-center rounded text-[14px] ${
+      className={`relative flex h-7 w-7 items-center justify-center rounded text-[14px] ${
         props.disabled
           ? 'cursor-not-allowed text-ink-500'
           : props.active
@@ -150,21 +168,77 @@ function ToolStripButton(props: {
       }`}
     >
       {props.children}
+      {props.dot && <span className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />}
     </button>
   )
 }
 
+/** 摄像头预览(popover 内;流为空时不渲染) */
+function CameraPreview({ stream }: { stream: MediaStream | null }): React.JSX.Element | null {
+  const ref = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.srcObject = stream
+      if (stream) void ref.current.play().catch(() => undefined)
+    }
+  }, [stream])
+  if (!stream) return null
+  return <video ref={ref} muted playsInline className="w-full rounded border border-ink-600" />
+}
+
+// ---------------------------------------------------------------
+// LED 灯带可视化
+// ---------------------------------------------------------------
+
+function LedStrip({ colors, brightness }: { colors: number[]; brightness: number }): React.JSX.Element {
+  const items = colors.length > 0 ? colors : new Array<number>(8).fill(0)
+  return (
+    <div className="flex gap-1.5">
+      {items.map((c, i) => {
+        const css = `#${(c & 0xffffff).toString(16).padStart(6, '0')}`
+        const lit = (c & 0xffffff) !== 0
+        return (
+          <span
+            key={i}
+            className="h-4 w-4 rounded-full border border-ink-600"
+            style={{
+              backgroundColor: css,
+              opacity: lit ? Math.max(0.2, brightness / 100) : 1,
+              boxShadow: lit ? `0 0 6px ${css}` : 'none'
+            }}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------
+// 工具条(运行控制 + 外设分组图标)
+// ---------------------------------------------------------------
+
 function ToolStrip({
   engine,
   zoom,
-  onZoom
+  onZoom,
+  openGroup,
+  onToggleGroup,
+  gpsLive,
+  stripRef
 }: {
   engine: SimEngine
   zoom: ZoomMode
   onZoom: (z: ZoomMode) => void
+  openGroup: PeriphGroup | null
+  onToggleGroup: (g: PeriphGroup, anchor: { x: number; y: number }) => void
+  /** GPS 持续上报开启(图标点) */
+  gpsLive: boolean
+  /** 外层容器 ref(popover 点外部关闭的边界判断) */
+  stripRef: React.RefObject<HTMLDivElement>
 }): React.JSX.Element {
   const { t } = useTranslation()
   const ui = useUiState(engine)
+  const periph = usePeriph(engine)
 
   const screenshot = async (): Promise<void> => {
     try {
@@ -174,14 +248,23 @@ function ToolStrip({
         return
       }
       const path = await window.api.saveScreenshot(png)
-      showToast(t('sim.screenshotSaved', { path }), 'info', 4200)
+      showToast(t('sim.screenshotSaved', { path }), 'success')
     } catch (err) {
       showToast(t('sim.screenshotFailed', { message: err instanceof Error ? err.message : String(err) }), 'error')
     }
   }
 
+  /** 分组按钮点击 → 上抛锚点(按钮右缘中点) */
+  const toggle = (g: PeriphGroup) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    onToggleGroup(g, { x: r.right, y: r.top + r.height / 2 })
+  }
+
+  // IMU 偏离默认姿态(0,0,1)视为活动状态
+  const imuActive = periph.imu.ax !== 0 || periph.imu.ay !== 0 || periph.imu.az !== 1
+
   return (
-    <div className="flex w-9 shrink-0 flex-col items-center gap-0.5 border-r border-ink-700 bg-ink-850 py-1">
+    <div ref={stripRef} className="flex w-9 shrink-0 flex-col items-center gap-0.5 border-r border-ink-700 bg-ink-850 py-1">
       <ToolStripButton title={t('sim.toolbar.power')} disabled={!ui.running} onClick={() => engine.api.stop()}>
         <LuPower className={ui.running ? 'text-red-400' : ''} />
       </ToolStripButton>
@@ -203,6 +286,42 @@ function ToolStrip({
       </ToolStripButton>
       <ToolStripButton title={t('sim.toolbar.zoom100')} active={zoom === 'one'} onClick={() => onZoom('one')}>
         <span className="text-[9px] font-bold">1:1</span>
+      </ToolStripButton>
+
+      {/* 分隔线下:虚拟外设分组(点击弹 popover,活动状态右上角圆点) */}
+      <div className="my-0.5 h-px w-5 bg-ink-700" />
+      <ToolStripButton
+        title={t('sim.group.power')}
+        active={openGroup === 'power'}
+        dot={periph.battery.charging}
+        onClick={toggle('power')}
+      >
+        <LuBatteryMedium />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.group.buttons')} active={openGroup === 'buttons'} onClick={toggle('buttons')}>
+        <LuKeyboard />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.group.imu')} active={openGroup === 'imu'} dot={imuActive} onClick={toggle('imu')}>
+        <LuAxis3D />
+      </ToolStripButton>
+      <ToolStripButton title={t('sim.group.gps')} active={openGroup === 'gps'} dot={gpsLive} onClick={toggle('gps')}>
+        <LuMapPin />
+      </ToolStripButton>
+      <ToolStripButton
+        title={t('sim.group.led')}
+        active={openGroup === 'led'}
+        dot={periph.led.available}
+        onClick={toggle('led')}
+      >
+        <LuLightbulb />
+      </ToolStripButton>
+      <ToolStripButton
+        title={t('sim.group.camera')}
+        active={openGroup === 'camera'}
+        dot={ui.cameraActive}
+        onClick={toggle('camera')}
+      >
+        <LuWebcam />
       </ToolStripButton>
     </div>
   )
@@ -330,33 +449,6 @@ function ScreenView({
 }
 
 // ---------------------------------------------------------------
-// LED 灯带可视化
-// ---------------------------------------------------------------
-
-function LedStrip({ colors, brightness }: { colors: number[]; brightness: number }): React.JSX.Element {
-  const items = colors.length > 0 ? colors : new Array<number>(8).fill(0)
-  return (
-    <div className="flex gap-1.5">
-      {items.map((c, i) => {
-        const css = `#${(c & 0xffffff).toString(16).padStart(6, '0')}`
-        const lit = (c & 0xffffff) !== 0
-        return (
-          <span
-            key={i}
-            className="h-4 w-4 rounded-full border border-ink-600"
-            style={{
-              backgroundColor: css,
-              opacity: lit ? Math.max(0.2, brightness / 100) : 1,
-              boxShadow: lit ? `0 0 6px ${css}` : 'none'
-            }}
-          />
-        )
-      })}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------
 // 主面板
 // ---------------------------------------------------------------
 
@@ -364,19 +456,177 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
   const { t } = useTranslation()
   const ui = useUiState(engine)
   const periph = usePeriph(engine)
-  const videoRef = useRef<HTMLVideoElement>(null)
   const [zoom, setZoom] = useState<ZoomMode>('fit')
 
-  // 摄像头预览
+  // ---- 外设 popover(同时只开一个;popover 作用于当前激活 tab 的会话:
+  //      SimPanel 按会话 key 重挂,引擎即本会话实例) ----
+  const [openGroup, setOpenGroup] = useState<PeriphGroup | null>(null)
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null)
+  const stripRef = useRef<HTMLDivElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+
+  // GPS:草稿输入 + 「发送定位」提交;「持续上报」开启时输入即推送
+  const [gpsDraft, setGpsDraft] = useState<{ lat: number; lng: number }>(() => engine.periphStore.get().gps)
+  const [gpsLive, setGpsLive] = useState(false)
+
+  const toggleGroup = useCallback((g: PeriphGroup, a: { x: number; y: number }): void => {
+    setOpenGroup((cur) => (cur === g ? null : g))
+    setAnchor(a)
+  }, [])
+
+  // 点外部 / Esc / 窗口尺寸变化 → 关闭 popover(工具条与 popover 内部点击除外)
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = ui.cameraStream
-      if (ui.cameraStream) void videoRef.current.play().catch(() => undefined)
+    if (!openGroup) return
+    const onDown = (e: MouseEvent): void => {
+      const target = e.target as Node
+      if (stripRef.current?.contains(target) || popoverRef.current?.contains(target)) return
+      setOpenGroup(null)
     }
-  }, [ui.cameraStream])
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpenGroup(null)
+    }
+    const onResize = (): void => setOpenGroup(null)
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [openGroup])
 
   const setImu = (axis: 'ax' | 'ay' | 'az', v: number): void => {
     engine.periphStore.set({ imu: { ...periph.imu, [axis]: v } })
+  }
+
+  /** GPS 输入变更:更新草稿;持续上报开启时立即推送 */
+  const changeGps = (patch: Partial<{ lat: number; lng: number }>): void => {
+    const next = { ...gpsDraft, ...patch }
+    setGpsDraft(next)
+    if (gpsLive) engine.periphStore.set({ gps: next })
+  }
+
+  /** popover 内容(逻辑复用原分组表单,仅换容器) */
+  const renderGroup = (g: PeriphGroup): React.JSX.Element => {
+    switch (g) {
+      case 'power':
+        return (
+          <>
+            <Slider
+              label={t('sim.battery')}
+              min={0}
+              max={100}
+              value={periph.battery.level}
+              suffix="%"
+              onChange={(v) => engine.periphStore.set({ battery: { ...periph.battery, level: v } })}
+            />
+            <Toggle
+              label={t('sim.charging')}
+              checked={periph.battery.charging}
+              onChange={(v) => engine.periphStore.set({ battery: { ...periph.battery, charging: v } })}
+            />
+          </>
+        )
+      case 'buttons':
+        return (
+          <>
+            <div className="flex gap-2">
+              <button
+                className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-[11px] text-jb-text active:bg-accent-dim"
+                onMouseDown={() => engine.sendButton('down')}
+                onMouseUp={() => engine.sendButton('up')}
+                onMouseLeave={(e) => {
+                  if (e.buttons > 0) engine.sendButton('up')
+                }}
+              >
+                {t('sim.bootButton')}
+              </button>
+              <button
+                className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-[11px] text-jb-text active:bg-accent-dim"
+                onClick={() => engine.sendShake()}
+              >
+                {t('sim.shake')}
+              </button>
+            </div>
+            <div className="text-[10px] text-ink-500">{t('sim.bootHint')}</div>
+          </>
+        )
+      case 'imu':
+        return (
+          <>
+            <Slider label="ax (g)" min={-2} max={2} step={0.05} value={periph.imu.ax} onChange={(v) => setImu('ax', v)} />
+            <Slider label="ay (g)" min={-2} max={2} step={0.05} value={periph.imu.ay} onChange={(v) => setImu('ay', v)} />
+            <Slider label="az (g)" min={-2} max={2} step={0.05} value={periph.imu.az} onChange={(v) => setImu('az', v)} />
+            <button
+              className="w-full rounded border border-ink-600 bg-ink-800 px-2 py-1 text-[11px] text-jb-text hover:bg-ink-700"
+              onClick={() => engine.periphStore.set({ imu: { ...periph.imu, ax: 0, ay: 0, az: 1 } })}
+            >
+              {t('sim.imuReset')}
+            </button>
+          </>
+        )
+      case 'gps':
+        return (
+          <>
+            <div className="flex gap-2">
+              <label className="flex-1 text-[11px] text-jb-muted">
+                {t('sim.lat')}
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={gpsDraft.lat}
+                  onChange={(e) => changeGps({ lat: Number(e.target.value) })}
+                  className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-[11px] text-jb-text outline-none focus:border-accent"
+                />
+              </label>
+              <label className="flex-1 text-[11px] text-jb-muted">
+                {t('sim.lng')}
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={gpsDraft.lng}
+                  onChange={(e) => changeGps({ lng: Number(e.target.value) })}
+                  className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-[11px] text-jb-text outline-none focus:border-accent"
+                />
+              </label>
+            </div>
+            <button
+              className="w-full rounded bg-accent px-2 py-1 text-[11px] text-white hover:bg-accent-dim"
+              onClick={() => engine.periphStore.set({ gps: { ...gpsDraft } })}
+            >
+              {t('sim.gpsSend')}
+            </button>
+            <Toggle
+              label={t('sim.gpsLive')}
+              checked={gpsLive}
+              onChange={(v) => {
+                setGpsLive(v)
+                // 开启即推送一次当前草稿(随后输入实时上报)
+                if (v) engine.periphStore.set({ gps: { ...gpsDraft } })
+              }}
+            />
+          </>
+        )
+      case 'led':
+        return (
+          <>
+            <Toggle
+              label={t('sim.ledEnable')}
+              checked={periph.led.available}
+              onChange={(v) => engine.periphStore.set({ led: { ...periph.led, available: v } })}
+            />
+            {periph.led.available && <LedStrip colors={ui.ledColors} brightness={ui.ledBrightness} />}
+          </>
+        )
+      case 'camera':
+        return (
+          <>
+            <div className="text-[10px] text-ink-500">{t('sim.cameraHint')}</div>
+            {ui.cameraActive && <CameraPreview stream={ui.cameraStream} />}
+          </>
+        )
+    }
   }
 
   return (
@@ -397,109 +647,28 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
         )}
       </div>
 
-      {/* 左缘工具条 + 屏幕画布 */}
+      {/* 左缘工具条 + 屏幕画布(外设收进 popover,画布独占纵向空间) */}
       <div className="flex min-h-0 flex-1">
-        <ToolStrip engine={engine} zoom={zoom} onZoom={setZoom} />
+        <ToolStrip
+          engine={engine}
+          zoom={zoom}
+          onZoom={setZoom}
+          openGroup={openGroup}
+          onToggleGroup={toggleGroup}
+          gpsLive={gpsLive}
+          stripRef={stripRef}
+        />
         <ScreenView engine={engine} screen={screen} zoom={zoom} />
       </div>
 
-      {/* 虚拟外设控件抽屉(滚动区) */}
-      <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-ink-700">
-        {/* 电源 */}
-        <Group icon={<VscPlug />} title={t('sim.group.power')}>
-          <Slider
-            label={t('sim.battery')}
-            min={0}
-            max={100}
-            value={periph.battery.level}
-            suffix="%"
-            onChange={(v) => engine.periphStore.set({ battery: { ...periph.battery, level: v } })}
-          />
-          <Toggle
-            label={t('sim.charging')}
-            checked={periph.battery.charging}
-            onChange={(v) => engine.periphStore.set({ battery: { ...periph.battery, charging: v } })}
-          />
-        </Group>
-
-        {/* 按键 */}
-        <Group icon={<VscRecordKeys />} title={t('sim.group.buttons')}>
-          <div className="flex gap-2">
-            <button
-              className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-xs text-jb-text active:bg-accent-dim"
-              onMouseDown={() => engine.sendButton('down')}
-              onMouseUp={() => engine.sendButton('up')}
-              onMouseLeave={(e) => {
-                if (e.buttons > 0) engine.sendButton('up')
-              }}
-            >
-              {t('sim.bootButton')}
-            </button>
-            <button
-              className="flex-1 rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-xs text-jb-text active:bg-accent-dim"
-              onClick={() => engine.sendShake()}
-            >
-              {t('sim.shake')}
-            </button>
-          </div>
-          <div className="text-[10px] text-ink-500">{t('sim.bootHint')}</div>
-        </Group>
-
-        {/* IMU */}
-        <Group icon={<VscPulse />} title={t('sim.group.imu')} defaultOpen={false}>
-          <Slider label="ax (g)" min={-2} max={2} step={0.05} value={periph.imu.ax} onChange={(v) => setImu('ax', v)} />
-          <Slider label="ay (g)" min={-2} max={2} step={0.05} value={periph.imu.ay} onChange={(v) => setImu('ay', v)} />
-          <Slider label="az (g)" min={-2} max={2} step={0.05} value={periph.imu.az} onChange={(v) => setImu('az', v)} />
-        </Group>
-
-        {/* GPS */}
-        <Group icon={<VscLocation />} title={t('sim.group.gps')} defaultOpen={false}>
-          <div className="flex gap-2">
-            <label className="flex-1 text-xs text-jb-muted">
-              {t('sim.lat')}
-              <input
-                type="number"
-                step="0.0001"
-                value={periph.gps.lat}
-                onChange={(e) =>
-                  engine.periphStore.set({ gps: { ...periph.gps, lat: Number(e.target.value) } })
-                }
-                className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-xs text-jb-text outline-none focus:border-accent"
-              />
-            </label>
-            <label className="flex-1 text-xs text-jb-muted">
-              {t('sim.lng')}
-              <input
-                type="number"
-                step="0.0001"
-                value={periph.gps.lng}
-                onChange={(e) =>
-                  engine.periphStore.set({ gps: { ...periph.gps, lng: Number(e.target.value) } })
-                }
-                className="mt-0.5 w-full rounded border border-ink-600 bg-ink-800 px-1.5 py-1 font-mono text-xs text-jb-text outline-none focus:border-accent"
-              />
-            </label>
-          </div>
-        </Group>
-
-        {/* LED 灯带 */}
-        <Group icon={<VscLightbulb />} title={t('sim.group.led')} defaultOpen={false}>
-          <Toggle
-            label={t('sim.ledEnable')}
-            checked={periph.led.available}
-            onChange={(v) => engine.periphStore.set({ led: { ...periph.led, available: v } })}
-          />
-          {periph.led.available && <LedStrip colors={ui.ledColors} brightness={ui.ledBrightness} />}
-        </Group>
-
-        {/* 摄像头 */}
-        <Group icon={<VscDeviceCameraVideo />} title={t('sim.group.camera')} defaultOpen={false}>
-          <div className="text-[10px] text-ink-500">{t('sim.cameraHint')}</div>
-          {ui.cameraActive && (
-            <video ref={videoRef} muted playsInline className="w-full rounded border border-ink-600" />
-          )}
-        </Group>
-      </div>
+      {/* 外设分组 popover(JetBrains 气泡:#2B2D30 底 / #393B40 边框 / 箭头指向按钮) */}
+      {openGroup && anchor && (
+        <div ref={popoverRef}>
+          <PeriphPopover anchor={anchor} title={t(`sim.group.${openGroup}`)}>
+            {renderGroup(openGroup)}
+          </PeriphPopover>
+        </div>
+      )}
     </div>
   )
 }

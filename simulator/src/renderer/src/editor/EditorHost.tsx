@@ -6,6 +6,7 @@
  */
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { monaco, languageForPath } from './monacoSetup'
+import { minimapEnabled, subscribeEditorSettings } from './editorSettings'
 
 export interface EditorHostHandle {
   /** 打开文件(必要时读盘建 model)并激活 */
@@ -20,6 +21,10 @@ export interface EditorHostHandle {
   saveAll(): Promise<void>
   /** 外部变更时:若该文件无未保存修改则从磁盘重载 */
   reloadIfClean(path: string): Promise<void>
+  /** 定位到指定行列并居中(结构视图点击节点) */
+  revealAt(line: number, column: number): void
+  /** 底层 monaco 编辑器实例(结构视图 / Markdown 预览滚动同步用) */
+  getEditor(): monaco.editor.IStandaloneCodeEditor | null
 }
 
 interface Props {
@@ -55,7 +60,8 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
       automaticLayout: true,
       fontSize: 13,
       fontFamily: '"JetBrains Mono", "SF Mono", Menlo, Consolas, monospace',
-      minimap: { enabled: false },
+      // minimap:色块模式(不渲染字符)更贴 JetBrains,开关走设置弹窗持久化
+      minimap: { enabled: minimapEnabled(), renderCharacters: false, maxColumn: 100 },
       scrollBeyondLastLine: false,
       tabSize: 2,
       renderWhitespace: 'selection',
@@ -75,8 +81,16 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
       if (p) void saveFileInternal(p)
     })
 
+    // 设置变化(minimap 开关)即时生效
+    const unsubSettings = subscribeEditorSettings(() => {
+      editor.updateOptions({
+        minimap: { enabled: minimapEnabled(), renderCharacters: false, maxColumn: 100 }
+      })
+    })
+
     const models = modelsRef.current
     return () => {
+      unsubSettings()
       editor.dispose()
       for (const rec of models.values()) {
         rec.disposeListener.dispose()
@@ -172,6 +186,16 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
       } catch {
         // 文件可能已被删除,由文件树的 unlink 流程关闭标签
       }
+    },
+    revealAt(line: number, column: number): void {
+      const editor = editorRef.current
+      if (!editor) return
+      editor.revealRangeInCenter(new monaco.Range(line, 1, line, 1), monaco.editor.ScrollType.Smooth)
+      editor.setPosition({ lineNumber: line, column })
+      editor.focus()
+    },
+    getEditor(): monaco.editor.IStandaloneCodeEditor | null {
+      return editorRef.current
     }
   }))
 

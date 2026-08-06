@@ -27,6 +27,28 @@ export interface PixelboxManifest {
   minFirmware?: string
 }
 
+/** 新建项目向导:项目模板(像素动画 Hello / 空白项目) */
+export type ProjectTemplate = 'hello' | 'blank'
+
+/** 新建项目向导:创建参数(project:create) */
+export interface ProjectCreateOptions {
+  /** 项目名 = 目录名,[a-zA-Z0-9_-] */
+  name: string
+  /** 父目录绝对路径(目录名拼接在其下) */
+  location: string
+  template: ProjectTemplate
+  /** 应用 ID(反域名,如 com.example.myapp) */
+  appId: string
+}
+
+/** 新建项目向导:创建结果 */
+export interface ProjectCreateResult {
+  /** 新项目根目录绝对路径 */
+  root: string
+  /** src/main.ts 绝对路径(创建后编辑器自动打开) */
+  mainTs: string
+}
+
 /** 构建日志行 */
 export interface BuildLogLine {
   level: 'info' | 'warn' | 'error'

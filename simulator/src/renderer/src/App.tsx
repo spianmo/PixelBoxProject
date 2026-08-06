@@ -11,16 +11,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  LuColumns2,
+  LuEye,
   LuFolderOpen,
   LuFolderTree,
   LuHammer,
+  LuListTree,
   LuMonitorSmartphone,
+  LuPencil,
   LuScrollText,
   LuSmartphone,
   LuTriangleAlert
 } from 'react-icons/lu'
 import type { SimDeviceTag, SimManifest } from './device-sim/types'
-import type { FirmwareTaskKind, FirmwareTaskResult } from '../../shared/ipc-types'
+import type { FirmwareTaskKind, FirmwareTaskResult, ProjectCreateResult } from '../../shared/ipc-types'
 import { reloadRunningSessions, useAnySimRunning } from './device-sim'
 import { EditorHost, type EditorHostHandle } from './editor/EditorHost'
 import { FileTree } from './components/FileTree'
@@ -39,6 +43,10 @@ import { DeviceWizardHost } from './shell/DeviceWizardModal'
 import { QuickOpen } from './shell/QuickOpen'
 import { FlashDialog } from './shell/FlashDialog'
 import { SettingsModal } from './shell/SettingsModal'
+import { NewProjectModal } from './shell/NewProjectModal'
+import { StructureView } from './editor/StructureView'
+import { MarkdownPreview } from './editor/MarkdownPreview'
+import { getMdViewMode, setMdViewMode, type MdViewMode } from './editor/mdViewMode'
 import {
   applyDefaultChip,
   chipLabel,
@@ -82,6 +90,9 @@ export default function App(): React.JSX.Element {
   const [bottomOpen, setBottomOpen] = useState(true)
   const [bottomTab, setBottomTab] = useState<BottomTab>('logs')
   const [quickOpenVisible, setQuickOpenVisible] = useState(false)
+  // 结构视图(左侧面板下分栏;允许只开结构)
+  const [structureOpen, setStructureOpen] = useState(false)
+  const [structTopHeight, setStructTopHeight] = useState(300)
 
   // ---- 工作区 / 编辑器 ----
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
@@ -112,6 +123,10 @@ export default function App(): React.JSX.Element {
   const [fwTask, setFwTask] = useState<FirmwareTaskKind | null>(null)
   const [flashOpen, setFlashOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // 新建项目向导
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
+  // Markdown 查看模式(仅活动文件为 md 时生效;切文件时从记忆恢复)
+  const [mdMode, setMdModeState] = useState<MdViewMode>('split')
   /** 烧录默认波特率(设置页持久化;打开烧录对话框时刷新) */
   const [defaultBaud, setDefaultBaud] = useState(460800)
 
@@ -145,7 +160,7 @@ export default function App(): React.JSX.Element {
           // 多实例:同一 bundle 对所有运行中的虚拟设备热重载)
           window.__pixelboxSimContext = { workspaceRoot: root, outDir: result.outDir }
           void reloadRunningSessions(result.code, result.manifest as SimManifest).then(() => {
-            showToast(t('run.reloaded'), 'info', 1800)
+            showToast(t('run.reloaded'), 'success')
           })
         }
       })
@@ -171,7 +186,7 @@ export default function App(): React.JSX.Element {
           return
         }
         if (!r.success) {
-          showToast(t('fw.failed', { kind: t(`fw.kind.${r.kind}`), chip }), 'error', 6000)
+          showToast(t('fw.failed', { kind: t(`fw.kind.${r.kind}`), chip }), 'error')
           return
         }
         if (r.kind === 'build') {
@@ -180,8 +195,7 @@ export default function App(): React.JSX.Element {
             bin
               ? t('fw.buildDone', { chip, name: baseName(bin.path), size: fmtSize(bin.sizeBytes) })
               : t('fw.buildDoneBare', { chip }),
-            'info',
-            6000
+            'success'
           )
         } else if (r.kind === 'merge') {
           const merged = r.artifacts.find((a) => a.path.endsWith('-merged.bin'))
@@ -189,13 +203,12 @@ export default function App(): React.JSX.Element {
             merged
               ? t('fw.mergeDone', { path: merged.path, size: fmtSize(merged.sizeBytes) })
               : t('fw.buildDoneBare', { chip }),
-            'info',
-            9000
+            'success'
           )
         } else if (r.kind === 'flash') {
-          showToast(t('fw.flashDone', { chip }), 'info', 6000)
+          showToast(t('fw.flashDone', { chip }), 'success')
         } else {
-          showToast(t('fw.cleanDone', { chip }), 'info')
+          showToast(t('fw.cleanDone', { chip }), 'success')
         }
       })
     )
@@ -350,6 +363,15 @@ export default function App(): React.JSX.Element {
     await applyWorkspace(root)
   }
 
+  /** 新建项目向导创建成功:作为工作区打开(计入最近列表)+ 编辑器打开 src/main.ts */
+  async function handleProjectCreated(result: ProjectCreateResult): Promise<void> {
+    setNewProjectOpen(false)
+    const root = await window.api.openWorkspacePath(result.root)
+    if (!root) return
+    await applyWorkspace(root)
+    handleOpenFile(result.mainTs)
+  }
+
   const handleOpenFile = useCallback((path: string): void => {
     setTabs((prev) => (prev.some((tb) => tb.path === path) ? prev : [...prev, { path, name: baseName(path) }]))
     setActivePath(path)
@@ -411,6 +433,23 @@ export default function App(): React.JSX.Element {
     [closeTab]
   )
 
+  // ---- Markdown 查看模式(编辑 / 分屏 / 预览,记忆每文件,默认分屏) ----
+  const isMdFile = activePath !== null && /\.(md|markdown)$/i.test(activePath)
+
+  // 切换活动文件时从记忆恢复该文件的模式
+  useEffect(() => {
+    if (activePath && /\.(md|markdown)$/i.test(activePath)) setMdModeState(getMdViewMode(activePath))
+  }, [activePath])
+
+  const changeMdMode = useCallback(
+    (mode: MdViewMode): void => {
+      if (!activePath) return
+      setMdModeState(mode)
+      setMdViewMode(activePath, mode)
+    },
+    [activePath]
+  )
+
   /**
    * 启动固件任务(阶段 3:🔨 构建 / ⋮ 打包 merged.bin / 烧录 / 清理;
    * 目标 = 标题栏芯片下拉 shellDeviceStore.chip,按芯片名传参 idf.py)
@@ -427,7 +466,7 @@ export default function App(): React.JSX.Element {
         setFwTask(null)
         const msg = err instanceof Error ? err.message : String(err)
         const code = /toolchain:(\w+)/.exec(msg)?.[1] ?? 'startFailed'
-        showToast(t(`fw.errors.${code}`, { defaultValue: t('fw.errors.startFailed') }), 'error', 6000)
+        showToast(t(`fw.errors.${code}`, { defaultValue: t('fw.errors.startFailed') }), 'error')
       }
     },
     [t]
@@ -494,7 +533,7 @@ export default function App(): React.JSX.Element {
       await sim.load(result.code, result.manifest as SimManifest)
       setRightOpen(true)
       setBottomTab('logs')
-      showToast(t('run.startedOn', { name: profile.name }), 'info', 1800)
+      showToast(t('run.startedOn', { name: profile.name }), 'success')
       await window.api.buildWatchStart(root) // 开启 watch 热重载
     } catch (err) {
       showToast(`${t('common.error')}: ${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -504,7 +543,7 @@ export default function App(): React.JSX.Element {
   function handleStop(): void {
     window.__pixelboxSim?.stop() // 停止全部会话(逐 tab 的 ✕ 只关单个)
     void window.api.buildWatchStop()
-    showToast(t('run.stopped'), 'info', 1500)
+    showToast(t('run.stopped'), 'info')
   }
 
   async function handlePush(): Promise<void> {
@@ -528,9 +567,9 @@ export default function App(): React.JSX.Element {
     setPushPercent(0)
     try {
       await window.api.devdPush({ root, host: dev.ip || dev.host, port: dev.port })
-      showToast(t('push.done'), 'info')
+      showToast(t('push.done'), 'success')
     } catch (err) {
-      showToast(t('push.failed', { message: err instanceof Error ? err.message : String(err) }), 'error', 5000)
+      showToast(t('push.failed', { message: err instanceof Error ? err.message : String(err) }), 'error')
     } finally {
       setBusy(null)
       setPushPercent(-1)
@@ -546,6 +585,14 @@ export default function App(): React.JSX.Element {
       label: t('rail.project'),
       active: leftTool === 'project',
       onClick: () => setLeftTool((v) => (v === 'project' ? null : 'project'))
+    },
+    {
+      // 结构视图:左侧面板下分栏(与项目树/设备管理器可同开,也允许只开结构)
+      key: 'structure',
+      icon: <LuListTree />,
+      label: t('rail.structure'),
+      active: structureOpen,
+      onClick: () => setStructureOpen((v) => !v)
     },
     {
       key: 'devices',
@@ -612,6 +659,7 @@ export default function App(): React.JSX.Element {
         fwTask={fwTask}
         onOpenWorkspace={() => void handleOpenWorkspace()}
         onOpenWorkspacePath={(p) => void handleOpenWorkspacePath(p)}
+        onNewProject={() => setNewProjectOpen(true)}
         onRun={() => void handleRun()}
         onStop={handleStop}
         onFirmwareBuild={() => void startFirmwareTask('build')}
@@ -631,41 +679,69 @@ export default function App(): React.JSX.Element {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1">
-            {/* 左:项目树 / 设备管理器 */}
-            {leftTool && (
+            {/* 左:项目树 / 设备管理器(上)+ 结构视图(下,纵向分栏高度可拖拽) */}
+            {(leftTool !== null || structureOpen) && (
               <>
-                <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden">
-                  <ToolWindow
-                    title={leftTool === 'project' ? t('rail.project') : t('rail.devices')}
-                    icon={leftTool === 'project' ? <LuFolderTree /> : <LuMonitorSmartphone />}
-                    onHide={() => setLeftTool(null)}
-                  >
-                    {leftTool === 'project' ? (
-                      workspaceRoot ? (
-                        <FileTree
-                          root={workspaceRoot}
-                          onOpenFile={handleOpenFile}
-                          dirtyPaths={dirtyPaths}
-                          onFileRemoved={handleFileRemoved}
-                          activePath={activePath}
+                <div style={{ width: leftWidth }} className="flex shrink-0 flex-col overflow-hidden">
+                  {leftTool && (
+                    <div
+                      className={structureOpen ? 'shrink-0 overflow-hidden' : 'min-h-0 flex-1'}
+                      style={structureOpen ? { height: structTopHeight } : undefined}
+                    >
+                      <ToolWindow
+                        title={leftTool === 'project' ? t('rail.project') : t('rail.devices')}
+                        icon={leftTool === 'project' ? <LuFolderTree /> : <LuMonitorSmartphone />}
+                        onHide={() => setLeftTool(null)}
+                      >
+                        {leftTool === 'project' ? (
+                          workspaceRoot ? (
+                            <FileTree
+                              root={workspaceRoot}
+                              onOpenFile={handleOpenFile}
+                              dirtyPaths={dirtyPaths}
+                              onFileRemoved={handleFileRemoved}
+                              activePath={activePath}
+                            />
+                          ) : (
+                            <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+                              <LuFolderOpen className="text-3xl text-ink-500" />
+                              <div className="text-[13px] text-jb-muted">{t('fileTree.empty')}</div>
+                              <button
+                                className="rounded bg-accent px-3 py-1 text-xs text-white hover:bg-accent-dim"
+                                onClick={() => void handleOpenWorkspace()}
+                              >
+                                {t('titlebar.openWorkspace')}
+                              </button>
+                            </div>
+                          )
+                        ) : (
+                          // 设备管理器(虚拟设备档案表格 + 新建模拟器向导,阶段 2 落地)
+                          <DeviceManagerPanel />
+                        )}
+                      </ToolWindow>
+                    </div>
+                  )}
+                  {leftTool && structureOpen && (
+                    <DragHandle
+                      orientation="horizontal"
+                      onDelta={(dy) => setStructTopHeight((h) => clamp(h + dy, 120, 640))}
+                    />
+                  )}
+                  {structureOpen && (
+                    <div className="min-h-0 flex-1">
+                      <ToolWindow
+                        title={t('rail.structure')}
+                        icon={<LuListTree />}
+                        onHide={() => setStructureOpen(false)}
+                      >
+                        <StructureView
+                          path={activePath}
+                          cursorLine={cursor?.line ?? null}
+                          onNavigate={(line, column) => editorRef.current?.revealAt(line, column)}
                         />
-                      ) : (
-                        <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-                          <LuFolderOpen className="text-3xl text-ink-500" />
-                          <div className="text-[13px] text-jb-muted">{t('fileTree.empty')}</div>
-                          <button
-                            className="rounded bg-accent px-3 py-1 text-xs text-white hover:bg-accent-dim"
-                            onClick={() => void handleOpenWorkspace()}
-                          >
-                            {t('titlebar.openWorkspace')}
-                          </button>
-                        </div>
-                      )
-                    ) : (
-                      // 设备管理器(虚拟设备档案表格 + 新建模拟器向导,阶段 2 落地)
-                      <DeviceManagerPanel />
-                    )}
-                  </ToolWindow>
+                      </ToolWindow>
+                    </div>
+                  )}
                 </div>
                 <DragHandle orientation="vertical" onDelta={(dx) => setLeftWidth((w) => clamp(w + dx, 180, 520))} />
               </>
@@ -683,10 +759,46 @@ export default function App(): React.JSX.Element {
                     editorRef.current?.setActive(p)
                   }}
                   onClose={handleCloseTab}
+                  trailing={
+                    // md 文件:编辑 / 分屏 / 预览 切换按钮组(记忆每文件模式)
+                    isMdFile ? (
+                      <div className="flex items-center gap-0.5 rounded border border-ink-700 p-0.5">
+                        {(
+                          [
+                            { mode: 'edit', icon: <LuPencil />, label: t('markdown.modeEdit') },
+                            { mode: 'split', icon: <LuColumns2 />, label: t('markdown.modeSplit') },
+                            { mode: 'preview', icon: <LuEye />, label: t('markdown.modePreview') }
+                          ] as Array<{ mode: MdViewMode; icon: React.ReactNode; label: string }>
+                        ).map((b) => (
+                          <button
+                            key={b.mode}
+                            title={b.label}
+                            onClick={() => changeMdMode(b.mode)}
+                            className={`flex h-5 w-6 items-center justify-center rounded text-[13px] ${
+                              mdMode === b.mode
+                                ? 'bg-jb-selection text-jb-text'
+                                : 'text-jb-muted hover:bg-ink-800 hover:text-jb-text'
+                            }`}
+                          >
+                            {b.icon}
+                          </button>
+                        ))}
+                      </div>
+                    ) : undefined
+                  }
                 />
               )}
-              <div className="relative min-h-0 flex-1">
-                <EditorHost ref={editorRef} onDirtyChange={handleDirtyChange} onCursorChange={(line, column) => setCursor({ line, column })} />
+              <div className="relative flex min-h-0 flex-1">
+                {/* 预览模式:编辑器隐藏但保持挂载(monaco 实例/模型不销毁) */}
+                <div className={`h-full min-w-0 ${isMdFile && mdMode === 'preview' ? 'hidden' : 'flex-1'}`}>
+                  <EditorHost ref={editorRef} onDirtyChange={handleDirtyChange} onCursorChange={(line, column) => setCursor({ line, column })} />
+                </div>
+                {isMdFile && activePath && mdMode !== 'edit' && (
+                  <>
+                    {mdMode === 'split' && <div className="w-px shrink-0 bg-ink-700" />}
+                    <MarkdownPreview path={activePath} editorRef={editorRef} />
+                  </>
+                )}
                 {tabs.length === 0 && (
                   <div className="absolute inset-0 flex items-center justify-center bg-ink-900">
                     <span className="text-[13px] text-ink-500">{t('editor.welcome')}</span>
@@ -788,8 +900,16 @@ export default function App(): React.JSX.Element {
         />
       )}
 
-      {/* IDE 设置页(IDF 路径覆盖 / 默认目标 / 波特率) */}
+      {/* IDE 设置页(编辑器 minimap / IDF 路径覆盖 / 默认目标 / 波特率) */}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+
+      {/* 新建项目向导(标题栏项目下拉「新建项目…」触发) */}
+      {newProjectOpen && (
+        <NewProjectModal
+          onCreated={(r) => void handleProjectCreated(r)}
+          onClose={() => setNewProjectOpen(false)}
+        />
+      )}
 
       <ToastHost />
     </div>

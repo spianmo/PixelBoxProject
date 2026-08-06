@@ -7,17 +7,9 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  VscChevronDown,
-  VscChevronRight,
-  VscFile,
-  VscFileCode,
-  VscFolder,
-  VscFolderOpened,
-  VscJson,
-  VscMarkdown
-} from 'react-icons/vsc'
+import { VscChevronDown, VscChevronRight } from 'react-icons/vsc'
 import type { FsEntry } from '../../../shared/ipc-types'
+import { FolderIcon, fileIconFor } from './fileIcons'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { InputModal, ConfirmModal } from './Modal'
 import { showToast } from './toast'
@@ -46,21 +38,10 @@ type ModalState =
   | { kind: 'delete'; entry: FsEntry }
   | null
 
+/** 条目图标(fileIcons 图标集:目录=灰蓝文件夹,文件按类型) */
 function iconFor(entry: FsEntry, expanded: boolean): React.JSX.Element {
-  if (entry.isDir) {
-    return expanded ? (
-      <VscFolderOpened className="shrink-0 text-amber-400/80" />
-    ) : (
-      <VscFolder className="shrink-0 text-amber-400/80" />
-    )
-  }
-  const n = entry.name.toLowerCase()
-  if (n.endsWith('.ts') || n.endsWith('.tsx') || n.endsWith('.js')) {
-    return <VscFileCode className="shrink-0 text-accent/90" />
-  }
-  if (n.endsWith('.json')) return <VscJson className="shrink-0 text-yellow-400/80" />
-  if (n.endsWith('.md')) return <VscMarkdown className="shrink-0 text-sky-300/80" />
-  return <VscFile className="shrink-0 text-gray-400" />
+  if (entry.isDir) return <FolderIcon open={expanded} />
+  return fileIconFor(entry.name)
 }
 
 /** 取绝对路径的父目录(与 main 进程同为 POSIX/Win 兼容:按最后一个分隔符截断) */
@@ -72,6 +53,11 @@ function parentDir(p: string): string {
 function joinPath(dir: string, name: string): string {
   const sep = dir.includes('\\') ? '\\' : '/'
   return dir.endsWith(sep) ? dir + name : dir + sep + name
+}
+
+function baseName(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return i >= 0 ? p.slice(i + 1) : p
 }
 
 export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePath }: Props): React.JSX.Element {
@@ -210,6 +196,17 @@ export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePa
     })
   }
 
+  // 根项目行(JetBrains 风格:项目名 + 带徽标的根文件夹图标,可整体折叠)
+  const rootExpanded = expanded.has(root)
+  const toggleRoot = (): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(root)) next.delete(root)
+      else next.add(root)
+      return next
+    })
+  }
+
   return (
     <div
       className="h-full overflow-auto py-1"
@@ -218,7 +215,24 @@ export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePa
         setMenu({ x: e.clientX, y: e.clientY, target: null })
       }}
     >
-      {renderDir(root, 0)}
+      <div
+        className="flex h-6 cursor-pointer items-center gap-1.5 pl-1.5 pr-2 text-[13px] font-medium text-jb-text hover:bg-ink-800"
+        onClick={toggleRoot}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setMenu({ x: e.clientX, y: e.clientY, target: null })
+        }}
+      >
+        {rootExpanded ? (
+          <VscChevronDown className="shrink-0 text-gray-500" />
+        ) : (
+          <VscChevronRight className="shrink-0 text-gray-500" />
+        )}
+        <FolderIcon root />
+        <span className="truncate">{baseName(root)}</span>
+      </div>
+      {rootExpanded && renderDir(root, 1)}
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu)} onClose={() => setMenu(null)} />}
 

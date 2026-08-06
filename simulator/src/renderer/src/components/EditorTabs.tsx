@@ -3,6 +3,7 @@
  * 多标签切换 / 关闭,未保存显示圆点,中键关闭
  */
 import { VscClose, VscCircleFilled } from 'react-icons/vsc'
+import { fileIconFor } from './fileIcons'
 
 export interface TabInfo {
   path: string
@@ -15,9 +16,11 @@ interface Props {
   dirtyPaths: ReadonlySet<string>
   onSelect: (path: string) => void
   onClose: (path: string) => void
+  /** 标签栏右端附加控件(Markdown 编辑/分屏/预览切换等) */
+  trailing?: React.ReactNode
 }
 
-export function EditorTabs({ tabs, activePath, dirtyPaths, onSelect, onClose }: Props): React.JSX.Element {
+export function EditorTabs({ tabs, activePath, dirtyPaths, onSelect, onClose, trailing }: Props): React.JSX.Element {
   return (
     <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-ink-700 bg-ink-850">
       {tabs.map((tab) => {
@@ -41,6 +44,8 @@ export function EditorTabs({ tabs, activePath, dirtyPaths, onSelect, onClose }: 
                 : 'bg-ink-850 text-jb-muted hover:bg-ink-800 hover:text-jb-text'
             }`}
           >
+            {/* 文件类型图标(fileIcons 图标集,与文件树/⌘P 一致) */}
+            {fileIconFor(tab.name)}
             <span className="max-w-[180px] truncate">{tab.name}</span>
             <button
               className="flex h-4 w-4 items-center justify-center rounded hover:bg-ink-700"
@@ -61,6 +66,9 @@ export function EditorTabs({ tabs, activePath, dirtyPaths, onSelect, onClose }: 
           </div>
         )
       })}
+      {trailing && (
+        <div className="sticky right-0 ml-auto flex shrink-0 items-center bg-ink-850 px-1">{trailing}</div>
+      )}
     </div>
   )
 }

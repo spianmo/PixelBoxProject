@@ -5,6 +5,7 @@
   "titlebar": {
     "project": "项目",
     "noProject": "未打开工作区",
+    "newProject": "新建项目…",
     "openWorkspace": "打开工作区…",
     "recentWorkspaces": "最近工作区",
     "workspaceGone": "该工作区目录已不存在",
@@ -32,6 +33,7 @@
   },
   "rail": {
     "project": "项目",
+    "structure": "结构",
     "devices": "设备管理器",
     "build": "构建",
     "logs": "日志",
@@ -140,10 +142,56 @@
   "notifications": {
     "title": "通知",
     "clear": "清空",
-    "empty": "暂无通知"
+    "empty": "暂无通知",
+    "close": "关闭",
+    "kind": {
+      "info": "信息",
+      "success": "成功",
+      "warn": "警告",
+      "error": "错误"
+    }
   },
   "settings": {
-    "language": "语言"
+    "language": "语言",
+    "groupEditor": "编辑器",
+    "minimap": "代码缩略图",
+    "minimapHint": "显示 minimap(色块模式,保存后即时生效)"
+  },
+  "newProject": {
+    "title": "新建项目",
+    "name": "项目名称",
+    "namePlaceholder": "my-pixel-app",
+    "nameHint": "同时作为目录名,仅限字母 / 数字 / 下划线 / 连字符",
+    "location": "位置",
+    "browse": "浏览…",
+    "template": "模板",
+    "templateHello": "像素动画 Hello",
+    "templateHelloDesc": "弹跳方块示例(onFrame 逐帧渲染 + HSV 彩虹)",
+    "templateBlank": "空白项目",
+    "templateBlankDesc": "最小 onFrame 骨架,从零开始",
+    "appId": "应用 ID",
+    "appIdHint": "反域名格式(如 com.example.myapp),写入 pixelbox.json 的 id",
+    "create": "创建",
+    "creating": "创建中…",
+    "created": "已创建项目「{{name}}」",
+    "errors": {
+      "nameRequired": "请输入项目名称",
+      "nameInvalid": "项目名称仅限字母 / 数字 / 下划线 / 连字符",
+      "locationRequired": "请选择项目位置",
+      "appIdInvalid": "应用 ID 需为反域名格式(如 com.example.myapp)",
+      "dirNotEmpty": "目标目录已存在且非空,请换个名称或位置",
+      "createFailed": "创建项目失败"
+    }
+  },
+  "structure": {
+    "noFile": "打开文件后显示其结构",
+    "notSupported": "此文件类型暂无结构",
+    "empty": "没有可显示的符号"
+  },
+  "markdown": {
+    "modeEdit": "编辑",
+    "modeSplit": "分屏",
+    "modePreview": "预览"
   },
   "device": {
     "noRunning": "无运行中的设备"
@@ -189,7 +237,10 @@
     "lat": "纬度",
     "lng": "经度",
     "ledEnable": "启用灯带(available)",
-    "cameraHint": "px.camera 映射电脑摄像头,应用调用 init/capture 时请求权限"
+    "cameraHint": "px.camera 映射电脑摄像头,应用调用 init/capture 时请求权限",
+    "gpsSend": "发送定位",
+    "gpsLive": "持续上报",
+    "imuReset": "重置"
   },
   "run": {
     "noWorkspace": "请先打开工作区",

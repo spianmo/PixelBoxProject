@@ -4,7 +4,7 @@
  * - 工作区 git 分支读取(纯文件解析 .git/HEAD,不依赖 git 可执行文件)
  * - 模拟器屏幕截图落盘(~/Downloads)
  */
-import { app, ipcMain, BrowserWindow } from 'electron'
+import { app, ipcMain, BrowserWindow, shell } from 'electron'
 import { promises as fsp } from 'node:fs'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 
@@ -59,6 +59,13 @@ export function registerShellIpc(): void {
   // ---- git 分支(标题栏 / 状态栏) ----
   ipcMain.handle('shell:git-branch', async (_e, root: string): Promise<string | null> => {
     return readGitBranch(root)
+  })
+
+  // ---- 外部链接:交给系统浏览器(Markdown 预览的 a 标签点击) ----
+  ipcMain.handle('shell:open-external', async (_e, url: string): Promise<void> => {
+    // 只放行 http(s) / mailto,阻断 file: 等本地协议
+    if (!/^(https?:|mailto:)/i.test(url)) return
+    await shell.openExternal(url)
   })
 
   // ---- 截图落盘:PNG 字节 → ~/Downloads,返回完整路径 ----

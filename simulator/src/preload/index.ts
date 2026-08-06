@@ -13,6 +13,8 @@ import type {
   FirmwareTaskResult,
   FsEntry,
   FsWatchEvent,
+  ProjectCreateOptions,
+  ProjectCreateResult,
   PushProgress,
   SerialPortInfo,
   ToolchainInfo,
@@ -41,6 +43,18 @@ const api = {
   /** 截图 PNG 字节落盘到 ~/Downloads,返回完整路径 */
   saveScreenshot: (png: ArrayBuffer): Promise<string> =>
     ipcRenderer.invoke('shell:save-screenshot', png),
+  /** 外部链接交给系统浏览器(仅 http(s)/mailto;Markdown 预览用) */
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
+
+  // ---- 新建项目向导 ----
+  /** 默认项目位置(~/PixelBoxProjects) */
+  projectDefaultLocation: (): Promise<string> => ipcRenderer.invoke('project:default-location'),
+  /** 系统目录选择对话框(「浏览…」),取消返回 null */
+  chooseDirectory: (defaultPath?: string): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:choose-directory', defaultPath),
+  /** 校验并生成项目骨架,返回根目录与 src/main.ts 路径 */
+  projectCreate: (opts: ProjectCreateOptions): Promise<ProjectCreateResult> =>
+    ipcRenderer.invoke('project:create', opts),
 
   // ---- 工作区 / 文件系统 ----
   openWorkspace: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-workspace'),
@@ -53,6 +67,9 @@ const api = {
   listWorkspaceFiles: (): Promise<string[]> => ipcRenderer.invoke('workspace:list-files'),
   readDir: (dir: string): Promise<FsEntry[]> => ipcRenderer.invoke('fs:read-dir', dir),
   readFile: (p: string): Promise<string> => ipcRenderer.invoke('fs:read-file', p),
+  /** 二进制读取(Markdown 预览的相对路径图片) */
+  readFileBinary: (p: string): Promise<ArrayBuffer> =>
+    ipcRenderer.invoke('fs:read-file-binary', p),
   writeFile: (p: string, content: string): Promise<void> =>
     ipcRenderer.invoke('fs:write-file', p, content),
   mkdir: (p: string): Promise<void> => ipcRenderer.invoke('fs:mkdir', p),

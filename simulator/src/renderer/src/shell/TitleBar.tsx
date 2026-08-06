@@ -69,6 +69,8 @@ interface Props {
   fwTask: FirmwareTaskKind | null
   onOpenWorkspace: () => void
   onOpenWorkspacePath: (path: string) => void
+  /** 「新建项目…」向导(项目下拉置顶入口) */
+  onNewProject: () => void
   onRun: () => void
   onStop: () => void
   /** 🔨 构建当前目标芯片的固件 */
@@ -183,7 +185,13 @@ function NotificationList(): React.JSX.Element {
             <div className="flex items-center gap-2">
               <span
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                  n.kind === 'error' ? 'bg-red-400' : n.kind === 'warn' ? 'bg-yellow-400' : 'bg-accent'
+                  n.kind === 'error'
+                    ? 'bg-red-400'
+                    : n.kind === 'warn'
+                      ? 'bg-yellow-400'
+                      : n.kind === 'success'
+                        ? 'bg-green-400'
+                        : 'bg-accent'
                 }`}
               />
               <span className="text-[11px] text-ink-500">{fmt(n.ts)}</span>
@@ -209,8 +217,14 @@ export function TitleBar(props: Props): React.JSX.Element {
     void window.api.recentWorkspaces().then(setRecents)
   }, [props.workspaceRoot])
 
-  // ---- 项目下拉 ----
+  // ---- 项目下拉(「新建项目…」置顶) ----
   const projectItems: DropdownItem[] = [
+    {
+      key: '__new-project__',
+      label: t('titlebar.newProject'),
+      icon: <LuPlus />,
+      onSelect: props.onNewProject
+    },
     ...recents
       .filter((p) => p !== props.workspaceRoot)
       .map((p) => ({

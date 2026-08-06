@@ -152,7 +152,7 @@ function WizardForm({ initial }: { initial: DeviceProfile | null }): React.JSX.E
       setError(m ? m[1] : 'saveFailed')
       return
     }
-    showToast(t(editing ? 'deviceManager.saved' : 'deviceManager.created', { name: profile.name }), 'info', 2200)
+    showToast(t(editing ? 'deviceManager.saved' : 'deviceManager.created', { name: profile.name }), 'success')
     closeWizard()
   }
 

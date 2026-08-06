@@ -5,6 +5,7 @@
   "titlebar": {
     "project": "Project",
     "noProject": "No workspace",
+    "newProject": "New Project…",
     "openWorkspace": "Open Workspace…",
     "recentWorkspaces": "Recent workspaces",
     "workspaceGone": "That workspace folder no longer exists",
@@ -32,6 +33,7 @@
   },
   "rail": {
     "project": "Project",
+    "structure": "Structure",
     "devices": "Device Manager",
     "build": "Build",
     "logs": "Logs",
@@ -140,10 +142,56 @@
   "notifications": {
     "title": "Notifications",
     "clear": "Clear",
-    "empty": "No notifications"
+    "empty": "No notifications",
+    "close": "Close",
+    "kind": {
+      "info": "Info",
+      "success": "Success",
+      "warn": "Warning",
+      "error": "Error"
+    }
   },
   "settings": {
-    "language": "Language"
+    "language": "Language",
+    "groupEditor": "Editor",
+    "minimap": "Minimap",
+    "minimapHint": "Show the code minimap (block mode; applies right after saving)"
+  },
+  "newProject": {
+    "title": "New Project",
+    "name": "Name",
+    "namePlaceholder": "my-pixel-app",
+    "nameHint": "Also the folder name; letters / digits / underscore / hyphen only",
+    "location": "Location",
+    "browse": "Browse…",
+    "template": "Template",
+    "templateHello": "Pixel Animation Hello",
+    "templateHelloDesc": "Bouncing square demo (onFrame rendering + HSV rainbow)",
+    "templateBlank": "Empty Project",
+    "templateBlankDesc": "Minimal onFrame skeleton, start from scratch",
+    "appId": "Application ID",
+    "appIdHint": "Reverse-domain format (e.g. com.example.myapp); written to pixelbox.json id",
+    "create": "Create",
+    "creating": "Creating…",
+    "created": "Project \"{{name}}\" created",
+    "errors": {
+      "nameRequired": "Enter a project name",
+      "nameInvalid": "Project name allows letters / digits / underscore / hyphen only",
+      "locationRequired": "Choose a project location",
+      "appIdInvalid": "Application ID must be reverse-domain (e.g. com.example.myapp)",
+      "dirNotEmpty": "Target folder already exists and is not empty; pick another name or location",
+      "createFailed": "Failed to create the project"
+    }
+  },
+  "structure": {
+    "noFile": "Open a file to see its structure",
+    "notSupported": "No structure for this file type",
+    "empty": "No symbols to show"
+  },
+  "markdown": {
+    "modeEdit": "Editor",
+    "modeSplit": "Split",
+    "modePreview": "Preview"
   },
   "device": {
     "noRunning": "No running device"
@@ -189,7 +237,10 @@
     "lat": "Latitude",
     "lng": "Longitude",
     "ledEnable": "Enable strip (available)",
-    "cameraHint": "px.camera maps to your computer camera; permission is requested on init/capture"
+    "cameraHint": "px.camera maps to your computer camera; permission is requested on init/capture",
+    "gpsSend": "Send fix",
+    "gpsLive": "Live updates",
+    "imuReset": "Reset"
   },
   "run": {
     "noWorkspace": "Open a workspace first",

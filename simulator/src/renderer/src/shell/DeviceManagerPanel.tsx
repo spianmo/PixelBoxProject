@@ -69,14 +69,14 @@ export function DeviceManagerPanel(): React.JSX.Element {
       createdAt: 0
     })
     if (err) showToast(t('deviceManager.errors.saveFailed'), 'error')
-    else showToast(t('deviceManager.copied', { name: p.name }), 'info', 2000)
+    else showToast(t('deviceManager.copied', { name: p.name }), 'success')
   }
 
   const confirmDelete = async (): Promise<void> => {
     if (!deleting) return
     const err = await deleteDeviceProfile(deleting.id)
     if (err) showToast(t('deviceManager.errors.deleteFailed'), 'error')
-    else showToast(t('deviceManager.deleted', { name: deleting.name }), 'info', 2000)
+    else showToast(t('deviceManager.deleted', { name: deleting.name }), 'success')
     setDeleting(null)
   }
 

@@ -14,6 +14,7 @@ import type { ToolchainInfo, ToolchainSettings } from '../../../shared/ipc-types
 import { CHIP_TARGETS, applyDefaultChip, chipLabel } from './store'
 import { BAUD_OPTIONS } from './FlashDialog'
 import { showToast } from '../components/toast'
+import { minimapEnabled, setMinimapEnabled } from '../editor/editorSettings'
 
 const INPUT_CLASS =
   'w-full rounded border border-ink-600 bg-ink-900 px-2 py-1 text-[13px] text-jb-text outline-none placeholder:text-ink-500 focus:border-accent'
@@ -66,6 +67,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
   const [baudRate, setBaudRate] = useState(460800)
   const [info, setInfo] = useState<ToolchainInfo | null>(null)
   const [saving, setSaving] = useState(false)
+  // 编辑器设置(localStorage 持久化,保存时写回)
+  const [minimap, setMinimap] = useState(minimapEnabled())
 
   // 打开时读取持久化设置 + 现状检测
   useEffect(() => {
@@ -91,6 +94,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
   /** 保存 → 重新检测(检测走持久化后的覆盖路径)→ 回显结果 */
   const save = async (): Promise<void> => {
     setSaving(true)
+    // 编辑器设置先落地(与工具链检测结果无关)
+    setMinimapEnabled(minimap)
     try {
       const s: ToolchainSettings = { idfPathOverride: idfPathOverride.trim(), defaultTarget, baudRate }
       await window.api.toolchainSettingsSet(s)
@@ -101,7 +106,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
         next.ok
           ? t('fw.settings.savedOk', { version: next.version ?? '?' })
           : t('fw.settings.savedNoIdf'),
-        next.ok ? 'info' : 'warn'
+        next.ok ? 'success' : 'warn'
       )
       onClose()
     } catch (err) {
@@ -127,8 +132,25 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
         </div>
 
         <div className="space-y-3 px-4 py-4">
-          {/* 分组标题:固件工具链 */}
+          {/* 分组标题:编辑器 */}
           <div className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+            {t('settings.groupEditor')}
+          </div>
+
+          <FormRow label={t('settings.minimap')}>
+            <label className="flex cursor-pointer items-center gap-2 pt-1 text-[13px] text-jb-text">
+              <input
+                type="checkbox"
+                className="accent-[#3574F0]"
+                checked={minimap}
+                onChange={(e) => setMinimap(e.target.checked)}
+              />
+              <span className="text-jb-muted">{t('settings.minimapHint')}</span>
+            </label>
+          </FormRow>
+
+          {/* 分组标题:固件工具链 */}
+          <div className="pt-1 text-[11px] font-medium uppercase tracking-wide text-ink-500">
             {t('fw.settings.groupToolchain')}
           </div>
 

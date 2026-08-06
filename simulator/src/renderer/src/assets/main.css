@@ -67,3 +67,133 @@ input[type='range'],
 input[type='checkbox'] {
   accent-color: rgb(var(--pb-accent));
 }
+
+/*
+ * Markdown 预览(暗色 GitHub 风,对齐 IDE 色板)
+ * 代码块 #1E1F22 底 + 等宽字体;表格边框 #393B40
+ */
+.md-preview {
+  color: rgb(var(--pb-text));
+  font-size: 14px;
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+.md-preview > *:first-child {
+  margin-top: 0;
+}
+.md-preview h1,
+.md-preview h2,
+.md-preview h3,
+.md-preview h4,
+.md-preview h5,
+.md-preview h6 {
+  margin: 20px 0 10px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.md-preview h1 {
+  font-size: 1.7em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid rgb(var(--pb-border));
+}
+.md-preview h2 {
+  font-size: 1.4em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid rgb(var(--pb-border));
+}
+.md-preview h3 {
+  font-size: 1.2em;
+}
+.md-preview h4 {
+  font-size: 1.05em;
+}
+.md-preview h5,
+.md-preview h6 {
+  font-size: 1em;
+}
+.md-preview h6 {
+  color: rgb(var(--pb-text-muted));
+}
+.md-preview p,
+.md-preview ul,
+.md-preview ol,
+.md-preview table,
+.md-preview blockquote,
+.md-preview pre {
+  margin: 0 0 12px;
+}
+.md-preview ul,
+.md-preview ol {
+  padding-left: 1.8em;
+}
+.md-preview ul {
+  list-style: disc;
+}
+.md-preview ol {
+  list-style: decimal;
+}
+.md-preview li + li {
+  margin-top: 2px;
+}
+.md-preview a {
+  color: rgb(var(--pb-accent));
+  text-decoration: none;
+}
+.md-preview a:hover {
+  text-decoration: underline;
+}
+.md-preview code {
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: rgb(var(--pb-bg-editor));
+  border: 1px solid rgb(var(--pb-border));
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.md-preview pre {
+  background: rgb(var(--pb-bg-editor));
+  border: 1px solid rgb(var(--pb-border));
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md-preview pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.md-preview blockquote {
+  border-left: 3px solid rgb(var(--pb-border));
+  color: rgb(var(--pb-text-muted));
+  padding: 0 1em;
+}
+.md-preview table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md-preview th,
+.md-preview td {
+  border: 1px solid rgb(var(--pb-border));
+  padding: 5px 12px;
+}
+.md-preview th {
+  background: rgb(var(--pb-bg-panel));
+  font-weight: 600;
+}
+.md-preview tr:nth-child(2n) td {
+  background: rgb(var(--pb-bg-panel) / 0.5);
+}
+.md-preview img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+.md-preview hr {
+  border: 0;
+  border-top: 1px solid rgb(var(--pb-border));
+  margin: 18px 0;
+}

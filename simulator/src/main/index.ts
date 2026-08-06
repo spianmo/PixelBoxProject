@@ -11,6 +11,7 @@ import { registerSimBridgeIpc, disposeSimBridge } from './simbridge'
 import { registerShellIpc, wireShellWindowEvents } from './shell'
 import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProfiles'
 import { registerToolchainIpc, disposeToolchain } from './toolchain'
+import { registerProjectScaffoldIpc } from './projectScaffold'
 
 // device-sim:沙箱 iframe 隐藏在页面中,禁用 Chromium 对后台/离屏帧的定时器与渲染节流,
 // 否则沙箱内 setTimeout/setInterval(动画、IMU、GPS 定时回调)会被限到 1Hz
@@ -68,6 +69,7 @@ app.whenReady().then(() => {
   registerShellIpc()
   registerDeviceProfilesIpc()
   registerToolchainIpc()
+  registerProjectScaffoldIpc()
   void ensureDeviceProfilesDir()
 
   // 设备模拟需要麦克风/摄像头(getUserMedia):本地开发工具,直接放行 media 权限
