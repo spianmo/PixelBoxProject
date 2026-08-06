@@ -1,0 +1,28 @@
+# PixelBox monorepo 工作区定义(包管理 npm → pnpm 迁移)
+# 各包相互独立构建;examples 通过相对路径引用 sdk/types/pixelbox.d.ts(无包级依赖)
+packages:
+  - sdk
+  - simulator
+  - server
+  - examples
+
+# pnpm ≥10 默认不执行依赖包的 install/postinstall 脚本(供应链防护),
+# 以下原生/二进制依赖必须显式放行(pnpm 11 用 allowBuilds 映射),否则运行期加载失败:
+# - electron    postinstall 下载平台二进制。注意:pnpm 不像 npm 那样把 .npmrc 自定义键
+#               (electron_mirror)透传成 npm_config_* 环境变量(实测走 GitHub 直连极慢),
+#               国内网络首次安装请用环境变量:ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/ pnpm install
+#               (成功一次后 ~/Library/Caches/electron 有缓存,后续安装离线命中)
+# - esbuild     postinstall 校验/落位 @esbuild/<platform> 原生二进制(sdk/simulator/examples 各版本统一放行)
+# - node-pty    install 校验 N-API prebuilds(darwin-arm64 等),缺失时 node-gyp 从源码重建;
+#               postinstall 补 spawn-helper 权限(simulator 自身 postinstall 亦有兜底 chmod)
+allowBuilds:
+  electron: true
+  esbuild: true
+  node-pty: true
+
+minimumReleaseAgeExclude:
+  - '@tscircuit/circuit-json-util@0.0.105'
+  - '@tscircuit/core@0.0.1607'
+  - '@tscircuit/eval@0.0.1137'
+  - circuit-json-to-gerber@0.0.90
+  - circuit-json@0.0.465

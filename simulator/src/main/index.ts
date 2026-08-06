@@ -13,6 +13,8 @@ import { registerShellIpc, wireShellWindowEvents } from './shell'
 import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProfiles'
 import { registerToolchainIpc, disposeToolchain } from './toolchain'
 import { registerProjectScaffoldIpc } from './projectScaffold'
+import { registerPrinterIpc, disposePrinter } from './printer'
+import { registerHardwareExportIpc } from './hardwareExport'
 import { registerTerminalIpc, disposeTerminal } from './pty'
 import { registerToolWindowIpc, disposeToolWindows } from './toolWindows'
 import { registerSettingsIpc, getSettings, getSettingsSync, setSettings } from './settings'
@@ -71,8 +73,8 @@ function createWindow(): BrowserWindow {
 
   win.on('ready-to-show', () => win.show())
   wireShellWindowEvents(win)
-  // mac-fullscreen:原生全屏全入口(绿灯/⌃⌘F/菜单)收敛伪全屏(窗口铺满
-  // workArea,系统菜单栏保持可见,红绿灯在自绘标题栏行内常驻,无原生灰条);
+  // native-fullscreen:macOS 全入口(绿灯/⌃⌘F/系统菜单)走原生全屏 Space,无任何
+  // 拦截/转换;仅广播全屏态给 TitleBar(全屏时取消红绿灯 80px 预留区)。
   // Win/Linux 补 F11 原生全屏。上次退出处于全屏时随会话恢复(windowState 落盘位)
   wireFullscreen(win, { restoreFullScreen: saved?.fullscreen === true })
   // 会话恢复:主窗 bounds/最大化 500ms 去抖落盘
@@ -123,6 +125,8 @@ app.whenReady().then(async () => {
   registerDeviceProfilesIpc()
   registerToolchainIpc()
   registerProjectScaffoldIpc()
+  registerPrinterIpc() // 3D 打印机联机(printer:test/pick-gcode/upload/job)
+  registerHardwareExportIpc() // 硬件导出(hardware:export → <root>/export/<kind>/)
   registerTerminalIpc()
   registerToolWindowIpc()
   void ensureDeviceProfilesDir()
@@ -141,16 +145,17 @@ app.whenReady().then(async () => {
   // 无 UI 驱动手段的环境也能真实走一遍 ?window=settings 渲染链路
   if (process.env.PIXELBOX_OPEN_SETTINGS === '1') void openSettingsWindow()
 
-  // 冒烟钩子(mac-fullscreen,无 UI 驱动环境):模拟原生全屏请求 → 断言收敛为
-  // 伪全屏(bounds ≈ workArea)→ 再触发退出 → 断言回窗口态与 bounds 恢复
-  // (详见 fullscreen.ts)
+  // 冒烟钩子(native-fullscreen,无 UI 驱动环境):setFullScreen(true)(绿灯同一
+  // 原生入口)→ 断言进入原生全屏(isFullScreen 且非 simple、bounds 铺满显示器)
+  // → 退出 → 断言回窗口态与 bounds 精确恢复(详见 fullscreen.ts)
   if (process.env.PIXELBOX_SMOKE_FS === '1') {
     mainWin.once('ready-to-show', () => runFullscreenSmoke(mainWin))
   }
 
-  // 视觉冒烟钩子(mac-fullscreen,配套 scripts/fullscreen-visual-check.mjs):
-  // 进伪全屏 → 打印 [fs-visual] entered(外部脚本截屏做红绿灯/无灰条像素断言)
-  // → 哨兵文件出现后退出 → 打印 bounds 恢复结果(详见 fullscreen.ts)
+  // 视觉冒烟钩子(native-fullscreen,配套 scripts/fullscreen-visual-check.mjs):
+  // 进原生全屏 Space → 打印 [fs-visual] entered(外部脚本截屏断言窗口顶部第一行
+  // 即主题标题栏色、红绿灯常驻不可见仅记录)→ 哨兵文件出现后退出 → 打印 bounds
+  // 精确恢复结果(详见 fullscreen.ts)
   if (process.env.PIXELBOX_SMOKE_FS_VISUAL === '1') {
     mainWin.once('ready-to-show', () => runFullscreenVisualSmoke(mainWin))
   }
@@ -194,6 +199,109 @@ app.whenReady().then(async () => {
         console.log(failed === 0 ? '[theme] SMOKE PASS' : `[theme] SMOKE FAIL(${failed} 项)`)
         app.quit()
       }, 6800)
+    })
+  }
+
+  // 冒烟钩子(monaco ts.worker,无 UI 驱动环境):经 executeJavaScript 在真实
+  // renderer 里对内容为 `px.` 的 TS 模型请求补全 —— 断言 worker 拉起成功且
+  // pixelbox.d.ts extraLib 注入未回退(补全含 screen/system 等 px 命名空间)。
+  // 配套暴露点见 monacoSetup.ts 尾部(window.__pixelboxMonaco)
+  if (process.env.PIXELBOX_SMOKE_MONACO === '1') {
+    mainWin.webContents.once('did-finish-load', () => {
+      const probe = `(async () => {
+        const deadline = Date.now() + 20000
+        // monaco 初始化为渲染进程启动同步链路,此处轮询仅为对抗加载时序
+        while (!window.__pixelboxMonaco && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 200))
+        }
+        const monaco = window.__pixelboxMonaco
+        if (!monaco) return { ok: false, reason: 'monaco 未就绪(20s)' }
+        const model = monaco.editor.createModel(
+          'px.', 'typescript', monaco.Uri.parse('file:///smoke/monaco-smoke.ts')
+        )
+        try {
+          const getWorker = await monaco.languages.typescript.getTypeScriptWorker()
+          const client = await getWorker(model.uri)
+          const info = await client.getCompletionsAtPosition(model.uri.toString(), 3)
+          const names = (info && info.entries ? info.entries : []).map((e) => e.name)
+          return {
+            ok: names.includes('screen') && names.includes('system') && names.includes('wifi'),
+            count: names.length,
+            sample: names.slice(0, 8)
+          }
+        } finally {
+          model.dispose()
+        }
+      })()`
+      void mainWin.webContents
+        .executeJavaScript(probe)
+        .then((r: { ok: boolean; count?: number; sample?: string[]; reason?: string }) => {
+          if (r.ok) {
+            console.log(`[monaco] ✓ ts.worker 补全含 px 命名空间(共 ${r.count} 项)`)
+            console.log('[monaco] SMOKE PASS')
+          } else {
+            process.exitCode = 1
+            console.error(`[monaco] ✗ 补全断言失败:${r.reason ?? JSON.stringify(r.sample)}`)
+            console.log('[monaco] SMOKE FAIL')
+          }
+          app.quit()
+        })
+        .catch((err: unknown) => {
+          process.exitCode = 1
+          console.error(`[monaco] ✗ 探针执行失败:${String(err)}`)
+          console.log('[monaco] SMOKE FAIL')
+          app.quit()
+        })
+    })
+  }
+
+  // 冒烟钩子(硬件设计链路,无 UI 驱动环境):main 侧创建临时 hardware 工程,
+  // 经 executeJavaScript 在真实 renderer 走 evaluateDesign(blob worker eval)→
+  // 外壳分件 → HardwareViewer 离屏 STL 导出的完整生产链路。
+  // 配套暴露点见 renderer/src/hardware/smoke.ts(window.__pbHwSmoke)
+  if (process.env.PIXELBOX_SMOKE_HW === '1') {
+    mainWin.webContents.once('did-finish-load', () => {
+      void (async () => {
+        try {
+          const { mkdtemp, realpath } = await import('node:fs/promises')
+          const { tmpdir } = await import('node:os')
+          const { createProject } = await import('./projectScaffold')
+          // macOS 临时目录是符号链接(/var/folders → /private/var/folders):
+          // 先规范化,保证探针传入的 root 与 workspace 路径牢笼的规范化根一致
+          const location = await realpath(await mkdtemp(join(tmpdir(), 'pb-hw-smoke-')))
+          const created = await createProject({
+            kind: 'hardware',
+            name: 'hwsmoke',
+            location,
+            chip: 'esp32s3'
+          })
+          console.log(`[hw-smoke] 工程已创建:${created.root}(kind=${created.kind})`)
+          const probe = `(async () => {
+            const deadline = Date.now() + 20000
+            while (!window.__pbHwSmoke && Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 200))
+            }
+            if (!window.__pbHwSmoke) return { ok: false, error: 'smoke 入口未就绪(20s)' }
+            return await window.__pbHwSmoke(${JSON.stringify(created.root)})
+          })()`
+          const r = (await mainWin.webContents.executeJavaScript(probe)) as {
+            ok: boolean
+            [k: string]: unknown
+          }
+          console.log(`[hw-smoke] 结果:${JSON.stringify(r)}`)
+          if (r.ok) {
+            console.log('[hw-smoke] SMOKE PASS')
+          } else {
+            process.exitCode = 1
+            console.log('[hw-smoke] SMOKE FAIL')
+          }
+        } catch (err) {
+          process.exitCode = 1
+          console.error(`[hw-smoke] ✗ 执行异常:${String(err)}`)
+          console.log('[hw-smoke] SMOKE FAIL')
+        }
+        app.quit()
+      })()
     })
   }
 
@@ -241,6 +349,7 @@ app.on('before-quit', () => {
   disposeDevd()
   disposeSimBridge()
   disposeToolchain() // 不留后台固件构建/烧录进程
+  disposePrinter() // 中止在飞的打印机请求(长上传不阻塞退出)
   disposeTerminal() // 杀净全部集成终端会话
   disposeToolWindows() // 关净全部独立工具窗
   disposeSettingsWindow() // 关净设置窗口

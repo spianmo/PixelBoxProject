@@ -16,6 +16,8 @@
     "stop": "停止",
     "buildFirmware": "构建固件",
     "push": "推送到设备",
+    "pushToDevice": "推送到设备",
+    "pushNoDevice": "未发现可推送的设备(请确认设备与电脑在同一网络)",
     "more": "更多",
     "search": "搜索文件",
     "settings": "设置",
@@ -39,7 +41,8 @@
     "logs": "日志",
     "terminal": "终端",
     "problems": "问题",
-    "runningDevices": "运行的设备"
+    "runningDevices": "运行的设备",
+    "hardware": "硬件设计"
   },
   "toolwindow": {
     "hide": "隐藏",
@@ -200,6 +203,7 @@
       "system": "系统设置",
       "editor": "编辑器",
       "toolchain": "固件工具链",
+      "printer": "3D 打印机",
       "terminal": "终端",
       "keymap": "快捷键"
     },
@@ -246,14 +250,38 @@
       "terminalClear": "终端清屏",
       "terminalSearch": "终端搜索",
       "escape": "关闭弹层 / 搜索条 / 取消设置窗口"
+    },
+    "printer": {
+      "section": "3D 打印机",
+      "type": "打印机类型",
+      "baseUrl": "服务地址",
+      "baseUrlPlaceholder": "http://octopi.local 或 http://host:7125",
+      "baseUrlHint": "OctoPrint 如 http://octopi.local;Moonraker 如 http://host:7125",
+      "apiKey": "API Key",
+      "apiKeyHint": "OctoPrint 必填(设置 › API);Moonraker 未启用鉴权时可留空",
+      "test": "测试连接",
+      "testing": "正在连接打印机…",
+      "testOk": "连接成功:{{info}}",
+      "testHint": "测试使用已应用的设置;修改后请先点击「应用」再测试"
     }
   },
   "newProject": {
     "title": "新建项目",
+    "kinds": {
+      "app": "ESP 应用工程",
+      "appDesc": "TypeScript 像素应用,模拟器运行/推送到设备",
+      "firmware": "ESP 固件工程",
+      "firmwareDesc": "ESP-IDF C 工程,编译/烧录真机",
+      "hardware": "ESP 硬件设计工程",
+      "hardwareDesc": "tscircuit PCB + 3D 外壳,导出 STL/Gerber"
+    },
     "name": "项目名称",
     "namePlaceholder": "my-pixel-app",
     "nameHint": "同时作为目录名,仅限字母 / 数字 / 下划线 / 连字符",
     "location": "位置",
+    "createIn": "项目将创建于:{{path}}",
+    "chip": "目标芯片",
+    "chipHint": "写入 pixelbox.json 的默认目标芯片,可稍后更改",
     "browse": "浏览…",
     "template": "模板",
     "templateHello": "像素动画 Hello",
@@ -271,6 +299,8 @@
       "locationRequired": "请选择项目位置",
       "appIdInvalid": "应用 ID 需为反域名格式(如 com.example.myapp)",
       "dirNotEmpty": "目标目录已存在且非空,请换个名称或位置",
+      "kindInvalid": "无效的项目类型",
+      "chipInvalid": "无效的目标芯片",
       "createFailed": "创建项目失败"
     }
   },
@@ -307,8 +337,12 @@
       "rotate": "旋转 90°",
       "volume": "音量开关",
       "zoomFit": "缩放适应",
-      "zoom100": "100%"
+      "zoom100": "100%",
+      "view3d": "3D 视图",
+      "view2d": "2D 视图",
+      "explode": "爆炸视图"
     },
+    "view3dHint": "拖动旋转 · 滚轮缩放",
     "screenshotSaved": "截图已保存:{{path}}",
     "screenshotEmpty": "暂无屏幕画面可截图",
     "screenshotFailed": "截图失败:{{message}}",
@@ -376,6 +410,7 @@
       "exportMissing": "ESP-IDF 目录缺少 export.sh",
       "firmwareMissing": "未找到仓库 firmware/ 工程目录",
       "unsupportedPlatform": "当前平台暂不支持 IDE 内固件构建(需 macOS / Linux)",
+      "notFirmwareProject": "当前工作区不是固件工程(缺少 CMakeLists.txt)",
       "startFailed": "固件任务启动失败"
     },
     "flashDialog": {
@@ -405,6 +440,125 @@
     "finalizing": "校验并切换应用…",
     "done": "推送成功,设备已热更新",
     "failed": "推送失败:{{message}}"
+  },
+  "hw": {
+    "toolbar": {
+      "run": "运行设计",
+      "runHint": "评估 design/board.tsx 并刷新 PCB/原理图/3D",
+      "evaluating": "正在评估电路…",
+      "addToSim": "添加到模拟器",
+      "addToSimHint": "将板卡与外壳注册为模拟器设备档案",
+      "export": "导出",
+      "exportGerber": "Gerber(PCB 制造)"
+    },
+    "tabs": {
+      "pcb": "PCB",
+      "schematic": "原理图",
+      "view3d": "3D 视图",
+      "enclosure": "外壳",
+      "print": "打印"
+    },
+    "parts": {
+      "all": "全部部件",
+      "base": "底盒",
+      "lid": "顶盖",
+      "board": "板卡"
+    },
+    "empty": {
+      "noWorkspace": "打开一个硬件设计工程后,在此预览 PCB 与外壳",
+      "idle": "点击「运行设计」评估 design/board.tsx",
+      "error": "设计评估失败"
+    },
+    "errors": {
+      "evalTimeout": "评估超时(30 秒),电路引擎已重置,请重试",
+      "noBoardEntry": "未找到入口文件 design/board.tsx",
+      "noWorkspace": "导出目录必须位于当前工作区内",
+      "badFileName": "非法导出文件名"
+    },
+    "view3d": {
+      "explode": "爆炸视图",
+      "hint": "拖动旋转 · 滚轮缩放"
+    },
+    "export": {
+      "needEval": "请先成功运行设计",
+      "stlDone": "STL 已导出到 {{dir}}",
+      "gerberDone": "Gerber 已导出到 {{dir}}",
+      "failed": "导出失败:{{msg}}"
+    },
+    "enclosure": {
+      "wallMM": "壁厚 (mm)",
+      "clearanceMM": "板边间隙 (mm)",
+      "baseHeightMM": "底盒内腔高 (mm)",
+      "lidHeightMM": "顶盖内腔高 (mm)",
+      "standoffHeightMM": "支撑柱高 (mm)",
+      "standoffOuterR": "支撑柱外半径 (mm)",
+      "standoffInnerR": "螺孔半径 (mm)",
+      "cornerR": "外壳圆角 (mm)",
+      "screenWindow": "顶盖屏幕窗",
+      "screenWindowHint": "在顶盖为屏幕开窗(需检测到屏幕元件)",
+      "noScreenHint": "未检测到屏幕元件:请把元件命名为 SCREEN/DISPLAY/LCD/OLED 开头",
+      "ports": "侧壁开孔",
+      "noPorts": "尚无开孔;为 USB/按键添加缺口",
+      "addPort": "添加开孔",
+      "removePort": "删除开孔",
+      "wall": "墙面",
+      "wall_north": "北(上)",
+      "wall_south": "南(下)",
+      "wall_east": "东(右)",
+      "wall_west": "西(左)",
+      "portHint": "单位 mm:x/y 沿墙偏移,w/h 开孔尺寸,r 圆角"
+    },
+    "addDevice": {
+      "title": "添加到模拟器",
+      "defaultName": "{{name}} 板卡",
+      "name": "名称",
+      "chip": "芯片",
+      "screen": "屏幕分辨率",
+      "needBoard": "请先成功运行设计,再添加到模拟器",
+      "added": "已添加设备档案「{{name}}」",
+      "create": "添加"
+    },
+    "print": {
+      "step1": "打印机设置",
+      "step2": "导出 STL",
+      "step3": "上传 G-code",
+      "step4": "任务进度",
+      "notConfigured": "尚未配置打印机",
+      "configureHint": "在 设置 › 工具 › 3D 打印机 中配置 OctoPrint / Moonraker 地址与 API Key",
+      "test": "测试连接",
+      "testOk": "打印机连接正常:{{info}}",
+      "sliceHint": "打印机只接受 G-code:请先用切片软件(Cura / PrusaSlicer / OrcaSlicer)对导出的 STL 切片",
+      "pickGcode": "选择 .gcode 文件…",
+      "noFile": "未选择文件",
+      "startPrint": "上传后立即打印",
+      "upload": "上传",
+      "uploaded": "已上传 {{name}}",
+      "printStarted": "已开始打印 {{name}}",
+      "timeLeft": "剩余 {{time}}",
+      "noJob": "暂无打印任务"
+    },
+    "printer": {
+      "errors": {
+        "unreachable": "无法连接打印机(检查地址与网络)",
+        "badKey": "API Key 无效",
+        "conflict": "打印机忙(已有进行中的任务)",
+        "unsupportedFile": "文件类型不支持(需 .gcode)",
+        "notConfigured": "未配置打印机(设置 › 3D 打印机)",
+        "requestFailed": "打印机请求失败",
+        "badFile": "无效的 G-code 文件路径"
+      }
+    }
+  },
+  "printer": {
+    "errors": {
+      "notConfigured": "尚未配置打印机地址(设置 › 3D 打印机)",
+      "unreachable": "无法连接打印机服务(检查地址与网络)",
+      "badKey": "API Key 无效或无权限",
+      "conflict": "打印机忙或文件冲突(409)",
+      "unsupportedFile": "服务器拒绝该文件类型(仅接受 G-code)",
+      "requestFailed": "打印机请求失败",
+      "badFile": "无效的 G-code 文件路径"
+    }
   },
   "common": {
     "ok": "确定",

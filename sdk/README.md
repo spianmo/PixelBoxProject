@@ -9,17 +9,20 @@ PixelBox 像素盒应用开发 SDK 与 `pixelbox` 命令行工具。
 ## 安装
 
 ```bash
-# 全局安装(获得 pixelbox 命令)
+# 全局安装(获得 pixelbox 命令),npm / pnpm 任选
 npm install -g @pixelbox/sdk
+pnpm add -g @pixelbox/sdk
 
 # 若网络原因安装失败,可改用镜像
 npm install -g @pixelbox/sdk --registry=https://registry.npmmirror.com
+pnpm add -g @pixelbox/sdk --registry=https://registry.npmmirror.com
 ```
 
-仓库源码内使用(无需发布):
+仓库源码内使用(无需发布;monorepo 为 pnpm workspace,在仓库根安装):
 
 ```bash
-cd sdk && npm install && npm run build
+pnpm install                # 仓库根执行
+cd sdk && pnpm run build
 node dist/cli.js --help
 ```
 
@@ -42,7 +45,7 @@ node dist/cli.js --help
 ```bash
 pixelbox create my-clock
 cd my-clock
-npm install            # 安装 TypeScript,启用类型检查
+npm install            # 安装 TypeScript,启用类型检查(pnpm 用户: pnpm install)
 pixelbox dev           # 自动发现设备;保存文件即热更新,终端实时看日志
 ```
 
@@ -50,9 +53,10 @@ pixelbox dev           # 自动发现设备;保存文件即热更新,终端实�
 
 `pixelbox create` 会按 SDK 的安装场景写入 tsconfig 的类型引用路径:
 
-- **npm 安装场景**(SDK 位于 node_modules 内):写入
+- **包管理器安装场景**(SDK 位于 node_modules 内,npm/pnpm 均可):写入
   `node_modules/@pixelbox/sdk/types/pixelbox.d.ts`,并把 `@pixelbox/sdk` 写进模板
-  devDependencies,`npm install` 后路径即成立;
+  devDependencies,`npm install`(或 `pnpm install`)后路径即成立
+  (pnpm 符号链接布局下 tsc 沿链接可解析);
 - **仓库源码场景**(直接运行 `sdk/dist/cli.js`):写入指向仓库内
   `sdk/types/pixelbox.d.ts` 的相对路径(基于真实路径计算,规避符号链接偏差),
   devDependencies 用 `file:` 引用本地 SDK。
@@ -93,7 +97,7 @@ client.close();
 ## 开发本包
 
 ```bash
-npm install
-npm run build        # tsc → dist/(CLI 入口 dist/cli.js,库入口 dist/index.js)
-npm run typecheck    # 仅类型检查
+pnpm install          # 仓库根执行(pnpm workspace)
+pnpm run build        # tsc → dist/(CLI 入口 dist/cli.js,库入口 dist/index.js)
+pnpm run typecheck    # 仅类型检查
 ```

@@ -35,6 +35,11 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   terminal: {
     shellOverride: '',
     fontSize: 12
+  },
+  printer: {
+    type: 'octoprint',
+    baseUrl: '',
+    apiKey: ''
   }
 }
 
@@ -79,7 +84,11 @@ const SANITIZERS: Record<string, Sanitizer> = {
       ? Math.floor(v)
       : undefined,
   'terminal.shellOverride': trimmedString(1024),
-  'terminal.fontSize': intRange(TERMINAL_FONT_SIZE_RANGE.min, TERMINAL_FONT_SIZE_RANGE.max)
+  'terminal.fontSize': intRange(TERMINAL_FONT_SIZE_RANGE.min, TERMINAL_FONT_SIZE_RANGE.max),
+  // 3D 打印机联机(printer.ts;baseUrl 空串 = 未配置,printer:* IPC 抛 printer:notConfigured)
+  'printer.type': (v) => (v === 'octoprint' || v === 'moonraker' ? v : undefined),
+  'printer.baseUrl': trimmedString(1024),
+  'printer.apiKey': trimmedString(256)
 }
 
 /** 全部合法设置键(dot-path) */

@@ -1,0 +1,21 @@
+{
+  "name": "pixelbox-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PixelBox 像素盒 monorepo 聚合入口(pnpm workspace:sdk / simulator / server / examples)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "build": "pnpm --filter @pixelbox/sdk run build && pnpm --filter @pixelbox/server run build && pnpm --filter @pixelbox/examples run build && pnpm --filter pixelbox-simulator run build",
+    "typecheck": "pnpm --filter @pixelbox/sdk run typecheck && pnpm --filter pixelbox-simulator run typecheck",
+    "selfcheck": "pnpm --filter pixelbox-simulator run selfcheck",
+    "check:terminal": "pnpm --filter pixelbox-simulator run check:terminal",
+    "check:settings": "pnpm --filter pixelbox-simulator run check:settings",
+    "check:fullscreen": "pnpm --filter pixelbox-simulator run check:fullscreen",
+    "check": "pnpm run build && pnpm run selfcheck && pnpm run check:terminal && pnpm run check:settings && pnpm run check:fullscreen"
+  }
+}

@@ -2,7 +2,7 @@
  * 设置页注册表 —— 新增设置页 = 在 pages/ 下新增一个文件,框架零改动
  *
  * pages/*.tsx 每个文件导出 `export const page: SettingsPage = {...}`,
- * 本文件经 import.meta.glob(eager)自动收集并按分类树组织;
+ * 本文件经 import.meta.webpackContext(同步 eager)自动收集并按分类树组织;
  * 搜索(中英关键词)、面包屑、历史导航均由 SettingsWindow 基于本表驱动。
  * 扩展方法详见同目录 README.md。
  */
@@ -38,8 +38,16 @@ interface PageModule {
   page?: SettingsPage
 }
 
-// eager glob:构建期静态收集 pages/ 下全部注册文件(electron-vite/Vite 原生能力)
-const modules = import.meta.glob('./pages/*.tsx', { eager: true }) as Record<string, PageModule>
+// 构建期静态收集 pages/ 下全部注册文件(Rspack import.meta.webpackContext 原生能力,
+// 等价于 vite 时代的 import.meta.glob eager:新增设置页 = 新增一个文件,框架零改动)
+const pagesContext = import.meta.webpackContext('./pages', {
+  recursive: false,
+  regExp: /\.tsx$/,
+  mode: 'sync'
+})
+const modules: Record<string, PageModule> = Object.fromEntries(
+  pagesContext.keys().map((key) => [key, pagesContext(key) as PageModule])
+)
 
 /** 全部设置页(分类 order → 页面 order → id 稳定排序) */
 export const SETTINGS_PAGES: SettingsPage[] = Object.entries(modules)

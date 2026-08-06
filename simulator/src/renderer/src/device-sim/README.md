@@ -108,7 +108,7 @@ device-sim/
 
 ## 7. 验证
 
-- `npm run build`(typecheck node+web + electron-vite 三段构建)通过;
+- `pnpm run build`(typecheck node+web + Rsbuild 三 environments 构建)通过;
 - `npm run selfcheck`:demo 构建 → 运行时打包 → shim 表面静态核对(16+13)→ srcdoc
   逃逸 → 语法解析,全绿;
 - GUI 手测步骤见 `simulator/README.md`「验证」一节与 `simulator/demo/README.md`。

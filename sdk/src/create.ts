@@ -2,8 +2,9 @@
  * pixelbox create — 应用模板生成
  *
  * 关键点:模板 tsconfig 对 SDK 内 types/pixelbox.d.ts 的引用路径按场景写入 —
- *   - SDK 经 npm 安装(包根路径含 node_modules):写 "node_modules/@pixelbox/sdk/types/pixelbox.d.ts",
- *     并把 @pixelbox/sdk 写进模板 devDependencies(npm install 后路径即成立);
+ *   - SDK 经包管理器安装(npm/pnpm 均可,包根路径含 node_modules):写
+ *     "node_modules/@pixelbox/sdk/types/pixelbox.d.ts",并把 @pixelbox/sdk 写进模板
+ *     devDependencies(npm/pnpm install 后路径即成立;pnpm 符号链接布局下 tsc 沿链接可解析);
  *   - SDK 位于仓库源码内(monorepo 内直接运行 dist/cli.js):写指向仓库内
  *     sdk/types/pixelbox.d.ts 的相对路径,devDependencies 用 file: 引用。
  */
@@ -136,7 +137,7 @@ console.log(\`你好,PixelBox!屏幕 \${W}x\${H},应用 \${px.app.name}@\${px.ap
 function readmeTemplate(appName: string, scenario: 'npm' | 'repo', typesRef: string): string {
   const scenarioNote =
     scenario === 'npm'
-      ? '当前引用的是 npm 安装的 SDK 包内路径,先执行 `npm install` 该路径才会存在。'
+      ? '当前引用的是包管理器安装的 SDK 包内路径,先执行 `npm install`(或 `pnpm install`)该路径才会存在。'
       : '当前引用的是仓库内 sdk/types/pixelbox.d.ts 的相对路径,无需安装即可类型检查。';
   return `# ${appName}
 
@@ -153,9 +154,11 @@ PixelBox 像素盒应用(由 \`pixelbox create\` 生成)。
 
 ## 快速开始
 
+包管理器 npm / pnpm 任选其一(模板不锁定包管理器):
+
 \`\`\`bash
-npm install          # 安装 TypeScript(类型检查用)
-npm run typecheck    # tsc --noEmit 类型检查
+npm install          # 安装 TypeScript(类型检查用);pnpm 用户: pnpm install
+npm run typecheck    # tsc --noEmit 类型检查;      pnpm 用户: pnpm run typecheck
 pixelbox build       # 打包到 dist/(ES2020 单文件 + assets + manifest)
 pixelbox push        # 推送到真机(mDNS 自动发现,或 --device <ip>)
 pixelbox dev         # 开发闭环:监听改动 → 增量构建 → 热更新推送 → 实时日志

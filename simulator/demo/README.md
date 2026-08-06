@@ -4,7 +4,7 @@
 
 ## 使用方法
 
-1. 启动模拟器 IDE:在 `simulator/` 下执行 `npm run dev`
+1. 启动模拟器 IDE:在 `simulator/` 下执行 `pnpm run dev`
 2. 工具栏点击「打开工作区」,选择本目录(`simulator/demo`)
 3. 点击 ▶ 运行:esbuild 打包 `src/main.ts` → 沙箱加载 → 右侧像素屏出现弹跳小球
 4. 交互验证:

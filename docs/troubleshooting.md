@@ -92,7 +92,7 @@
 
 1. **麦克风**:§6 第 3 步,确认 `onData` 有 PCM 帧。
 2. **VAD/状态机**:订阅 `px.voice.on('stateChange', s=>console.log(s))` 与 `on('level', ...)`——说话时 level 应跳动,状态应 idle→listening→thinking。
-3. **中继连接**:`voice.configure({serverUrl:'ws://<电脑IP>:8787/realtime'})` 的 IP 必须是电脑局域网 IP(不是 localhost);server 侧 `npm run dev` 日志应打出会话建立。
+3. **中继连接**:`voice.configure({serverUrl:'ws://<电脑IP>:8787/realtime'})` 的 IP 必须是电脑局域网 IP(不是 localhost);server 侧 `pnpm run dev` 日志应打出会话建立。
 4. **STT/LLM/TTS**:server 日志逐段看哪步报错(.env 的 key/baseURL/model);`curl http://<电脑IP>:8787/healthz` 先确认服务活着。
 5. **播放**:`on('assistantDelta')` 有文本但没声音 → §6 扬声器排查。
 

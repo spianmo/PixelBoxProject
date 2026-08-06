@@ -222,5 +222,5 @@ SDK 构建:esbuild 把 `src/main.ts` 打包为单文件 ES2020 `dist/main.js`(�
 1. `sdk/types/pixelbox.d.ts` 是唯一契约:固件 bindings、模拟器 shim 的对象层级/方法名/参数/返回值必须逐一对齐;硬件未启用时实现 `available() === false` + 其余方法抛 `Error("ENOTSUP")`,禁止静默吞掉。
 2. 事件回调全部通过事件循环投递到 JS 线程;订阅函数必须返回可用的 Unsubscribe。
 3. 只创建/修改自己负责的路径;跨组件只依赖 `hal_common`/`jsvm` 公开头文件。
-4. Node 侧项目必须 `npm install && npm run build`(或 tsc --noEmit)通过;固件侧保证组件自洽(头文件/依赖/idf_component.yml 完整),整体编译由审计阶段统一执行修复。
+4. Node 侧项目必须 `pnpm install && pnpm run build`(或 tsc --noEmit)通过(monorepo 为 pnpm workspace,根目录一次安装);固件侧保证组件自洽(头文件/依赖/idf_component.yml 完整),整体编译由审计阶段统一执行修复。
 5. 注释与文档使用中文;TS 全部 strict;不引入未使用的依赖。

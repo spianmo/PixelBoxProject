@@ -19,7 +19,7 @@
 
 ## 运行前提
 
-1. 启动中继服务器(见 `server/README.md`):`cd server && npm run dev`
+1. 启动中继服务器(见 `server/README.md`):`cd server && pnpm run dev`
 2. 把服务器地址告诉设备,两种方式任选:
    - 改代码里的默认值 `ws://192.168.1.100:8787/realtime`;
    - 或提前写入 KV(如在模拟器控制台 / `pixelbox` REPL 执行):

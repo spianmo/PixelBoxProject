@@ -16,6 +16,8 @@
     "stop": "Stop",
     "buildFirmware": "Build Firmware",
     "push": "Push to Device",
+    "pushToDevice": "Push to Device",
+    "pushNoDevice": "No device found to push to (make sure it is on the same network)",
     "more": "More",
     "search": "Search files",
     "settings": "Settings",
@@ -39,7 +41,8 @@
     "logs": "Logs",
     "terminal": "Terminal",
     "problems": "Problems",
-    "runningDevices": "Running Devices"
+    "runningDevices": "Running Devices",
+    "hardware": "Hardware Design"
   },
   "toolwindow": {
     "hide": "Hide",
@@ -200,6 +203,7 @@
       "system": "System Settings",
       "editor": "Editor",
       "toolchain": "Firmware Toolchain",
+      "printer": "3D Printer",
       "terminal": "Terminal",
       "keymap": "Keymap"
     },
@@ -246,14 +250,38 @@
       "terminalClear": "Clear terminal",
       "terminalSearch": "Search in terminal",
       "escape": "Close popup / search bar / cancel settings window"
+    },
+    "printer": {
+      "section": "3D Printer",
+      "type": "Printer type",
+      "baseUrl": "Server URL",
+      "baseUrlPlaceholder": "http://octopi.local or http://host:7125",
+      "baseUrlHint": "OctoPrint e.g. http://octopi.local; Moonraker e.g. http://host:7125",
+      "apiKey": "API Key",
+      "apiKeyHint": "Required for OctoPrint (Settings › API); optional for Moonraker without auth",
+      "test": "Test Connection",
+      "testing": "Connecting to printer…",
+      "testOk": "Connected: {{info}}",
+      "testHint": "Tests the applied settings; click Apply first after editing"
     }
   },
   "newProject": {
     "title": "New Project",
+    "kinds": {
+      "app": "ESP App Project",
+      "appDesc": "TypeScript pixel app; run in simulator or push to device",
+      "firmware": "ESP Firmware Project",
+      "firmwareDesc": "ESP-IDF C project; build and flash real hardware",
+      "hardware": "ESP Hardware Design Project",
+      "hardwareDesc": "tscircuit PCB + 3D enclosure; export STL/Gerber"
+    },
     "name": "Name",
     "namePlaceholder": "my-pixel-app",
     "nameHint": "Also the folder name; letters / digits / underscore / hyphen only",
     "location": "Location",
+    "createIn": "Project will be created in: {{path}}",
+    "chip": "Target chip",
+    "chipHint": "Default target chip written to pixelbox.json; can be changed later",
     "browse": "Browse…",
     "template": "Template",
     "templateHello": "Pixel Animation Hello",
@@ -271,6 +299,8 @@
       "locationRequired": "Choose a project location",
       "appIdInvalid": "Application ID must be reverse-domain (e.g. com.example.myapp)",
       "dirNotEmpty": "Target folder already exists and is not empty; pick another name or location",
+      "kindInvalid": "Invalid project kind",
+      "chipInvalid": "Invalid target chip",
       "createFailed": "Failed to create the project"
     }
   },
@@ -307,8 +337,12 @@
       "rotate": "Rotate 90°",
       "volume": "Toggle volume",
       "zoomFit": "Zoom to fit",
-      "zoom100": "100%"
+      "zoom100": "100%",
+      "view3d": "3D view",
+      "view2d": "2D view",
+      "explode": "Exploded view"
     },
+    "view3dHint": "Drag to rotate · Scroll to zoom",
     "screenshotSaved": "Screenshot saved: {{path}}",
     "screenshotEmpty": "No screen frame to capture yet",
     "screenshotFailed": "Screenshot failed: {{message}}",
@@ -376,6 +410,7 @@
       "exportMissing": "export.sh is missing from the ESP-IDF directory",
       "firmwareMissing": "Repository firmware/ project directory not found",
       "unsupportedPlatform": "In-IDE firmware builds are not supported on this platform (macOS / Linux only)",
+      "notFirmwareProject": "Current workspace is not a firmware project (CMakeLists.txt missing)",
       "startFailed": "Failed to start the firmware task"
     },
     "flashDialog": {
@@ -405,6 +440,125 @@
     "finalizing": "Verifying and switching app…",
     "done": "Pushed. Device hot-updated",
     "failed": "Push failed: {{message}}"
+  },
+  "hw": {
+    "toolbar": {
+      "run": "Run Design",
+      "runHint": "Evaluate design/board.tsx and refresh PCB/schematic/3D",
+      "evaluating": "Evaluating circuit…",
+      "addToSim": "Add to Simulator",
+      "addToSimHint": "Register the board and enclosure as a simulator device profile",
+      "export": "Export",
+      "exportGerber": "Gerber (PCB fabrication)"
+    },
+    "tabs": {
+      "pcb": "PCB",
+      "schematic": "Schematic",
+      "view3d": "3D View",
+      "enclosure": "Enclosure",
+      "print": "Print"
+    },
+    "parts": {
+      "all": "All parts",
+      "base": "Base",
+      "lid": "Lid",
+      "board": "Board"
+    },
+    "empty": {
+      "noWorkspace": "Open a hardware design project to preview the PCB and enclosure here",
+      "idle": "Click \"Run Design\" to evaluate design/board.tsx",
+      "error": "Design evaluation failed"
+    },
+    "errors": {
+      "evalTimeout": "Evaluation timed out (30s); the circuit engine was reset, please retry",
+      "noBoardEntry": "Entry file design/board.tsx not found",
+      "noWorkspace": "Export root must be inside the current workspace",
+      "badFileName": "Invalid export file name"
+    },
+    "view3d": {
+      "explode": "Exploded view",
+      "hint": "Drag to rotate · scroll to zoom"
+    },
+    "export": {
+      "needEval": "Run the design successfully first",
+      "stlDone": "STL exported to {{dir}}",
+      "gerberDone": "Gerber exported to {{dir}}",
+      "failed": "Export failed: {{msg}}"
+    },
+    "enclosure": {
+      "wallMM": "Wall thickness (mm)",
+      "clearanceMM": "Board clearance (mm)",
+      "baseHeightMM": "Base cavity height (mm)",
+      "lidHeightMM": "Lid cavity height (mm)",
+      "standoffHeightMM": "Standoff height (mm)",
+      "standoffOuterR": "Standoff outer radius (mm)",
+      "standoffInnerR": "Screw hole radius (mm)",
+      "cornerR": "Corner radius (mm)",
+      "screenWindow": "Screen window",
+      "screenWindowHint": "Cut a window in the lid for the screen (requires a detected screen component)",
+      "noScreenHint": "No screen component detected — name a component starting with SCREEN/DISPLAY/LCD/OLED",
+      "ports": "Wall ports",
+      "noPorts": "No ports yet — add cutouts for USB/buttons",
+      "addPort": "Add port",
+      "removePort": "Remove port",
+      "wall": "Wall",
+      "wall_north": "North (top)",
+      "wall_south": "South (bottom)",
+      "wall_east": "East (right)",
+      "wall_west": "West (left)",
+      "portHint": "In mm: x/y offset along the wall, w/h cutout size, r corner radius"
+    },
+    "addDevice": {
+      "title": "Add to Simulator",
+      "defaultName": "{{name}} Board",
+      "name": "Name",
+      "chip": "Chip",
+      "screen": "Screen resolution",
+      "needBoard": "Run the design successfully before adding to the simulator",
+      "added": "Device profile \"{{name}}\" added",
+      "create": "Add"
+    },
+    "print": {
+      "step1": "Printer setup",
+      "step2": "Export STL",
+      "step3": "Upload G-code",
+      "step4": "Job progress",
+      "notConfigured": "Printer not configured",
+      "configureHint": "Configure the OctoPrint / Moonraker URL and API key in Settings › Tools › 3D Printer",
+      "test": "Test connection",
+      "testOk": "Printer connected: {{info}}",
+      "sliceHint": "Printers only accept G-code — slice the exported STL with Cura / PrusaSlicer / OrcaSlicer first",
+      "pickGcode": "Choose .gcode file…",
+      "noFile": "No file selected",
+      "startPrint": "Start printing after upload",
+      "upload": "Upload",
+      "uploaded": "Uploaded {{name}}",
+      "printStarted": "Printing {{name}} started",
+      "timeLeft": "{{time}} left",
+      "noJob": "No active print job"
+    },
+    "printer": {
+      "errors": {
+        "unreachable": "Printer unreachable (check URL and network)",
+        "badKey": "Invalid API key",
+        "conflict": "Printer busy (a job is already in progress)",
+        "unsupportedFile": "Unsupported file type (.gcode required)",
+        "notConfigured": "Printer not configured (Settings › 3D Printer)",
+        "requestFailed": "Printer request failed",
+        "badFile": "Invalid G-code file path"
+      }
+    }
+  },
+  "printer": {
+    "errors": {
+      "notConfigured": "Printer not configured (Settings › 3D Printer)",
+      "unreachable": "Printer service unreachable (check address and network)",
+      "badKey": "Invalid API key or insufficient permission",
+      "conflict": "Printer busy or file conflict (409)",
+      "unsupportedFile": "Server rejected the file type (G-code only)",
+      "requestFailed": "Printer request failed",
+      "badFile": "Invalid G-code file path"
+    }
   },
   "common": {
     "ok": "OK",

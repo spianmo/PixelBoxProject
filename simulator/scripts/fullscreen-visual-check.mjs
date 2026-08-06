@@ -1,23 +1,26 @@
 #!/usr/bin/env node
 /**
- * macOS 全屏(伪全屏方案)视觉级验证 —— 在真实 mac GUI 上截屏做像素断言
+ * macOS 原生全屏视觉级验证(v2.5)—— 在真实 mac GUI 上截屏做像素断言
  *
  * 链路:
- * 1. `npm run dev` + PIXELBOX_SMOKE_FS_VISUAL=1 启动(main 侧钩子见 fullscreen.ts
- *    runFullscreenVisualSmoke):窗口挪到主显示器 → 经绿灯同一入口(setFullScreen)
- *    收敛进伪全屏 → 稳态后打印 `[fs-visual] entered <json>`(workArea/scaleFactor/
- *    主题标题栏色/红绿灯 hiddenInset 位);
+ * 1. `pnpm run dev` + PIXELBOX_SMOKE_FS_VISUAL=1 启动(main 侧钩子见 fullscreen.ts
+ *    runFullscreenVisualSmoke):窗口挪到主显示器 → setFullScreen(true)(绿灯同一
+ *    原生入口)进原生全屏 Space → 稳态后打印 `[fs-visual] entered <json>`
+ *    (display/workArea/bounds/scaleFactor/主题标题栏色/native/simple);
  * 2. 本脚本等 entered 标记 + 1.5s 动画余量 → /usr/sbin/screencapture -x 截主显示器
  *    (无屏幕录制权限时自动降级:经 `open -g -a Terminal` 启动捕屏助手,由持有
  *    Screen Recording 授权的 Terminal.app 作为责任进程执行 screencapture;两路都
  *    失败则如实降级为 AppKit 状态断言并打印权限授予指引,绝不假装通过);
  * 3. python3 + PIL 像素断言(Retina 坐标 = 逻辑坐标 × scaleFactor):
- *    a) 红绿灯存在:红≈#FF5F57 黄≈#FEBC2E 绿≈#28C840(±30/通道)在预期红绿灯区
- *       (窗口左上 hiddenInset 位周边)各命中一簇,且 x 序为 红<黄<绿;
- *    b) 无系统灰条:红绿灯右侧 → 屏宽 80% 的标题栏横带采样求众数,断言众数色 ≈
- *       主题标题栏色(dark #2B2D30 / light #F7F8FA,±12/通道)且占比 ≥ 35%;
- *    c) 菜单栏行:窗口顶边之上区域如实记录众数色与可见性(受系统设置影响,不作硬断言);
- * 4. 写哨兵文件 → main 退出伪全屏 → 断言 `[fs-visual] exited` 的 bounds 恢复;
+ *    a) 无系统灰条(硬断言):标题栏横带(左缘 100pt 右侧 → 屏宽 80%)采样求众数,
+ *       断言众数色 ≈ 主题标题栏色(dark #2B2D30 / light #F7F8FA,±12/通道)且占比
+ *       ≥ 35%。系统菜单栏在全屏可见(系统设置控制)时可能叠占窗口顶部,故对
+ *       「窗顶+20pt」与「窗顶+52pt(越过 ~33pt 菜单栏)」双候选行采样,任一命中即过;
+ *    b) 红绿灯(如实记录,不判负):原生全屏下由 AppKit 管理,常驻态预期不可见
+ *       (仅悬停屏幕顶部时随系统工具条显示,与 VS Code 一致)——记录三特征色命中数;
+ *    c) 菜单栏行:如实记录可见性与众数色(受系统设置影响,不作硬断言);
+ * 4. 写哨兵文件 → main 退出原生全屏 → 断言 `[fs-visual] exited` 的 native=false、
+ *    simple=false 且 bounds 精确恢复;
  * 5. 打印 [fs-visual] PASS/FAIL 与各断言值;收尾杀净 dev 进程树。
  */
 import { spawn, execFileSync } from 'node:child_process'
@@ -117,7 +120,8 @@ s = p['scaleFactor']
 wa, b = p['workArea'], p['bounds']
 res = {'shot': [W, H]}
 
-# --- a) 红绿灯三簇(hiddenInset 位:窗口左上 (12,10),按钮径 ~12pt,搜窗口左上角区)
+# --- a) 红绿灯三簇(如实记录,不判负):原生全屏下 AppKit 收进悬停工具条,常驻态
+#     预期不可见;若截屏恰逢悬停显示也如实记录
 targets = {'red': (255, 95, 87), 'yellow': (254, 188, 46), 'green': (40, 200, 64)}
 def near(c, t, tol=30):
     return all(abs(a - v) <= tol for a, v in zip(c, t))
@@ -126,28 +130,26 @@ bx1, by1 = min(W, x0 + int(100 * s)), min(H, y0 + int(40 * s))
 found = {}
 for k, t in targets.items():
     pts = [(x, y) for y in range(y0, by1) for x in range(x0, bx1) if near(im.getpixel((x, y)), t)]
-    found[k] = {
-        'count': len(pts),
-        'cx': (sum(q[0] for q in pts) / len(pts) / s - b['x']) if pts else None,
-        'cy': (sum(q[1] for q in pts) / len(pts) / s - b['y']) if pts else None,
-    }
+    found[k] = {'count': len(pts)}
 res['lights'] = found
-ok_lights = all(found[k]['count'] >= 20 for k in targets) and (
-    all(found[k]['count'] for k in targets)
-    and found['red']['cx'] < found['yellow']['cx'] < found['green']['cx']
-)
-res['ok_lights'] = bool(ok_lights)
 
-# --- b) 无灰条:标题栏横带(红绿灯右侧 → 屏宽 80%)众数 ≈ 主题标题栏色
+# --- b) 无灰条(硬断言):标题栏横带众数 ≈ 主题标题栏色。
+#     系统菜单栏在全屏可见(系统设置)时可能叠占窗口顶部 ~33pt,
+#     故双候选行采样(窗顶+20pt / 窗顶+52pt),任一命中即过
 theme_hex = p['titlebarHex'].lstrip('#')
 theme = tuple(int(theme_hex[i:i+2], 16) for i in (0, 2, 4))
-band_y = int((b['y'] + 20) * s)  # 标题栏行(40pt 高)纵向中点
-xs = range(int((b['x'] + 100) * s), int(W * 0.8), max(1, int(8 * s)))
-samples = [im.getpixel((x, band_y)) for x in xs]
-mode, n = Counter(samples).most_common(1)[0]
-frac = n / len(samples)
-res['band'] = {'y_px': band_y, 'mode': mode, 'frac': round(frac, 3), 'theme': theme, 'n': len(samples)}
-ok_band = all(abs(a - v) <= 12 for a, v in zip(mode, theme)) and frac >= 0.35
+xs = list(range(int((b['x'] + 100) * s), int(W * 0.8), max(1, int(8 * s))))
+res['band'] = []
+ok_band = False
+for dy in (20, 52):
+    band_y = min(H - 1, int((b['y'] + dy) * s))
+    samples = [im.getpixel((x, band_y)) for x in xs]
+    mode, n = Counter(samples).most_common(1)[0]
+    frac = n / len(samples)
+    hit = all(abs(a - v) <= 12 for a, v in zip(mode, theme)) and frac >= 0.35
+    res['band'].append({'dy_pt': dy, 'y_px': band_y, 'mode': mode, 'frac': round(frac, 3), 'hit': bool(hit)})
+    ok_band = ok_band or hit
+res['theme'] = theme
 res['ok_band'] = bool(ok_band)
 
 # --- c) 菜单栏行(窗口顶边之上;如实记录,不作硬断言)
@@ -160,7 +162,7 @@ if menu_visible:
 res['menubar'] = {'visible_above_window': bool(menu_visible), 'mode': menu_mode, 'window_top_pt': b['y']}
 
 print(json.dumps(res))
-sys.exit(0 if (ok_lights and ok_band) else 3)
+sys.exit(0 if ok_band else 3)
 `
   try {
     const out = execFileSync('python3', ['-c', py, JSON.stringify(payload)], {
@@ -190,7 +192,7 @@ try {
 const dev = spawn('npm', ['run', 'dev'], {
   cwd: root,
   env: { ...process.env, PIXELBOX_SMOKE_FS_VISUAL: '1', PIXELBOX_SMOKE_FS_EXIT_FILE: EXIT_FILE },
-  detached: true, // 独立进程组:收尾可整组杀净(electron-vite 会派生 electron 子进程)
+  detached: true, // 独立进程组:收尾可整组杀净(dev.mjs 会派生 electron 子进程)
   stdio: ['ignore', 'pipe', 'pipe']
 })
 
@@ -217,7 +219,7 @@ for (const stream of [dev.stdout, dev.stderr]) {
 
 const killAll = () => {
   try {
-    process.kill(-dev.pid, 'SIGTERM') // 杀整个进程组(npm → electron-vite → electron)
+    process.kill(-dev.pid, 'SIGTERM') // 杀整个进程组(npm → dev.mjs → electron)
   } catch {
     /* 已退出 */
   }
@@ -225,21 +227,21 @@ const killAll = () => {
 }
 
 void (async () => {
-  // 1) 等 entered(dev 编译 + 启动 + 归一 + 进伪全屏,宽限 90s)
+  // 1) 等 entered(dev 编译 + 启动 + 归一 + 进原生全屏 Space,宽限 90s)
   for (let i = 0; i < 180 && !entered; i++) await sleep(500)
   if (!entered) {
     console.error('[fs-visual] FAIL:90s 内未见 [fs-visual] entered(dev 启动或进全屏失败)')
     killAll()
     process.exit(1)
   }
-  console.log(`[fs-visual] entered:theme=${entered.theme} workArea=${JSON.stringify(entered.workArea)} scale=${entered.scaleFactor}`)
-  assert('AppKit 态:pseudo=true native=false', entered.pseudo === true && entered.native === false)
+  console.log(`[fs-visual] entered:theme=${entered.theme} display=${JSON.stringify(entered.display)} scale=${entered.scaleFactor}`)
+  assert('AppKit 态:native=true simple=false(原生全屏 Space)', entered.native === true && entered.simple === false)
+  const disp = entered.display
   const wa = entered.workArea
   const bo = entered.bounds
   assert(
-    '伪全屏 bounds ≈ workArea(菜单栏之下)',
-    Math.abs(bo.x - wa.x) <= 8 && Math.abs(bo.y - wa.y) <= 8 &&
-      Math.abs(bo.width - wa.width) <= 8 && Math.abs(bo.height - wa.height) <= 8,
+    '原生全屏 bounds 铺满所在显示器(宽=屏宽,高≥workArea 高)',
+    Math.abs(bo.width - disp.width) <= 2 && bo.height >= wa.height - 2,
     `bounds=${JSON.stringify(bo)}`
   )
 
@@ -253,7 +255,7 @@ void (async () => {
     if (!how) break // 权限问题不重试,走降级分支
     const r = pixelAssert(entered)
     res = r.res
-    if (res && res.ok_lights && res.ok_band) break
+    if (res && res.ok_band) break
     if (attempt < 3) {
       console.log(`[fs-visual] 第 ${attempt} 次截屏断言未过(可能撞上瞬态)→ 2.5s 后重试`)
       await sleep(2500)
@@ -273,17 +275,17 @@ void (async () => {
       failed++
     } else {
       const L = res.lights
-      assert(
-        '红绿灯三簇存在且 x 序 红<黄<绿(hiddenInset 位)',
-        res.ok_lights,
-        `red=${L.red.count}px@(${L.red.cx?.toFixed(0)},${L.red.cy?.toFixed(0)}) ` +
-          `yellow=${L.yellow.count}px@(${L.yellow.cx?.toFixed(0)},${L.yellow.cy?.toFixed(0)}) ` +
-          `green=${L.green.count}px@(${L.green.cx?.toFixed(0)},${L.green.cy?.toFixed(0)})(窗口内逻辑坐标)`
+      console.log(
+        `[fs-visual] 红绿灯(如实记录,原生全屏常驻态预期不可见,悬停才显示):` +
+          `red=${L.red.count}px yellow=${L.yellow.count}px green=${L.green.count}px`
       )
+      const bandDetail = res.band
+        .map((b2) => `dy=${b2.dy_pt}pt mode=rgb(${b2.mode}) 占比 ${(b2.frac * 100).toFixed(0)}%${b2.hit ? '✓' : ''}`)
+        .join(' | ')
       assert(
-        `无系统灰条:标题栏横带众数 ≈ 主题色 ${entered.titlebarHex}`,
+        `无系统灰条:标题栏横带众数 ≈ 主题色 ${entered.titlebarHex}(双候选行任一命中)`,
         res.ok_band,
-        `mode=rgb(${res.band.mode})占比 ${(res.band.frac * 100).toFixed(0)}%(${res.band.n} 点采样)`
+        bandDetail
       )
       console.log(
         `[fs-visual] 菜单栏(如实记录,不作硬断言):窗口顶边 y=${res.menubar.window_top_pt}pt` +
@@ -292,7 +294,7 @@ void (async () => {
     }
   }
 
-  // 4) 哨兵 → 退出伪全屏 → bounds 恢复断言
+  // 4) 哨兵 → 退出原生全屏 → bounds 恢复断言
   writeFileSync(EXIT_FILE, '1')
   for (let i = 0; i < 60 && !exited; i++) await sleep(500)
   if (!exited) {
@@ -300,8 +302,8 @@ void (async () => {
     failed++
   } else {
     assert(
-      '退出全屏 bounds 恢复到进入前矩形',
-      exited.restored === true && exited.pseudo === false && exited.native === false,
+      '退出全屏回窗口态且 bounds 精确恢复',
+      exited.restored === true && exited.native === false && exited.simple === false,
       `before=${JSON.stringify(exited.before)} after=${JSON.stringify(exited.after)}`
     )
   }

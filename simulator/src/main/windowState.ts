@@ -15,13 +15,12 @@ import { app, screen, type BrowserWindow, type Rectangle } from 'electron'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getSettingsSync } from './settings'
-import { isPseudoFullScreen } from './fullscreen'
 
 export interface SavedWindowState {
   /** 非最大化时的窗口矩形(最大化时为还原矩形 getNormalBounds) */
   bounds: Rectangle
   maximized: boolean
-  /** macOS 全屏态(伪全屏,fullscreen.ts 收敛;启动经 fullscreen.ts 恢复) */
+  /** macOS 原生全屏态(isFullScreen;启动经 fullscreen.ts setFullScreen(true) 恢复) */
   fullscreen: boolean
   /** 记录时所在显示器 id(日志参考;越界校正以 bounds 相交判定为准) */
   displayId: number
@@ -70,7 +69,8 @@ function load(): StateMap {
           height: Math.round(e.bounds.height)
         },
         maximized: e.maximized === true,
-        // 兼容读取 v2.4 的 simpleFullScreen 字段(旧方案已删除,全屏语义迁移)
+        // 兼容读取旧字段:v2.4 simpleFullScreen / v2.4.x 伪全屏 fullscreen 位
+        // (两代旧方案均已删除;语义统一迁移为「上次退出时处于全屏」→ 原生恢复)
         fullscreen: e.fullscreen === true || e.simpleFullScreen === true,
         displayId: typeof e.displayId === 'number' ? e.displayId : -1
       }
@@ -124,7 +124,7 @@ export interface RestoredWindowState {
   /** 校正后的矩形;x/y 可能缺省(越界时丢坐标交系统默认摆放) */
   bounds: Partial<Rectangle> & { width: number; height: number }
   maximized: boolean
-  /** 上次退出时处于 macOS 全屏(伪全屏;index.ts 经 wireFullscreen 恢复) */
+  /** 上次退出时处于 macOS 原生全屏(index.ts 经 wireFullscreen → setFullScreen(true) 恢复) */
   fullscreen: boolean
 }
 
@@ -164,13 +164,12 @@ export function windowStateFor(name: string, defs: WindowStateDefaults): Restore
 export function trackWindowState(win: BrowserWindow, name: string): void {
   const update = (): void => {
     if (win.isDestroyed() || win.isMinimized()) return
-    // 原生全屏为瞬态(macOS 由 fullscreen.ts 立即收敛为伪全屏;
-    // Win/Linux F11 不持久化):期间的 move/resize 一律不落盘
-    if (win.isFullScreen()) return
     const prev = load()[name]
-    const fullscreen = process.platform === 'darwin' && isPseudoFullScreen(win)
-    if (fullscreen) {
-      // 伪全屏铺满 workArea:不覆写普通态矩形(保留进入前记录),仅置全屏位
+    if (win.isFullScreen()) {
+      // Win/Linux F11 全屏维持不持久化语义:期间的 move/resize 一律不落盘
+      if (process.platform !== 'darwin') return
+      // macOS 原生全屏:仅置全屏位,不覆写普通态矩形(保留进入前记录,
+      // 退出全屏/下次以普通态启动时用)
       load()[name] = {
         bounds: prev?.bounds ?? win.getNormalBounds(),
         maximized: prev?.maximized ?? false,
@@ -193,6 +192,9 @@ export function trackWindowState(win: BrowserWindow, name: string): void {
   win.on('resize', update)
   win.on('maximize', update)
   win.on('unmaximize', update)
+  // macOS 原生全屏进/出即时记录全屏位(不依赖伴随的 move/resize 事件时序)
+  win.on('enter-full-screen', update)
+  win.on('leave-full-screen', update)
   // 关窗前抓最终状态(flush 由 index.ts 的 close/before-quit 双保险统一触发)
   win.on('close', update)
 }

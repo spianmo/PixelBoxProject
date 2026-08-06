@@ -2,24 +2,38 @@
 
 Electron 桌面 IDE:编辑 PixelBox 应用(TypeScript)→ 一键在模拟器中运行 → 推送到真机热更新。
 
-技术栈:electron + electron-vite + React 18 + TypeScript strict + Tailwind CSS + react-icons + i18next(zh-CN 默认 / en)+ monaco-editor。
+技术栈:electron + Rsbuild/Rspack + React 18 + TypeScript strict + Tailwind CSS + react-icons + i18next(zh-CN 默认 / en)+ monaco-editor。
 
 ## 开发与构建
 
 ```bash
-npm install          # 若失败:npm install --registry=https://registry.npmmirror.com
-npm run dev          # 开发模式(HMR)
-npm run build        # 类型检查 + vite 三段构建(main/preload/renderer → out/)
-npm run dist:mac     # electron-builder 打包(可选)
+pnpm install          # 仓库根执行(pnpm workspace);若失败:pnpm install --registry=https://registry.npmmirror.com
+                      # 首次下载 Electron 二进制建议带镜像(pnpm 不透传 .npmrc 的 electron_mirror):
+                      # ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/ pnpm install
+pnpm run dev          # 开发模式(scripts/dev.mjs 编排:renderer HMR + main/preload watch + electron 自动重启)
+pnpm run build        # 类型检查 + Rsbuild 三 environments 构建(main/preload/renderer → out/)
+pnpm run dist:mac     # electron-builder 打包(可选)
 ```
+
+构建系统为 Rsbuild(Rspack)多 environments:main/preload 走 node target
+(CJS、node-pty/esbuild 等运行时 require 外部化),renderer 走 web target
+(React Fast Refresh / Tailwind / Monaco worker chunk / `?raw` 内嵌 d.ts /
+`import.meta.webpackContext` 设置页收集);沙箱运行时虚拟模块由
+`scripts/sandboxRuntimeLoader.cjs` 在构建期以 esbuild 固化(IIFE → base64,
+metafile 依赖全部纳入 watch)。v2.5 由 electron-vite 迁移而来,同机实测:
+生产构建(不含 typecheck)12.5s → 2.7s,dev 冷启动(启动至 renderer 首次
+主题回报)2.66s → 2.49s;产物布局 out/{main,preload,renderer} 与
+electron-builder 配置零改动。
 
 ## 目录结构
 
 ```
 simulator/
 ├── build/icon.png             # 应用图标(来自 docs/assets/app-icon.png)
-├── electron.vite.config.ts    # main/preload/renderer 三段构建
+├── rsbuild.config.ts          # main/preload/renderer 三 environments 构建(Rsbuild/Rspack)
 ├── electron-builder.yml       # 打包配置
+├── scripts/dev.mjs            # dev 编排:devServer + watch 写盘 + electron 启停/重启
+├── scripts/sandboxRuntimeLoader.cjs # 沙箱运行时虚拟模块 loader(esbuild IIFE → base64)
 ├── src/
 │   ├── shared/ipc-types.ts    # 三端共享的 IPC 数据类型(含 DeviceProfile 设备档案)
 │   ├── shared/chipCapabilities.ts # 芯片能力表【单一数据源】:S3/C6/P4/ESP32/C3 的
@@ -106,7 +120,7 @@ simulator/
 无 GUI 真实执行自检(会触发一次真实固件构建,增量缓存下较快):
 
 ```bash
-npm run check:toolchain          # 默认 merge esp32s3;可 -- --kind build --target esp32c6
+pnpm run check:toolchain          # 默认 merge esp32s3;可 -- --kind build --target esp32c6
 # [1/5] 打包生产代码 toolchain.ts(electron 桩)
 # [2/5] 检测 ESP-IDF 版本 + 串口扫描(无设备环境 = 空数组 → 对话框指引分支)
 # [3/5] 非法烧录端口防护(toolchain:badPort)
@@ -147,7 +161,7 @@ CustomEvent 上报)与实现说明见 `src/renderer/src/device-sim/README.md`。
 无 GUI 自检(构建产物走一遍 load 链路的静态部分):
 
 ```bash
-npm run selfcheck
+pnpm run selfcheck
 # [1/7] demo 按 builder.ts 同参数打包 → dist/main.js
 # [2/7] 沙箱运行时打包(IIFE + 像素字体内嵌)
 # [3/7] px shim 表面核对(16 命名空间 + 13 标准全局)
@@ -161,7 +175,7 @@ npm run selfcheck
 
 GUI 手测步骤(完整链路):
 
-1. `npm run dev` 启动 IDE;
+1. `pnpm run dev` 启动 IDE;
 2. 标题栏项目下拉「打开工作区…」选择 `simulator/demo/`;确认项目树顶部为带徽标的
    根项目行,目录/文件图标为 JetBrains 线性风格(ts 蓝方块、json 黄花括号、md 蓝 M↓ 等),
    且与编辑器标签、⌘P 快速打开列表中的图标一致;
@@ -195,7 +209,7 @@ GUI 手测步骤(完整链路):
 9. 修改 demo 保存 → watch 热重载同时作用于两个运行中的 tab;
    tab ✕ 逐个关闭,最后一个关闭后 watch 停止;标题栏 ⏹ 一键停全部。
 
-集成终端 GUI 手测(JetBrains 式底部终端,阶段 1;无 GUI 自检见 `npm run check:terminal`):
+集成终端 GUI 手测(JetBrains 式底部终端,阶段 1;无 GUI 自检见 `pnpm run check:terminal`):
 
 1. 左轨道点击终端图标(问题图标上方):底部区切到 Terminal 窗并自动创建 `Local` 会话;
    `echo hi` / `ls` 有彩色输出与行编辑(node-pty 不可用时顶部黄色横幅明示 pipe 兜底体验受限);
@@ -223,7 +237,7 @@ GUI 手测步骤(完整链路):
 5. 关闭独立窗口(✕ 或工具窗 — 按钮):对应工具窗自动回「停靠固定」;模式按工具窗持久化
    (localStorage),重启 IDE 后除独立窗口外均恢复;主窗关闭时独立窗口级联关闭。
 
-设置窗口 GUI 手测(JetBrains Settings 复刻,独立窗口;无 GUI 自检见 `npm run check:settings`):
+设置窗口 GUI 手测(JetBrains Settings 复刻,独立窗口;无 GUI 自检见 `pnpm run check:settings`):
 
 1. 标题栏 ⚙(或再次点击即聚焦既有窗口):独立设置窗口约 980×700,左 240px 分类树
    (圆角搜索框过滤 + 高亮 + 回车跳转,可折叠分类,选中整行蓝底)+ 面包屑与 ←/→ 历史;
@@ -235,7 +249,7 @@ GUI 手测步骤(完整链路):
 
 字体手测(Inter + JetBrains Mono,@fontsource 内嵌,离线可用):
 
-1. 断网启动 `npm run dev`:UI 文字(标题栏/菜单/设置表单)为 Inter(数字 1 无衬线平底、
+1. 断网启动 `pnpm run dev`:UI 文字(标题栏/菜单/设置表单)为 Inter(数字 1 无衬线平底、
    R 直腿;中文回退 PingFang SC/微软雅黑,13px 密度不变);
 2. 编辑器打开 .ts 文件:代码为 JetBrains Mono(小写 l 带尾勾、0 内点),
    设置 › 编辑器 › 字体族清空/改名后仍回退 JetBrains Mono,字号项联动生效;
@@ -245,39 +259,36 @@ GUI 手测步骤(完整链路):
 
 1. 打开工作区 + 打开若干文件并滚动/移动光标 → 挪动主窗位置、调整左右栏宽/底部区高、
    切换底部到终端并拆分若干组 → 正常退出(⌘Q);
-2. 再次 `npm run dev`:主窗回到上次位置尺寸(最大化状态亦还原,越界显示器自动校正),
+2. 再次 `pnpm run dev`:主窗回到上次位置尺寸(最大化状态亦还原,越界显示器自动校正),
    自动重开上次工作区与全部标签(激活标签、滚动与光标位置一致;已删除文件静默跳过),
    布局(栏宽/开关/底部视图)与终端分栏树形状还原(会话为全新 shell);
    dev 终端可见 `[session-restore] …` 恢复摘要日志;
 3. 上次工作区被删除后启动:toast 通知「上次的工作区已不存在」并回欢迎页;
 4. 关闭「启动时恢复上次会话」后重启:默认布局 + 欢迎页(不重开工作区/标签/窗口位置);
-5. 无 UI 驱动的冒烟:`PIXELBOX_SMOKE_SESSION=1 npm run dev`(第一轮:自动改窗口位置 +
-   打开 demo 工作区与文件后正常退出)→ `PIXELBOX_SMOKE_SESSION=2 npm run dev`
+5. 无 UI 驱动的冒烟:`PIXELBOX_SMOKE_SESSION=1 pnpm run dev`(第一轮:自动改窗口位置 +
+   打开 demo 工作区与文件后正常退出)→ `PIXELBOX_SMOKE_SESSION=2 pnpm run dev`
    (第二轮:观察 `[session-restore]` 恢复日志后自动退出)。
 
-macOS 全屏手测(伪全屏方案,对齐 IntelliJ IDEA 全屏观感;实现见 `src/main/fullscreen.ts`):
+macOS 全屏手测(v2.5 起为**原生全屏 Space**;实现见 `src/main/fullscreen.ts`):
 
-1. 绿灯 / ⌃⌘F / 菜单「进入全屏」任一入口:窗口铺满当前显示器工作区(多显示器按窗口
-   所在屏)——系统菜单栏保持可见(若系统设置未在全屏下隐藏菜单栏),菜单栏之下直接是
-   应用自绘标题栏,红绿灯在标题栏行内常驻可见,全程无系统灰色标题条(不出现居中的
-   PixelBox Simulator 灰条);
-2. 全屏中再按 ⌃⌘F 或点绿灯:退出并精确恢复进入前的窗口位置尺寸(最大化态亦还原);
-   全屏期间窗口不可拖动(标题栏拖拽区同步禁用);
-3. 全屏中退出应用(⌘Q)后重启:随会话恢复直接回到全屏(设置 › 系统设置 ›
-   「启动时恢复上次会话」开启时;v2.4 旧 simpleFullScreen 持久化字段兼容读取);
-4. 与 IDEA 的已知差异(如实说明):非独立 macOS 全屏 Space;Dock 未设自动隐藏时仍
-   占据工作区边缘(窗口填满的是菜单栏与 Dock 之外的 workArea)。为什么不用原生全屏:
-   实测(截屏像素断言)hiddenInset 在原生全屏 Space 下无灰条,但 AppKit 会把红绿灯
-   移入顶部悬停显示条,常驻不可见,不满足「红绿灯行内可见」;simpleFullScreen 则会
-   隐藏系统菜单栏与红绿灯(v2.4 用户反馈),两者均被否决;
-5. 无 UI 驱动的冒烟:`PIXELBOX_SMOKE_FS=1 npm run dev`(模拟原生全屏请求 → 断言收敛
-   伪全屏、bounds ≈ workArea、退出回窗口态、bounds 恢复,4 项);
-6. 视觉级验证(真实 mac GUI,`npm run check:fullscreen`):dev 启动 → 程序化进全屏 →
-   `screencapture` 截屏(无屏幕录制权限时自动经 Terminal.app 助手降级;两路均不可用
-   则如实降级为 AppKit 状态断言并打印授权指引)→ PIL 像素断言:红绿灯三色簇
-   (红 #FF5F57 / 黄 #FEBC2E / 绿 #28C840,截图经内嵌 ICC 转 sRGB 后匹配)、
-   标题栏横带众数 ≈ 主题色(dark #2B2D30 / light #F7F8FA,无灰条)、退出 bounds 恢复,
-   打印 `[fs-visual] PASS/FAIL`。
+1. 绿灯 / ⌃⌘F / 菜单「进入全屏幕」任一入口:进入真正的原生全屏 Space(四指横滑可
+   切换 Space),**无任何拦截转换**——不会再出现 v2.4.x「进去又被自动退出来」的观感;
+2. 红绿灯由 AppKit 管理:全屏常驻态不可见,鼠标悬停屏幕顶部时随系统工具条显示
+   (与 VS Code 等一致);TitleBar 在全屏时自动取消左侧 80px 红绿灯预留区(内容左移),
+   退出恢复;系统菜单栏是否在全屏显示跟随系统设置(系统设置 › 控制中心);
+3. 窗口内容顶部第一行即自绘标题栏主题色,无系统灰色标题条(经截屏像素断言验证);
+4. 全屏中再按 ⌃⌘F 或点绿灯:退出并精确恢复进入前的窗口位置尺寸;
+5. 全屏中退出应用(⌘Q)后重启:随会话恢复直接回到全屏(「启动时恢复上次会话」开启时;
+   v2.4 旧 fullscreen/simpleFullScreen 持久化字段兼容读取);
+6. 无 UI 驱动的冒烟:`PIXELBOX_SMOKE_FS=1 pnpm run dev`(setFullScreen 原生入口 →
+   断言 native=true 且非 simple、bounds 铺满显示器、退出回窗口态、bounds 精确恢复);
+7. 视觉级验证(真实 mac GUI,`pnpm run check:fullscreen`):dev 启动 → 程序化进原生
+   全屏 → `screencapture` 截屏(无屏幕录制权限时自动经 Terminal.app 助手降级;两路均
+   不可用则如实降级为 AppKit 状态断言并打印授权指引)→ PIL 像素断言:标题栏横带众数
+   ≈ 主题色(dark #2B2D30 / light #F7F8FA,无灰条,双候选行兼容菜单栏叠占)为硬断言;
+   红绿灯三色簇在原生全屏常驻态**预期不可见**,仅如实记录不判负;退出 bounds 恢复,
+   打印 `[fs-visual] PASS/FAIL`。注意:macOS **锁屏状态下系统会拒绝全屏 Space 过渡**,
+   本检查需在解锁的 GUI 会话运行。
 
 ## 字体与许可致谢
 

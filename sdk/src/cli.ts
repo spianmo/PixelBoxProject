@@ -161,7 +161,7 @@ program
       console.log('');
       console.log('后续步骤:');
       console.log(pc.cyan(`  cd ${dir}`));
-      console.log(pc.cyan('  npm install          # 安装 TypeScript,启用类型检查'));
+      console.log(pc.cyan('  npm install          # 安装 TypeScript,启用类型检查(pnpm 用户: pnpm install)'));
       console.log(pc.cyan('  pixelbox build       # 打包到 dist/'));
       console.log(pc.cyan('  pixelbox dev         # 连接真机,保存即热更新'));
     } catch (e) {

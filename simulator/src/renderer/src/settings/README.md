@@ -17,7 +17,7 @@ shared
 
 renderer(本目录)
   store.ts            设置镜像:get-all 拉取 + settings:changed 订阅 + 语言同步/预览
-  registry.tsx        设置页注册表:import.meta.glob 自动收集 pages/*.tsx
+  registry.tsx        设置页注册表:import.meta.webpackContext 自动收集 pages/*.tsx
   draft.tsx           草稿层:页面读写草稿,Apply/OK 才落盘,Cancel 丢弃
   controls.tsx        JetBrains 表单控件(分节/勾选/下拉/文本,均接草稿)
   categories.ts       共享分类引用(外观与行为 / 工具)
@@ -74,8 +74,8 @@ export const page: SettingsPage = {
 3. **消费方**(可选):需要即时生效的地方 `subscribeSettings(cb)` +
    `getAppSettings()` 读新值(renderer),或 main 侧 `getSettings()`。
 
-不需要动:registry.tsx(glob 自动收集)、SettingsWindow.tsx、draft.tsx、
-main 的 IPC/落盘/广播。
+不需要动:registry.tsx(`import.meta.webpackContext` 构建期自动收集)、
+SettingsWindow.tsx、draft.tsx、main 的 IPC/落盘/广播。
 
 ## 草稿 / 应用语义
 

@@ -1,4 +1,4 @@
-# electron-builder 基础配置(打包非必需项,vite 三段构建通过即可交付)
+# electron-builder 基础配置(打包非必需项,Rsbuild 三 environments 构建通过即可交付)
 appId: com.pixelbox.simulator
 productName: PixelBox Simulator
 directories:

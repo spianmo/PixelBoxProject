@@ -6,6 +6,8 @@
  *   macOS 预留 80px 红绿灯位(main 进程 titleBarStyle: hiddenInset)
  * - 中右区(运行工具组):设备下拉(虚拟 + mDNS 真机分组)| 目标芯片下拉 |
  *   ▶ 运行 | ⏹ 停止 | 🔨 构建固件 | 📤 推送 | ⋮ 更多
+ *   (IDE v3 按工程类型门控:app=▶/⏹/📤,firmware=🔨 与 ⋮ 固件项,芯片下拉全类型保留;
+ *    隐藏而非禁用,fwBusy 时取消入口恒可达)
  * - 右区:🔍 搜索(Cmd+P)| ⚙ 设置(语言快捷切换 + IDE 设置独立窗口)| 🔔 通知 | Win/Linux 窗口控制
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
@@ -26,17 +28,17 @@ import {
   LuPlus,
   LuRefreshCw,
   LuSearch,
+  LuSend,
   LuSettings,
   LuSlidersHorizontal,
   LuSmartphone,
   LuSquare,
   LuTrash2,
-  LuUpload,
   LuUsb,
   LuX
 } from 'react-icons/lu'
 import { VscChromeMaximize, VscChromeRestore, VscLoading } from 'react-icons/vsc'
-import type { FirmwareTaskKind } from '../../../shared/ipc-types'
+import type { FirmwareTaskKind, ProjectKind } from '../../../shared/ipc-types'
 import i18n from '../i18n'
 import {
   CHIP_TARGETS,
@@ -61,6 +63,8 @@ import {
 interface Props {
   workspaceRoot: string | null
   gitBranch: string | null
+  /** 工程类型(§5 门控矩阵;null = 传统目录,保留 ▶ 运行兼容旧行为) */
+  projectKind: ProjectKind | null
   running: boolean
   building: boolean
   pushBusy: boolean
@@ -233,7 +237,7 @@ export function TitleBar(props: Props): React.JSX.Element {
   const { profiles } = useDeviceProfiles()
   const notif = useSyncExternalStore(notificationStore.subscribe, notificationStore.get)
   const [recents, setRecents] = useState<string[]>([])
-  // 全屏态(macOS 伪全屏 / Win-Linux F11):挂载对账一次 + 订阅变化
+  // 全屏态(macOS 原生全屏 / Win-Linux F11):挂载对账一次 + 订阅变化
   const [fullscreen, setFullscreen] = useState(false)
   const isMac = window.api.platform === 'darwin'
 
@@ -328,34 +332,44 @@ export function TitleBar(props: Props): React.JSX.Element {
     onSelect: () => setChip(c)
   }))
 
-  // ---- ⋮ 更多(固件:打包 merged.bin / 烧录… / 清理构建) ----
+  // ---- 门控矩阵 §5(隐藏而非禁用,JetBrains 惯例;fwBusy 时取消入口始终保留) ----
   const fwBusy = props.fwTask !== null
+  const kind = props.projectKind
+  const showRun = kind === 'app' || kind === null // null = 传统目录,兼容旧行为
+  const showPush = kind === 'app'
+  const showFw = kind === 'firmware'
+
+  // ---- ⋮ 更多(固件:打包 merged.bin / 烧录… / 清理构建,仅固件工程) ----
   const moreItems: DropdownItem[] = [
-    {
-      key: 'fw-package',
-      label: t('fw.menuPackage'),
-      icon: <LuPackage />,
-      group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
-      disabled: fwBusy,
-      onSelect: props.onFirmwarePackage
-    },
-    {
-      key: 'fw-flash',
-      label: t('fw.menuFlash'),
-      icon: <LuUsb />,
-      group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
-      disabled: fwBusy,
-      onSelect: props.onFirmwareFlash
-    },
-    {
-      key: 'fw-clean',
-      label: t('fw.menuClean'),
-      icon: <LuTrash2 />,
-      group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
-      disabled: fwBusy,
-      onSelect: props.onFirmwareClean
-    },
-    // 任务进行中追加「取消」(危险项)
+    ...(showFw
+      ? [
+          {
+            key: 'fw-package',
+            label: t('fw.menuPackage'),
+            icon: <LuPackage />,
+            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            disabled: fwBusy,
+            onSelect: props.onFirmwarePackage
+          },
+          {
+            key: 'fw-flash',
+            label: t('fw.menuFlash'),
+            icon: <LuUsb />,
+            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            disabled: fwBusy,
+            onSelect: props.onFirmwareFlash
+          },
+          {
+            key: 'fw-clean',
+            label: t('fw.menuClean'),
+            icon: <LuTrash2 />,
+            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            disabled: fwBusy,
+            onSelect: props.onFirmwareClean
+          }
+        ]
+      : []),
+    // 任务进行中追加「取消」(危险项;不看工程类型,运行中任务的取消入口必须可达)
     ...(fwBusy
       ? [
           {
@@ -413,10 +427,11 @@ export function TitleBar(props: Props): React.JSX.Element {
 
   return (
     <div
-      // 全屏(macOS 伪全屏铺满 workArea,main 侧已禁移动)下同时禁用拖拽区双保险;
-      // 窗口保持普通态,红绿灯天然在 hiddenInset 位(12,10),80px 预留保持不变
-      className={`${fullscreen ? '' : 'app-drag'} flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0`}
-      style={{ paddingLeft: isMac ? 80 : 8 }}
+      // macOS 原生全屏:红绿灯被 AppKit 收进顶部悬停工具条(常驻不可见)→ 取消
+      // 80px 红绿灯预留区(内容左移避免空缺),退出全屏恢复;拖拽区保留
+      // (原生全屏 Space 下拖拽为系统级 no-op,无副作用)
+      className="app-drag flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0"
+      style={{ paddingLeft: isMac && !fullscreen ? 80 : 8 }}
       onDoubleClick={(e) => {
         // Windows/Linux:双击空白区最大化/还原(macOS 由系统处理)
         if (!isMac && e.target === e.currentTarget) window.api.windowToggleMaximize()
@@ -467,45 +482,55 @@ export function TitleBar(props: Props): React.JSX.Element {
 
         <div className="mx-1 h-5 w-px bg-ink-700" />
 
-        {/* 多实例:运行中仍可再次 ▶(对另一档案启动新会话 / 对同档案热重载) */}
-        <IconButton
-          title={t('titlebar.run')}
-          disabled={props.building}
-          onClick={props.onRun}
-          className="text-green-500 hover:text-green-400"
-        >
-          <LuPlay className="fill-current" />
-        </IconButton>
-        <IconButton
-          title={t('titlebar.stop')}
-          disabled={!props.running}
-          onClick={props.onStop}
-          className="text-red-400 hover:text-red-300"
-        >
-          <LuSquare className="fill-current text-[13px]" />
-        </IconButton>
-        {/* 🔨 构建当前目标芯片固件;任务进行中变为取消(spinner) */}
-        <IconButton
-          title={
-            fwBusy
-              ? `${t(`fw.status.${props.fwTask}`)} — ${t('fw.cancelTask')}`
-              : `${t('titlebar.buildFirmware')} (${chipLabel(dev.chip)})`
-          }
-          onClick={fwBusy ? props.onFirmwareCancel : props.onFirmwareBuild}
-        >
-          {fwBusy ? <VscLoading className="animate-spin" /> : <LuHammer />}
-        </IconButton>
-        <IconButton
-          title={
-            props.pushBusy && props.pushPercent >= 0
-              ? `${t('titlebar.push')} ${props.pushPercent}%`
-              : t('titlebar.push')
-          }
-          disabled={props.pushBusy}
-          onClick={props.onPush}
-        >
-          {props.pushBusy ? <VscLoading className="animate-spin" /> : <LuUpload />}
-        </IconButton>
+        {/* ▶/⏹ 仅 app 工程与传统目录(§5);多实例:运行中仍可再次 ▶ */}
+        {showRun && (
+          <>
+            <IconButton
+              title={t('titlebar.run')}
+              disabled={props.building}
+              onClick={props.onRun}
+              className="text-green-500 hover:text-green-400"
+            >
+              <LuPlay className="fill-current" />
+            </IconButton>
+            <IconButton
+              title={t('titlebar.stop')}
+              disabled={!props.running}
+              onClick={props.onStop}
+              className="text-red-400 hover:text-red-300"
+            >
+              <LuSquare className="fill-current text-[13px]" />
+            </IconButton>
+          </>
+        )}
+        {/* 🔨 构建当前目标芯片固件(仅固件工程);任务进行中变为取消(spinner),
+            取消入口不看工程类型 —— fwBusy 时该钮始终可达 */}
+        {(showFw || fwBusy) && (
+          <IconButton
+            title={
+              fwBusy
+                ? `${t(`fw.status.${props.fwTask}`)} — ${t('fw.cancelTask')}`
+                : `${t('titlebar.buildFirmware')} (${chipLabel(dev.chip)})`
+            }
+            onClick={fwBusy ? props.onFirmwareCancel : props.onFirmwareBuild}
+          >
+            {fwBusy ? <VscLoading className="animate-spin" /> : <LuHammer />}
+          </IconButton>
+        )}
+        {/* 📤 推送到设备(仅 app 工程;未选真机时 App 侧先扫描再推首台) */}
+        {showPush && (
+          <IconButton
+            title={
+              props.pushBusy && props.pushPercent >= 0
+                ? `${t('titlebar.pushToDevice')} ${props.pushPercent}%`
+                : t('titlebar.pushToDevice')
+            }
+            disabled={props.pushBusy}
+            onClick={props.onPush}
+          >
+            {props.pushBusy ? <VscLoading className="animate-spin" /> : <LuSend />}
+          </IconButton>
+        )}
         <MenuButton
           items={moreItems}
           title={t('titlebar.more')}

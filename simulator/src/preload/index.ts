@@ -15,8 +15,13 @@ import type {
   FirmwareTaskResult,
   FsEntry,
   FsWatchEvent,
+  HardwareExportFile,
+  HardwareExportResult,
+  PrinterJobStatus,
+  PrinterUploadResult,
   ProjectCreateOptions,
   ProjectCreateResult,
+  ProjectInfo,
   PushProgress,
   SerialPortInfo,
   SessionStartupInfo,
@@ -49,9 +54,9 @@ const api = {
   windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke('win:is-maximized'),
   onWindowMaximized: (cb: (maximized: boolean) => void): (() => void) =>
     subscribe('win:maximized', cb),
-  /** 查询当前窗口全屏态(macOS 伪全屏 / Win-Linux 原生全屏) */
+  /** 查询当前窗口全屏态(macOS/Win/Linux 均为原生 isFullScreen) */
   windowIsFullScreen: (): Promise<boolean> => ipcRenderer.invoke('win:is-fullscreen'),
-  /** 全屏态变化订阅(TitleBar 全屏下禁用拖拽区等样式微调) */
+  /** 全屏态变化订阅(TitleBar 原生全屏下取消 macOS 红绿灯 80px 预留区) */
   onWindowFullScreen: (cb: (fullscreen: boolean) => void): (() => void) =>
     subscribe('win:fullscreen', cb),
   /** 读取工作区 git 分支(非 git 仓库返回 null) */
@@ -68,9 +73,11 @@ const api = {
   /** 系统目录选择对话框(「浏览…」),取消返回 null */
   chooseDirectory: (defaultPath?: string): Promise<string | null> =>
     ipcRenderer.invoke('dialog:choose-directory', defaultPath),
-  /** 校验并生成项目骨架,返回根目录与 src/main.ts 路径 */
+  /** 校验并按 kind 生成三类项目骨架,返回 { root, kind, entryFile } */
   projectCreate: (opts: ProjectCreateOptions): Promise<ProjectCreateResult> =>
     ipcRenderer.invoke('project:create', opts),
+  /** 工作区项目信息(kind/name/chip/manifest;非 pixelbox 工程 kind 为 null) */
+  projectInfo: (root: string): Promise<ProjectInfo> => ipcRenderer.invoke('project:info', root),
 
   // ---- 工作区 / 文件系统 ----
   openWorkspace: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-workspace'),
@@ -149,12 +156,17 @@ const api = {
   /** 检测 ESP-IDF 环境(路径 + 版本);可传设置窗口草稿路径做不落盘试探 */
   toolchainDetect: (overridePath?: string): Promise<ToolchainInfo> =>
     ipcRenderer.invoke('toolchain:detect', overridePath),
-  /** 启动固件任务(build/merge/flash/clean);完成经 onFirmwareDone 事件回报 */
+  /**
+   * 启动固件任务(build/merge/flash/clean);完成经 onFirmwareDone 事件回报。
+   * cwd = 固件工程目录(IDE v3:作用于当前工作区,须含 CMakeLists.txt);
+   * 缺省保持旧行为(仓库 firmware/)
+   */
   firmwareStart: (opts: {
     kind: FirmwareTaskKind
     target: string
     port?: string
     baud?: number
+    cwd?: string
   }): Promise<void> => ipcRenderer.invoke('toolchain:start', opts),
   /** 取消当前固件任务(杀进程树) */
   firmwareCancel: (): Promise<void> => ipcRenderer.invoke('toolchain:cancel'),
@@ -217,6 +229,25 @@ const api = {
   /** 独立工具窗关闭事件 */
   onToolWindowClosed: (cb: (ev: ToolWindowClosedEvent) => void): (() => void) =>
     subscribe('toolwindow:closed', cb),
+
+  // ---- 硬件设计(STL/Gerber 导出) ----
+  /** 导出文件到 <root>/export/<kind>/(base64 内容;完成后文件管理器定位目录) */
+  hardwareExport: (opts: {
+    root: string
+    kind: 'print' | 'gerber'
+    files: HardwareExportFile[]
+  }): Promise<HardwareExportResult> => ipcRenderer.invoke('hardware:export', opts),
+
+  // ---- 3D 打印机(OctoPrint / Moonraker,配置见设置 printer 段) ----
+  /** 连接测试,返回版本/状态描述(失败 throw printer:<code>) */
+  printerTest: (): Promise<string> => ipcRenderer.invoke('printer:test'),
+  /** 选择 G-code 文件(.gcode/.gco/.g;取消返回 null) */
+  printerPickGcode: (): Promise<string | null> => ipcRenderer.invoke('printer:pick-gcode'),
+  /** 上传 G-code(startPrint 请求立即开打;printStarted 以服务器回执为准) */
+  printerUpload: (opts: { path: string; startPrint: boolean }): Promise<PrinterUploadResult> =>
+    ipcRenderer.invoke('printer:upload', opts),
+  /** 任务状态轮询(completion 统一 0..1) */
+  printerJob: (): Promise<PrinterJobStatus> => ipcRenderer.invoke('printer:job'),
 
   // ---- 真机(devd) ----
   devdDiscover: (timeoutMs?: number): Promise<DevdDevice[]> =>

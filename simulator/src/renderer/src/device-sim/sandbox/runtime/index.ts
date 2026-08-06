@@ -246,7 +246,8 @@ async function runBundle(code: string): Promise<void> {
     const blob = new Blob([code], { type: 'text/javascript' })
     const url = URL.createObjectURL(blob)
     try {
-      await import(/* @vite-ignore */ url)
+      // 运行期 Blob URL,不参与任何打包器静态分析(本文件仅经 esbuild 打入沙箱 bundle)
+      await import(/* webpackIgnore: true */ url)
       return
     } catch (err) {
       // Blob import 在部分环境(CSP / opaque origin)不可用时回退 eval

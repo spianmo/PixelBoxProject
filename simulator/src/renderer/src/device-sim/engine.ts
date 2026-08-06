@@ -120,6 +120,11 @@ export class SimEngine {
   readonly profile: DeviceProfile
   /** 外壳设备路由 key('sim:<profileId>') */
   readonly deviceKey: string
+  /**
+   * 可选帧回调:每帧绘制完成(putImageData 之后)调用。
+   * 3D 视图用它做 CanvasTexture 脏标记(additive,不改动 device-sim/types.ts 契约)。
+   */
+  onFrame?: (() => void) | null
 
   private iframe: HTMLIFrameElement | null = null
   private screenCanvas: HTMLCanvasElement | null = null
@@ -520,6 +525,7 @@ export class SimEngine {
     if (this.screenCanvas) {
       this.screenCanvas.getContext('2d')?.putImageData(this.latestFrame, 0, 0)
     }
+    this.onFrame?.()
   }
 
   // ---------------------------------------------------------------

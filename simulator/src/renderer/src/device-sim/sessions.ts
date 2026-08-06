@@ -36,6 +36,8 @@ export interface SimSession {
   key: string
   profile: DeviceProfile
   engine: SimEngine
+  /** 屏幕视图模式(档案带 hardware3d 时默认 '3d';随 tab 保留,SimPanel 工具条切换) */
+  viewMode?: '2d' | '3d'
 }
 
 export interface SimSessionsState {
@@ -67,14 +69,24 @@ export function ensureSession(profile: DeviceProfile): SimSession {
       return found
     }
     void found.engine.dispose()
-    const rebuilt: SimSession = { key, profile, engine: new SimEngine({ profile, deviceKey: key }) }
+    const rebuilt: SimSession = {
+      key,
+      profile,
+      engine: new SimEngine({ profile, deviceKey: key }),
+      viewMode: profile.hardware3d ? '3d' : '2d'
+    }
     simSessionsStore.set({
       sessions: st.sessions.map((s) => (s.key === key ? rebuilt : s)),
       activeKey: key
     })
     return rebuilt
   }
-  const session: SimSession = { key, profile, engine: new SimEngine({ profile, deviceKey: key }) }
+  const session: SimSession = {
+    key,
+    profile,
+    engine: new SimEngine({ profile, deviceKey: key }),
+    viewMode: profile.hardware3d ? '3d' : '2d'
+  }
   simSessionsStore.set({ sessions: [...st.sessions, session], activeKey: key })
   return session
 }
@@ -86,7 +98,9 @@ function sameProfile(a: DeviceProfile, b: DeviceProfile): boolean {
     a.screenW === b.screenW &&
     a.screenH === b.screenH &&
     a.psramMB === b.psramMB &&
-    a.flashMB === b.flashMB
+    a.flashMB === b.flashMB &&
+    // 硬件外观(3D)变化需重建:引擎持 profile 只读引用,重建才能让 3D 视图拿到新外观
+    JSON.stringify(a.hardware3d ?? null) === JSON.stringify(b.hardware3d ?? null)
   )
 }
 
@@ -94,6 +108,15 @@ function sameProfile(a: DeviceProfile, b: DeviceProfile): boolean {
 export function setActiveSession(key: string): void {
   const st = simSessionsStore.get()
   if (st.sessions.some((s) => s.key === key)) simSessionsStore.set({ activeKey: key })
+}
+
+/** 切换会话屏幕视图模式(2D/3D;不可变更新,tab 内容随 store 重渲染) */
+export function setSessionViewMode(key: string, mode: '2d' | '3d'): void {
+  const st = simSessionsStore.get()
+  if (!st.sessions.some((s) => s.key === key)) return
+  simSessionsStore.set({
+    sessions: st.sessions.map((s) => (s.key === key ? { ...s, viewMode: mode } : s))
+  })
 }
 
 /** 关闭一个会话(tab ✕):停止应用、销毁引擎、移出列表 */

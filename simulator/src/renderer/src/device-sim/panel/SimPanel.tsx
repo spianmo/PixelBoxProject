@@ -16,11 +16,14 @@ import { VscCircleFilled, VscMic, VscComment } from 'react-icons/vsc'
 import {
   LuAxis3D,
   LuBatteryMedium,
+  LuBox,
   LuCamera,
+  LuExpand,
   LuKeyboard,
   LuLightbulb,
   LuMapPin,
   LuMaximize,
+  LuMonitor,
   LuPower,
   LuRefreshCw,
   LuRotateCw,
@@ -30,6 +33,8 @@ import {
 } from 'react-icons/lu'
 import type { SimEngine, EngineUiState } from '../engine'
 import type { PeriphSnapshot } from '../protocol'
+import { setSessionViewMode, useSimSessions } from '../sessions'
+import { ScreenView3D } from './ScreenView3D'
 import { showToast } from '../../components/toast'
 
 /** 设备屏幕分辨率(设备档案,阶段 2 由设备管理器提供) */
@@ -40,6 +45,9 @@ export interface ScreenSize {
 
 /** 缩放模式:适应窗口(整数倍优先)或固定 100% */
 type ZoomMode = 'fit' | 'one'
+
+/** 屏幕视图模式(档案带 hardware3d 时可切 3D;状态存 SimSession) */
+type SimViewMode = '2d' | '3d'
 
 /** 外设分组(左缘工具条 popover) */
 type PeriphGroup = 'power' | 'buttons' | 'imu' | 'gps' | 'led' | 'camera'
@@ -224,7 +232,12 @@ function ToolStrip({
   openGroup,
   onToggleGroup,
   gpsLive,
-  stripRef
+  stripRef,
+  has3d,
+  viewMode,
+  onToggleViewMode,
+  explode,
+  onToggleExplode
 }: {
   engine: SimEngine
   zoom: ZoomMode
@@ -235,6 +248,13 @@ function ToolStrip({
   gpsLive: boolean
   /** 外层容器 ref(popover 点外部关闭的边界判断) */
   stripRef: React.RefObject<HTMLDivElement>
+  /** 档案带 hardware3d → 显示 2D/3D 切换 */
+  has3d: boolean
+  viewMode: SimViewMode
+  onToggleViewMode: () => void
+  /** 爆炸视图(仅 3D 模式显示) */
+  explode: boolean
+  onToggleExplode: () => void
 }): React.JSX.Element {
   const { t } = useTranslation()
   const ui = useUiState(engine)
@@ -281,12 +301,41 @@ function ToolStrip({
         {ui.muted ? <LuVolumeX className="text-yellow-400" /> : <LuVolume2 />}
       </ToolStripButton>
       <div className="my-0.5 h-px w-5 bg-ink-700" />
-      <ToolStripButton title={t('sim.toolbar.zoomFit')} active={zoom === 'fit'} onClick={() => onZoom('fit')}>
+      <ToolStripButton
+        title={t('sim.toolbar.zoomFit')}
+        active={zoom === 'fit'}
+        disabled={viewMode === '3d'}
+        onClick={() => onZoom('fit')}
+      >
         <LuMaximize />
       </ToolStripButton>
-      <ToolStripButton title={t('sim.toolbar.zoom100')} active={zoom === 'one'} onClick={() => onZoom('one')}>
+      <ToolStripButton
+        title={t('sim.toolbar.zoom100')}
+        active={zoom === 'one'}
+        disabled={viewMode === '3d'}
+        onClick={() => onZoom('one')}
+      >
         <span className="text-[9px] font-bold">1:1</span>
       </ToolStripButton>
+
+      {/* 2D/3D 视图切换 + 爆炸视图(仅档案带 hardware3d 的设备) */}
+      {has3d && (
+        <>
+          <div className="my-0.5 h-px w-5 bg-ink-700" />
+          <ToolStripButton
+            title={viewMode === '3d' ? t('sim.toolbar.view2d') : t('sim.toolbar.view3d')}
+            active={viewMode === '3d'}
+            onClick={onToggleViewMode}
+          >
+            {viewMode === '3d' ? <LuMonitor /> : <LuBox />}
+          </ToolStripButton>
+          {viewMode === '3d' && (
+            <ToolStripButton title={t('sim.toolbar.explode')} active={explode} onClick={onToggleExplode}>
+              <LuExpand />
+            </ToolStripButton>
+          )}
+        </>
+      )}
 
       {/* 分隔线下:虚拟外设分组(点击弹 popover,活动状态右上角圆点) */}
       <div className="my-0.5 h-px w-5 bg-ink-700" />
@@ -457,6 +506,20 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
   const ui = useUiState(engine)
   const periph = usePeriph(engine)
   const [zoom, setZoom] = useState<ZoomMode>('fit')
+
+  // ---- 2D/3D 视图(仅档案带 hardware3d;模式存 SimSession 随 tab 保留,
+  //      爆炸态与 zoom 一样留在本地,tab 切换重挂即复位) ----
+  const { sessions } = useSimSessions()
+  const hardware3d = engine.profile.hardware3d ?? null
+  const sessionViewMode = sessions.find((s) => s.key === engine.deviceKey)?.viewMode
+  const viewMode: SimViewMode = hardware3d && sessionViewMode === '3d' ? '3d' : '2d'
+  const [explode, setExplode] = useState(false)
+
+  const toggleViewMode = useCallback((): void => {
+    const next: SimViewMode = viewMode === '3d' ? '2d' : '3d'
+    if (next === '2d') setExplode(false)
+    setSessionViewMode(engine.deviceKey, next)
+  }, [viewMode, engine.deviceKey])
 
   // ---- 外设 popover(同时只开一个;popover 作用于当前激活 tab 的会话:
   //      SimPanel 按会话 key 重挂,引擎即本会话实例) ----
@@ -657,8 +720,18 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
           onToggleGroup={toggleGroup}
           gpsLive={gpsLive}
           stripRef={stripRef}
+          has3d={hardware3d !== null}
+          viewMode={viewMode}
+          onToggleViewMode={toggleViewMode}
+          explode={explode}
+          onToggleExplode={() => setExplode((v) => !v)}
         />
-        <ScreenView engine={engine} screen={screen} zoom={zoom} />
+        {/* 2D/3D 互斥使用 attachScreen 单 sink:React 先跑旧分支 cleanup(attach(null))再挂新分支 */}
+        {viewMode === '3d' && hardware3d ? (
+          <ScreenView3D engine={engine} screen={screen} hardware={hardware3d} explode={explode} />
+        ) : (
+          <ScreenView engine={engine} screen={screen} zoom={zoom} />
+        )}
       </div>
 
       {/* 外设分组 popover(JetBrains 气泡:#2B2D30 底 / #393B40 边框 / 箭头指向按钮) */}

@@ -2,7 +2,7 @@
 /**
  * node-pty 安装后修复与可用性验证(集成终端阶段 1)
  *
- * 1. npm 解包不保留可执行位:prebuilds/darwin-*/spawn-helper 丢失 +x 会导致
+ * 1. 解包不保留可执行位:prebuilds/darwin-<arch>/spawn-helper 丢失 +x 会导致
  *    pty.fork 报 "posix_spawnp failed",这里统一补回执行权限
  * 2. 验证 node-pty 能在当前平台加载(N-API 预编译产物对 Node/Electron 通用);
  *    加载失败时尝试 @electron/rebuild 针对 electron ABI 从源码重建

@@ -1,0 +1,5 @@
+// virtual:pixelbox-sandbox-runtime 的解析桩(内容会被完全替换,勿在此写代码)
+// - rsbuild.config.ts 把 'virtual:pixelbox-sandbox-runtime' 别名到本文件
+// - scripts/sandboxRuntimeLoader.cjs 在构建期用 esbuild 打包 runtime/index.ts
+//   并以 base64 字符串模块替换本文件内容(export default 运行时完整源码)
+// - 类型声明见同目录 assets.d.ts

@@ -17,6 +17,9 @@ export interface FsWatchEvent {
   path: string
 }
 
+/** 项目类型(app = TS 应用工程;firmware = ESP-IDF 固件工程;hardware = PCB+外壳硬件设计工程) */
+export type ProjectKind = 'app' | 'firmware' | 'hardware'
+
 /** 应用 manifest(pixelbox.json,字段见 docs/architecture.md §6) */
 export interface PixelboxManifest {
   id: string
@@ -25,28 +28,47 @@ export interface PixelboxManifest {
   entry: string
   assets?: string[]
   minFirmware?: string
+  /** 项目类型(向后兼容:旧工程无 type 视为 app) */
+  type?: ProjectKind
+  /** firmware/hardware 工程记录默认目标芯片(ChipId) */
+  chip?: string
 }
 
-/** 新建项目向导:项目模板(像素动画 Hello / 空白项目) */
+/** 工作区项目信息(project:info) */
+export interface ProjectInfo {
+  /** null = 非 pixelbox 工程(普通目录,隐藏所有类型化动作) */
+  kind: ProjectKind | null
+  name: string | null
+  /** manifest.chip ?? null */
+  chip: string | null
+  manifest: PixelboxManifest | null
+}
+
+/** 新建项目向导:项目模板(像素动画 Hello / 空白项目,仅 kind=app) */
 export type ProjectTemplate = 'hello' | 'blank'
 
 /** 新建项目向导:创建参数(project:create) */
 export interface ProjectCreateOptions {
+  kind: ProjectKind
   /** 项目名 = 目录名,[a-zA-Z0-9_-] */
   name: string
   /** 父目录绝对路径(目录名拼接在其下) */
   location: string
-  template: ProjectTemplate
-  /** 应用 ID(反域名,如 com.example.myapp) */
-  appId: string
+  /** 应用 ID(kind=app 必填,反域名,如 com.example.myapp) */
+  appId?: string
+  /** kind=app:'hello' | 'blank' */
+  template?: ProjectTemplate
+  /** kind=firmware|hardware:目标芯片 ChipId,默认 'esp32s3' */
+  chip?: string
 }
 
 /** 新建项目向导:创建结果 */
 export interface ProjectCreateResult {
   /** 新项目根目录绝对路径 */
   root: string
-  /** src/main.ts 绝对路径(创建后编辑器自动打开) */
-  mainTs: string
+  kind: ProjectKind
+  /** 创建后要在编辑器打开的文件绝对路径(app=src/main.ts,firmware=main/main.c,hardware=design/board.tsx) */
+  entryFile: string
 }
 
 /** 构建日志行 */
@@ -87,6 +109,128 @@ export interface DeviceProfile {
   note: string
   /** Unix 毫秒;内置档案为 0 */
   createdAt: number
+  /** 硬件设计工程注册的完整硬件外观(3D 板卡+外壳;deviceProfiles isProfileShape 容忍额外字段) */
+  hardware3d?: Hardware3D
+}
+
+// ---------------------------------------------------------------
+// 硬件设计 3D 契约(挂在 DeviceProfile 上,亦被 hardware 面板使用)
+// ---------------------------------------------------------------
+
+/** 板上元件盒(简化 3D:挤出盒体) */
+export interface BoardComponentBox {
+  id: string
+  name?: string
+  /** 中心,mm,板中心为原点,Y 向上(Circuit JSON 坐标) */
+  x: number
+  y: number
+  /** mm */
+  w: number
+  h: number
+  /** 挤出高度,默认 2.5 */
+  heightMM: number
+  layer: 'top' | 'bottom'
+}
+
+/** 板卡简化 3D 规格(从 Circuit JSON 提炼,自包含 —— 档案脱离工程也能渲染) */
+export interface BoardSpec {
+  widthMM: number
+  heightMM: number
+  /** pcb_board.thickness,默认 1.4 */
+  thicknessMM: number
+  /** 多边形板轮廓(可选,覆盖 width/height) */
+  outline?: { x: number; y: number }[]
+  components: BoardComponentBox[]
+  /** 阻焊色,默认 '#1a7f37' */
+  color?: string
+}
+
+/** 屏幕在板上的放置(屏幕内容贴图 + 触摸映射) */
+export interface ScreenPlacement {
+  /** 屏幕中心相对板中心,mm */
+  x: number
+  y: number
+  /** 屏幕可视区,mm */
+  w: number
+  h: number
+  rotationDeg?: 0 | 90 | 180 | 270
+}
+
+/** 外壳侧壁开孔(USB / 按键等) */
+export interface EnclosurePort {
+  wall: 'north' | 'south' | 'east' | 'west'
+  x: number
+  y: number
+  w: number
+  h: number
+  r?: number
+}
+
+/** 参数化外壳(默认值常量 DEFAULT_ENCLOSURE 见 shared/hardwareDefaults.ts) */
+export interface EnclosureParams {
+  /** 壁厚,默认 2 */
+  wallMM: number
+  /** 板与内壁间隙,默认 1 */
+  clearanceMM: number
+  /** 底盒内腔高(板下表面以上),默认 12 */
+  baseHeightMM: number
+  /** 顶盖内腔高,默认 3 */
+  lidHeightMM: number
+  /** 支撑柱高,默认 4 */
+  standoffHeightMM: number
+  /** 默认 3 */
+  standoffOuterR: number
+  /** 螺孔半径,默认 1.1(M2 自攻) */
+  standoffInnerR: number
+  /** 外壳圆角,默认 2 */
+  cornerR: number
+  /** 顶盖开屏幕窗(需 screen 放置) */
+  screenWindow: boolean
+  ports: EnclosurePort[]
+}
+
+/** 设备档案携带的完整硬件外观 */
+export interface Hardware3D {
+  board: BoardSpec
+  enclosure: EnclosureParams
+  screen?: ScreenPlacement
+  /** 来源工程(仅提示用) */
+  designRoot?: string
+}
+
+// ---------------------------------------------------------------
+// 打印机(OctoPrint / Moonraker,main 进程 printer.ts)
+// ---------------------------------------------------------------
+
+export type PrinterType = 'octoprint' | 'moonraker'
+
+/** 归一化打印任务状态(printer:job) */
+export interface PrinterJobStatus {
+  /** 'printing'|'operational'|'paused'|'complete'|'error'|... 原样透传 */
+  state: string
+  /** 0..1 */
+  completion: number
+  printTimeLeftSec?: number
+  fileName?: string
+}
+
+export interface PrinterUploadResult {
+  printStarted: boolean
+  remoteName: string
+}
+
+// ---------------------------------------------------------------
+// 硬件导出(hardware:export,写 <root>/export/<kind>/)
+// ---------------------------------------------------------------
+
+export interface HardwareExportFile {
+  name: string
+  dataB64: string
+}
+
+export interface HardwareExportResult {
+  dir: string
+  files: string[]
 }
 
 // ---------------------------------------------------------------
@@ -210,6 +354,15 @@ export interface AppSettings {
     shellOverride: string
     /** 终端字号(对已打开会话即时生效) */
     fontSize: number
+  }
+  /** 工具 › 3D 打印机(OctoPrint / Moonraker 联机) */
+  printer: {
+    /** 驱动类型 */
+    type: PrinterType
+    /** 服务地址(如 http://octopi.local;空串 = 未配置) */
+    baseUrl: string
+    /** API Key(OctoPrint 必填;Moonraker 可选) */
+    apiKey: string
   }
 }
 

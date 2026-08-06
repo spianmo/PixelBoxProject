@@ -25,12 +25,12 @@
 要求 Node.js >= 20。
 
 ```bash
+pnpm install                  # 仓库根执行(pnpm workspace);失败时加 --registry=https://registry.npmmirror.com
 cd server
-cp .env.example .env        # 填入 API Key(OpenAI 或硅基流动,见文件内两套注释示例)
-npm install                 # 失败时:npm install --registry=https://registry.npmmirror.com
-npm run dev                 # 开发模式(tsx watch)
+cp .env.example .env          # 填入 API Key(OpenAI 或硅基流动,见文件内两套注释示例)
+pnpm run dev                  # 开发模式(tsx watch)
 # 或
-npm run build && npm start  # 编译到 dist/ 后运行
+pnpm run build && pnpm start  # 编译到 dist/ 后运行
 ```
 
 验证:
@@ -42,7 +42,7 @@ curl http://127.0.0.1:8787/healthz
 
 ## 与模拟器 / 真机联调
 
-1. **启动服务器**:`npm run dev`,确认 `/healthz` 正常。
+1. **启动服务器**:`pnpm run dev`,确认 `/healthz` 正常。
 2. **模拟器**:在模拟器 IDE 中打开 `examples/03-voice-assistant`,把中继地址设为
    `ws://127.0.0.1:8787/realtime`(示例通过 `px.storage.kv` 的 `voice.server` 键读取,详见该示例 README),点击运行后按提示触发对话。模拟器的 voice 域与真机走完全相同的协议。
 3. **真机**:确保盒子与电脑在同一局域网,把地址改为电脑局域网 IP,如

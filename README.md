@@ -64,10 +64,18 @@ flowchart LR
 
 ## 快速开始(三选一)
 
+> 本仓库为 pnpm workspace(sdk / simulator / server / examples),Node 侧统一用
+> [pnpm](https://pnpm.io) 管理:根目录 `pnpm install` 一次装齐全部包;
+> 根目录聚合脚本 `pnpm run build` / `pnpm run typecheck` / `pnpm run check` 逐包执行。
+> 国内网络首次安装 Electron 二进制建议带镜像:
+> `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/ pnpm install`
+> (pnpm 不会像 npm 那样把 .npmrc 的 electron_mirror 透传给安装脚本,需用环境变量)。
+
 ### 路径 1:模拟器最速体验(零硬件,10 分钟)
 
 ```bash
-cd simulator && npm install && npm run dev
+pnpm install                      # 仓库根执行,工作区所有包一次装齐
+cd simulator && pnpm run dev
 ```
 
 打开示例工程(`examples/`),编辑器里改代码,虚拟像素屏实时刷新。
@@ -81,17 +89,19 @@ cd firmware && idf.py set-target esp32s3 && idf.py build
 idf.py -p <串口> flash monitor
 
 # SDK CLI
-cd sdk && npm install && npm run build && npm link
-pixelbox create my-app && cd my-app && npm install
+pnpm install                                   # 仓库根执行(已装过可跳过)
+cd sdk && pnpm run build && npm link           # npm link 挂全局命令(或 pnpm link --global)
+pixelbox create my-app && cd my-app && npm install   # 用户项目 npm/pnpm 任选
 pixelbox dev        # watch 构建 + 自动推送 + 日志回传
 ```
 
 ### 路径 3:语音对话
 
 ```bash
-cd server && npm install
+pnpm install           # 仓库根执行(已装过可跳过)
+cd server
 cp .env.example .env   # 填 OpenAI 兼容的 STT/LLM/TTS baseURL/key/model
-npm run dev            # ws://<本机>:8787/realtime
+pnpm run dev           # ws://<本机>:8787/realtime
 ```
 
 设备端 `px.voice.configure({ serverUrl: 'ws://<电脑局域网IP>:8787/realtime' })` 后按键开聊。

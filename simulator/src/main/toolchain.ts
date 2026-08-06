@@ -3,7 +3,9 @@
  *
  * - 检测 ESP-IDF:设置覆盖 > $IDF_PATH > ~/esp/esp-idf,解析 esp_idf_version.h 报版本
  * - 构建:以 login shell($SHELL -lc)运行 `source export.sh && idf.py … build`,
- *   cwd = 仓库 firmware/;多目标独立构建目录防止污染默认 sdkconfig
+ *   cwd = StartTaskOptions.cwd 指定的固件工程目录(IDE v3:作用于当前工作区,
+ *   须含 CMakeLists.txt,否则 toolchain:notFirmwareProject);未传 cwd 保持旧行为
+ *   (仓库 firmware/);多目标独立构建目录防止污染默认 sdkconfig
  *   (与 firmware/README.md 约定一致:esp32s3 沿用默认 build/,其余
  *    `-B build_<后缀> -D SDKCONFIG=build_<后缀>/sdkconfig`;set-target 仅在
  *    构建目录目标缺失/不匹配时插入 —— set-target 会清空构建目录并重生成 sdkconfig,
@@ -247,6 +249,11 @@ export interface StartTaskOptions {
   port?: string
   /** 烧录波特率(缺省用设置值) */
   baud?: number
+  /**
+   * 固件工程目录(IDE v3:idf.py 作用于当前工作区;须含 CMakeLists.txt,
+   * 否则 throw toolchain:notFirmwareProject)。缺省保持旧行为:仓库 firmware/
+   */
+  cwd?: string
 }
 
 /** 启动固件任务;并发/环境错误直接 throw(错误消息为 i18n 错误码) */
@@ -256,8 +263,18 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
   if (!/^[a-z0-9]+$/.test(target)) throw new Error('toolchain:badTarget')
 
   const info = await detectToolchain()
-  if (!info.ok) throw new Error(`toolchain:${info.error ?? 'idfNotFound'}`)
-  const fw = info.firmwareDir
+  // cwd 模式只依赖 IDF 环境本身:monorepo firmware/ 缺失(打包分发形态)不阻塞
+  if (!info.ok && !(opts.cwd && info.error === 'firmwareMissing')) {
+    throw new Error(`toolchain:${info.error ?? 'idfNotFound'}`)
+  }
+  // 任务工作目录:cwd 指定的固件工程(校验 CMakeLists.txt)> 旧 monorepo firmware/
+  let fw: string
+  if (typeof opts.cwd === 'string' && opts.cwd.trim().length > 0) {
+    fw = resolve(opts.cwd.trim())
+    if (!existsSync(join(fw, 'CMakeLists.txt'))) throw new Error('toolchain:notFirmwareProject')
+  } else {
+    fw = info.firmwareDir
+  }
   const buildDir = buildDirOf(target)
   const startedAt = Date.now()
 
@@ -310,7 +327,7 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
 
   if (opts.kind === 'build' || opts.kind === 'merge') actions.push('build')
   if (opts.kind === 'merge') {
-    // merge-bin 内部调 esptool merge_bin @flash_args,输出合成单文件到 firmware/dist/
+    // merge-bin 内部调 esptool merge_bin @flash_args,输出合成单文件到 <工程目录>/dist/
     mergedPath = join(fw, 'dist', `${target}-merged.bin`)
     await fsp.mkdir(dirname(mergedPath), { recursive: true })
     actions.push('merge-bin', '-o', mergedPath)

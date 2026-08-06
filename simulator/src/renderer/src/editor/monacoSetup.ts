@@ -1,15 +1,11 @@
 /**
  * Monaco 环境初始化
- * - worker 经 vite ?worker 打入本地(离线可用)
+ * - worker 经 Rspack 原生 `new Worker(new URL(...))` 语法打入本地(离线可用;
+ *   构建期静态分析拆出独立 worker chunk,dev/prod 均从本地加载)
  * - TS/JS 语言服务开启,注入 sdk/types/pixelbox.d.ts(?raw 随构建打入)
  *   使 px / pixelbox 全 API 具备补全与 hover
  */
 import * as monaco from 'monaco-editor'
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
-import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
-import CssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
-import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
-import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 // 唯一契约文件:整个仓库的设备 API 类型(禁止修改,只读注入)
 import pixelboxDts from '../../../../../sdk/types/pixelbox.d.ts?raw'
 import { getEffectiveTheme, subscribeTheme } from '../theme'
@@ -123,24 +119,36 @@ export function setupMonaco(): void {
     // FontFaceSet 不可用的环境(理论上 Chromium 恒有):跳过,回退字体链兜底
   }
 
+  // Rspack 要求 `new Worker(new URL(...))` 为字面量形态才能静态建 worker chunk,
+  // 故每个分支各写一遍(不可抽公共函数变量化 URL)
   self.MonacoEnvironment = {
     getWorker(_workerId: string, label: string): Worker {
       switch (label) {
         case 'json':
-          return new JsonWorker()
+          return new Worker(
+            new URL('monaco-editor/esm/vs/language/json/json.worker.js', import.meta.url)
+          )
         case 'css':
         case 'scss':
         case 'less':
-          return new CssWorker()
+          return new Worker(
+            new URL('monaco-editor/esm/vs/language/css/css.worker.js', import.meta.url)
+          )
         case 'html':
         case 'handlebars':
         case 'razor':
-          return new HtmlWorker()
+          return new Worker(
+            new URL('monaco-editor/esm/vs/language/html/html.worker.js', import.meta.url)
+          )
         case 'typescript':
         case 'javascript':
-          return new TsWorker()
+          return new Worker(
+            new URL('monaco-editor/esm/vs/language/typescript/ts.worker.js', import.meta.url)
+          )
         default:
-          return new EditorWorker()
+          return new Worker(
+            new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url)
+          )
       }
     }
   }
@@ -166,6 +174,11 @@ export function setupMonaco(): void {
 
   monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true)
   monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true)
+
+  // 冒烟钩子配套(PIXELBOX_SMOKE_MONACO,见 main/index.ts):暴露 monaco 顶层 API,
+  // 供 main 经 webContents.executeJavaScript 真实驱动 ts.worker 补全链路
+  // (断言 px 命名空间补全 → worker 拉起 + pixelbox.d.ts extraLib 注入均未回退)
+  ;(window as unknown as { __pixelboxMonaco?: typeof monaco }).__pixelboxMonaco = monaco
 }
 
 /** 根据文件名推断 Monaco language id */

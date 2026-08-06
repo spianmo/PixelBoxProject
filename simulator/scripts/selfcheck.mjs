@@ -4,7 +4,7 @@
  *
  * 覆盖:
  *   1. demo 工程按 builder.ts 同参数 esbuild 打包(dist/main.js,ES2020 单文件)
- *   2. 沙箱运行时按 esbuildRuntimePlugin 同参数打包(IIFE + woff2 base64 内嵌)
+ *   2. 沙箱运行时按 scripts/sandboxRuntimeLoader.cjs 同参数打包(IIFE + woff2 base64 内嵌)
  *   3. px shim 表面静态核对:16 个命名空间 + 13 个标准全局逐一在 bundle 中存在
  *      (运行期还有 verifySurface() 二次守卫,缺失即拒绝启动应用)
  *   4. srcdoc 组装:按 engine.ts 同逻辑做 </script 逃逸并核对
@@ -64,7 +64,7 @@ try {
 }
 
 // ----------------------------------------------------------------
-// 2) 沙箱运行时打包(与 esbuildRuntimePlugin 同参数)
+// 2) 沙箱运行时打包(与 scripts/sandboxRuntimeLoader.cjs 同参数)
 // ----------------------------------------------------------------
 console.log('[2/7] 打包沙箱运行时(IIFE + 像素字体内嵌)')
 const runtimeEntry = resolve(simRoot, 'src/renderer/src/device-sim/sandbox/runtime/index.ts')

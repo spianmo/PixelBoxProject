@@ -131,17 +131,18 @@ idf.py -p <串口> flash monitor
 前提:Node.js ≥ 18(建议 20+)。**电脑和板子必须在同一个局域网**(mDNS 发现依赖同网段)。
 
 ```bash
-# 1) 安装并构建 SDK(monorepo 内使用)
-cd <仓库根目录>/sdk
-npm install          # 失败时: npm install --registry=https://registry.npmmirror.com
-npm run build
-npm link             # 把 pixelbox 命令挂到全局(或用 node dist/cli.js 直接跑)
+# 1) 安装并构建 SDK(monorepo 为 pnpm workspace,在仓库根一次装齐)
+cd <仓库根目录>
+pnpm install         # 失败时: pnpm install --registry=https://registry.npmmirror.com
+cd sdk
+pnpm run build
+npm link             # 把 pixelbox 命令挂到全局(或 pnpm link --global,或直接 node dist/cli.js)
 
-# 2) 创建应用
+# 2) 创建应用(生成的用户项目不锁定包管理器,npm/pnpm 任选)
 cd ~/projects
 pixelbox create my-first-anim
 cd my-first-anim
-npm install
+npm install          # 或 pnpm install
 
 # 3) 确认能发现设备(mDNS _pixelbox._tcp)
 pixelbox devices
@@ -181,8 +182,9 @@ px.screen.onFrame(() => {
 服务器只是"翻译官",三段服务都用 **OpenAI 兼容接口**,国内可用硅基流动等平台一个 key 全搞定。
 
 ```bash
-cd <仓库根目录>/server
-npm install          # 失败时加 --registry=https://registry.npmmirror.com
+cd <仓库根目录>
+pnpm install         # 失败时加 --registry=https://registry.npmmirror.com(已装过可跳过)
+cd server
 cp .env.example .env
 ```
 
@@ -206,7 +208,7 @@ TTS_MODEL=...            # 平台提供的 TTS 模型名(要求支持 PCM/WAV �
 启动:
 
 ```bash
-npm run dev    # 监听 ws://0.0.0.0:8787/realtime
+pnpm run dev   # 监听 ws://0.0.0.0:8787/realtime
 ```
 
 设备端跑一个语音应用(可直接推 `examples/` 里的语音助手示例,或自己写):
@@ -230,9 +232,12 @@ px.input.onButton((ev) => {
 ## 6. 模拟器 IDE(零硬件也能玩)
 
 ```bash
-cd <仓库根目录>/simulator
-npm install    # 失败时加 --registry=https://registry.npmmirror.com
-npm run dev    # 启动 Electron 模拟器
+cd <仓库根目录>
+pnpm install   # 失败时加 --registry=https://registry.npmmirror.com(已装过可跳过)
+               # 首次装 Electron 二进制建议带镜像:
+               # ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/ pnpm install
+cd simulator
+pnpm run dev   # 启动 Electron 模拟器
 ```
 
 - 左侧打开你的应用文件夹(如上面的 `my-first-anim`),中间 Monaco 编辑器自带全量 `px.*` 补全。
@@ -270,7 +275,8 @@ npm run dev    # 启动 Electron 模拟器
 
 | 现象 | 原因 | 解法 |
 |---|---|---|
-| `npm install` 失败(超时/ECONNRESET) | npm 源不畅 | `npm install --registry=https://registry.npmmirror.com` |
+| `pnpm install` 失败(超时/ECONNRESET) | npm 源不畅 | `pnpm install --registry=https://registry.npmmirror.com` |
+| `pnpm install` 卡在 electron postinstall 下载 | pnpm 不透传 .npmrc 的 electron_mirror,回落 GitHub 直连 | `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/ pnpm install`(成功一次后有本地缓存) |
 | `pixelbox devices` 列表为空 | 不在同网段 / 路由器开了 AP 隔离 / 设备没连上 Wi-Fi | 看 monitor 日志确认设备 IP;关闭路由器"AP 隔离/访客网络";绕过发现直接 `--device <ip>` |
 | push 超时/中断 | Wi-Fi 信号差、防火墙拦 8765 端口 | 靠近路由器;macOS/Windows 防火墙放行 Node;重试(推送有会话校验,断了重推即可) |
 | 推送成功但应用崩溃 | JS 运行时错误 | `pixelbox logs` 看异常栈;`app.state = crashed` 事件里带 error |

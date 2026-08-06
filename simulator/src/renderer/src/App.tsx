@@ -8,9 +8,10 @@
  *       └ 状态栏(26px)
  * 全部工具窗可拖拽调宽/高、可折叠;Cmd+P 快速打开文件
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  LuCircuitBoard,
   LuColumns2,
   LuEye,
   LuFolderOpen,
@@ -24,8 +25,15 @@ import {
   LuSquareTerminal,
   LuTriangleAlert
 } from 'react-icons/lu'
+import { VscLoading } from 'react-icons/vsc'
 import type { SimDeviceTag, SimManifest } from './device-sim/types'
-import type { FirmwareTaskKind, FirmwareTaskResult, ProjectCreateResult } from '../../shared/ipc-types'
+import type {
+  DevdDevice,
+  FirmwareTaskKind,
+  FirmwareTaskResult,
+  ProjectCreateResult,
+  ProjectKind
+} from '../../shared/ipc-types'
 import { reloadRunningSessions, useAnySimRunning } from './device-sim'
 import { EditorHost, type EditorHostHandle } from './editor/EditorHost'
 import { FileTree } from './components/FileTree'
@@ -58,18 +66,26 @@ import { StructureView } from './editor/StructureView'
 import { MarkdownPreview } from './editor/MarkdownPreview'
 import { getMdViewMode, setMdViewMode, type MdViewMode } from './editor/mdViewMode'
 import {
+  CHIP_TARGETS,
   applyDefaultChip,
   chipLabel,
   deviceKey,
   isSimDeviceKey,
   profileByKey,
   refreshDeviceProfiles,
-  shellDeviceStore
+  setChip,
+  shellDeviceStore,
+  type ChipTarget
 } from './shell/store'
 import { getAppSettings, subscribeSettings } from './settings/store'
 import { loadMainLayout, saveMainLayout } from './shell/layoutState'
 
 const MAX_LOG_LINES = 2000
+
+/** 硬件设计工具窗(three.js/tscircuit 重资产,懒加载保持启动 chunk 干净) */
+const HardwareDesignPanel = lazy(() =>
+  import('./hardware/HardwareDesignPanel').then((m) => ({ default: m.HardwareDesignPanel }))
+)
 
 /** 启动恢复只跑一次(StrictMode 双挂载 / 热重载防重入) */
 let sessionRestoreStarted = false
@@ -110,6 +126,9 @@ export default function App(): React.JSX.Element {
   const [bottomHeight, setBottomHeight] = useState(initialLayout.bottomHeight)
   const [leftTool, setLeftTool] = useState<LeftTool>(initialLayout.leftTool)
   const [rightOpen, setRightOpen] = useState(initialLayout.rightOpen)
+  // 右侧槽位当前工具(运行的设备 ⇄ 硬件设计,单槽仲裁同底部 bottomView;
+  // hardware 仅 hardware 工程可见,不持久化 —— 重启回「运行的设备」避免与工程类型错位)
+  const [rightView, setRightView] = useState<'running' | 'hardware'>('running')
   const [bottomOpen, setBottomOpen] = useState(initialLayout.bottomOpen)
   const [bottomTab, setBottomTab] = useState<BottomTab>(initialLayout.bottomTab)
   // 底部区当前视图:日志/构建/问题 窗 ⇄ 终端窗(切换互不销毁,见底部渲染)
@@ -184,6 +203,29 @@ export default function App(): React.JSX.Element {
   const [pushPercent, setPushPercent] = useState(-1)
   const workspaceRootRef = useRef<string | null>(null)
   workspaceRootRef.current = workspaceRoot
+
+  // ---- 工程类型(IDE v3:app/firmware/hardware 门控矩阵 §5 的数据源) ----
+  const [projectKind, setProjectKind] = useState<ProjectKind | null>(null)
+  const projectKindRef = useRef<ProjectKind | null>(null)
+  projectKindRef.current = projectKind
+  /** project:info 请求序号(快速切换工作区时丢弃过期结果) */
+  const projectInfoSeqRef = useRef(0)
+
+  /** 读取工作区项目信息:kind 存 state 供门控;manifest.chip 合法时同步外壳芯片选择 */
+  const refreshProjectInfo = useCallback(async (root: string): Promise<void> => {
+    const seq = ++projectInfoSeqRef.current
+    try {
+      const info = await window.api.projectInfo(root)
+      if (seq !== projectInfoSeqRef.current) return
+      setProjectKind(info.kind)
+      // 固件/硬件工程打开时按 manifest.chip 切换目标芯片(非法值忽略)
+      if (info.chip && (CHIP_TARGETS as readonly string[]).includes(info.chip)) {
+        setChip(info.chip as ChipTarget)
+      }
+    } catch {
+      if (seq === projectInfoSeqRef.current) setProjectKind(null)
+    }
+  }, [])
 
   // ---- 固件工具链(阶段 3):任务状态 / 烧录对话框 ----
   const [fwTask, setFwTask] = useState<FirmwareTaskKind | null>(null)
@@ -319,15 +361,20 @@ export default function App(): React.JSX.Element {
     unsubs.push(() => window.removeEventListener('pixelbox-sim:log', onSimLog))
     unsubs.push(() => window.removeEventListener('pixelbox-sim:state', onSimState))
 
-    // 外部文件变更 → 干净的已打开文件自动重载
+    // 外部文件变更 → 干净的已打开文件自动重载;
+    // pixelbox.json 变更 → 重取项目信息(工程类型/芯片门控联动)
     unsubs.push(
       window.api.onFsEvent((ev) => {
         if (ev.type === 'change') void editorRef.current?.reloadIfClean(ev.path)
+        if (ev.path.endsWith('pixelbox.json')) {
+          const root = workspaceRootRef.current
+          if (root) void refreshProjectInfo(root)
+        }
       })
     )
 
     return () => unsubs.forEach((u) => u())
-  }, [appendLog, t])
+  }, [appendLog, refreshProjectInfo, t])
 
   // 集成终端:事件订阅 + renderer 重载后恢复 main 进程存活会话(幂等)
   useEffect(() => {
@@ -482,8 +529,10 @@ export default function App(): React.JSX.Element {
       setDirtyPaths(new Set())
       if (running) handleStop()
       setWorkspaceRoot(root)
+      setProjectKind(null) // 先复位门控,project:info 返回后按真实类型放开
       setLeftTool('project')
       await window.api.watchWorkspace(root)
+      await refreshProjectInfo(root)
     },
     // eslint 无此工程:handleStop 为组件内函数,依赖 tabs/running 即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -635,13 +684,17 @@ export default function App(): React.JSX.Element {
     await applyWorkspace(root)
   }
 
-  /** 新建项目向导创建成功:作为工作区打开(计入最近列表)+ 编辑器打开 src/main.ts */
+  /**
+   * 新建项目向导创建成功:作为工作区打开(计入最近列表)+ 编辑器打开入口文件
+   * (app=src/main.ts / firmware=main/main.c / hardware=design/board.tsx)
+   */
   async function handleProjectCreated(result: ProjectCreateResult): Promise<void> {
     setNewProjectOpen(false)
     const root = await window.api.openWorkspacePath(result.root)
     if (!root) return
     await applyWorkspace(root)
-    handleOpenFile(result.mainTs)
+    setProjectKind(result.kind) // 创建结果即时门控(project:info 兜底确认)
+    handleOpenFile(result.entryFile)
   }
 
   const handleOpenFile = useCallback((path: string): void => {
@@ -728,11 +781,23 @@ export default function App(): React.JSX.Element {
    */
   const startFirmwareTask = useCallback(
     async (kind: FirmwareTaskKind, port?: string, baud?: number): Promise<void> => {
+      // §5 门控:固件任务仅固件工程可用(渲染端唯一闸口;main 端 cwd 校验兜底)
+      if (projectKindRef.current !== 'firmware') {
+        showToast(t('fw.errors.notFirmwareProject'), 'warn')
+        return
+      }
       const target = shellDeviceStore.get().chip
       openBottomTab('build')
       setFwTask(kind) // 先置忙防重入(双击/菜单连点)
       try {
-        await window.api.firmwareStart({ kind, target, port, baud })
+        // cwd = 当前工作区(IDE v3:固件任务作用于工作区工程,不再指向 monorepo firmware/)
+        await window.api.firmwareStart({
+          kind,
+          target,
+          port,
+          baud,
+          cwd: workspaceRootRef.current ?? undefined
+        })
       } catch (err) {
         setFwTask(null)
         const msg = err instanceof Error ? err.message : String(err)
@@ -796,6 +861,7 @@ export default function App(): React.JSX.Element {
       // device = 目标档案,facade 据此创建/复用对应会话 tab,多设备可并行)
       window.__pixelboxSimContext = { workspaceRoot: root, outDir: result.outDir, device: profile }
       await sim.load(result.code, result.manifest as SimManifest)
+      setRightView('running')
       setRightOpen(true)
       openBottomTab('logs')
       showToast(t('run.startedOn', { name: profile.name }), 'success')
@@ -811,24 +877,29 @@ export default function App(): React.JSX.Element {
     showToast(t('run.stopped'), 'info')
   }
 
-  // 快捷键 → 动作(经 ref 桥接:capture 监听器仅挂载一次;禁用态与标题栏按钮一致)
+  // 快捷键 → 动作(经 ref 桥接:capture 监听器仅挂载一次;禁用态与标题栏按钮一致,
+  // ▶ 与门控矩阵 §5 同步:仅 app 工程与传统目录可运行)
   runShortcutRef.current = () => {
-    if (busy !== 'build') void handleRun()
+    const kind = projectKindRef.current
+    if (busy !== 'build' && (kind === 'app' || kind === null)) void handleRun()
   }
   stopShortcutRef.current = () => {
     if (running) handleStop()
   }
 
-  async function handlePush(): Promise<void> {
+  /** 推送到指定真机;缺省 target 时按设备下拉当前选中的真机 */
+  async function handlePush(target?: DevdDevice): Promise<void> {
     const root = workspaceRootRef.current
     if (!root) {
       showToast(t('run.noWorkspace'), 'warn')
       return
     }
     const devState = shellDeviceStore.get()
-    const dev = isSimDeviceKey(devState.selectedKey)
-      ? undefined
-      : devState.devices.find((d) => deviceKey(d) === devState.selectedKey)
+    const dev =
+      target ??
+      (isSimDeviceKey(devState.selectedKey)
+        ? undefined
+        : devState.devices.find((d) => deviceKey(d) === devState.selectedKey))
     if (!dev) {
       showToast(t('push.noDevice'), 'warn')
       return
@@ -846,6 +917,24 @@ export default function App(): React.JSX.Element {
       setBusy(null)
       setPushPercent(-1)
     }
+  }
+
+  /**
+   * 标题栏「推送到设备」(仅 app 工程,§5):
+   * 选中真机 → 直推;选中虚拟设备 → 先扫一轮 devd,推给首台发现的真机,无则提示
+   */
+  async function handlePushToDevice(): Promise<void> {
+    if (!isSimDeviceKey(shellDeviceStore.get().selectedKey)) {
+      await handlePush()
+      return
+    }
+    await refreshDevices() // 复用现有发现链路(结果写入 shellDeviceStore)
+    const found = shellDeviceStore.get().devices
+    if (found.length === 0) {
+      showToast(t('titlebar.pushNoDevice'), 'warn')
+      return
+    }
+    await handlePush(found[0])
   }
 
   // ---- 工具窗轨道条目 ----
@@ -945,14 +1034,43 @@ export default function App(): React.JSX.Element {
     }
   ]
 
+  /** 右侧槽位开关(running ⇄ hardware 单槽仲裁,同底部 toggleBottom) */
+  const toggleRight = (view: 'running' | 'hardware'): void => {
+    if (rightOpen && rightView === view) setRightOpen(false)
+    else {
+      setRightView(view)
+      setRightOpen(true)
+    }
+  }
+
+  // 工程类型离开 hardware(切工作区/pixelbox.json 改动)→ 收起硬件工具窗(rail 图标同步消失)
+  useEffect(() => {
+    if (projectKind !== 'hardware' && rightView === 'hardware') {
+      setRightView('running')
+      setRightOpen(false)
+    }
+  }, [projectKind, rightView])
+
   const rightRail: RailItem[] = [
     {
       key: 'running',
       icon: <LuSmartphone />,
       label: t('rail.runningDevices'),
-      active: rightOpen,
-      onClick: () => setRightOpen((v) => !v)
-    }
+      active: rightOpen && rightView === 'running',
+      onClick: () => toggleRight('running')
+    },
+    // 硬件设计工具窗:仅 hardware 工程显示(§5 门控矩阵)
+    ...(projectKind === 'hardware'
+      ? [
+          {
+            key: 'hardware',
+            icon: <LuCircuitBoard />,
+            label: t('rail.hardware'),
+            active: rightOpen && rightView === 'hardware',
+            onClick: () => toggleRight('hardware')
+          } satisfies RailItem
+        ]
+      : [])
   ]
 
   // ---- 视图模式:各工具窗归属位置(停靠槽 / 覆盖层 / 浮动;window 只在独立窗口渲染) ----
@@ -964,9 +1082,10 @@ export default function App(): React.JSX.Element {
   const structPinned = structureOpen && viewModes.structure === 'dockPinned'
   const structOverlay = structureOpen && isOverlayMode(viewModes.structure)
 
-  // 右侧「运行的设备」
-  const rightPinned = rightOpen && viewModes.running === 'dockPinned'
-  const rightOverlay = rightOpen && isOverlayMode(viewModes.running)
+  // 右侧槽位(运行的设备 ⇄ 硬件设计,rightView 仲裁)
+  const rightTool: ToolWindowId = rightView
+  const rightPinned = rightOpen && viewModes[rightTool] === 'dockPinned'
+  const rightOverlay = rightOpen && isOverlayMode(viewModes[rightTool])
 
   // 底部槽位(bottomView 仲裁);终端 float/window 时脱离仲裁(见 toggleTerminal)
   const bottomDockView: 'logs' | 'terminal' | null = bottomOpen
@@ -989,7 +1108,7 @@ export default function App(): React.JSX.Element {
   const leftUnpinnedShown =
     (leftOverlayTool !== null && viewModes[leftOverlayTool] === 'dockUnpinned') ||
     (structOverlay && viewModes.structure === 'dockUnpinned')
-  const rightUnpinnedShown = rightOverlay && viewModes.running === 'dockUnpinned'
+  const rightUnpinnedShown = rightOverlay && viewModes[rightTool] === 'dockUnpinned'
   const bottomUnpinnedShown = bottomOverlayTool !== null && viewModes[bottomOverlayTool] === 'dockUnpinned'
   useEffect(() => {
     if (!leftUnpinnedShown && !rightUnpinnedShown && !bottomUnpinnedShown) return
@@ -1078,6 +1197,27 @@ export default function App(): React.JSX.Element {
             <RunningDevicesPanel />
           </ToolWindow>
         )
+      case 'hardware':
+        // 硬件设计(PCB/原理图/3D 外壳/打印,仅 hardware 工程;面板懒加载)
+        return (
+          <ToolWindow
+            title={t('rail.hardware')}
+            icon={<LuCircuitBoard />}
+            toolId="hardware"
+            onHeaderMouseDown={dragStart}
+            onHide={() => setRightOpen(false)}
+          >
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center text-jb-muted">
+                  <VscLoading className="animate-spin text-xl" />
+                </div>
+              }
+            >
+              <HardwareDesignPanel workspaceRoot={workspaceRoot} />
+            </Suspense>
+          </ToolWindow>
+        )
       case 'logs':
         return (
           <ToolWindow
@@ -1128,6 +1268,7 @@ export default function App(): React.JSX.Element {
       <TitleBar
         workspaceRoot={workspaceRoot}
         gitBranch={gitBranch}
+        projectKind={projectKind}
         running={running}
         building={busy === 'build'}
         pushBusy={busy === 'push'}
@@ -1144,7 +1285,7 @@ export default function App(): React.JSX.Element {
         onFirmwareClean={() => void startFirmwareTask('clean')}
         onFirmwareCancel={handleFirmwareCancel}
         onOpenSettings={() => void window.api.settingsWindowOpen()}
-        onPush={() => void handlePush()}
+        onPush={() => void handlePushToDevice()}
         onRefreshDevices={() => void refreshDevices()}
         onQuickOpen={() => setQuickOpenVisible(true)}
       />
@@ -1245,12 +1386,12 @@ export default function App(): React.JSX.Element {
               </div>
             </div>
 
-            {/* 右:「运行的设备」(仅 dockPinned 占槽位) */}
+            {/* 右:「运行的设备」⇄「硬件设计」(rightView 仲裁;仅 dockPinned 占槽位) */}
             {rightPinned && (
               <>
                 <DragHandle orientation="vertical" onDelta={(dx) => setRightWidth((w) => clamp(w - dx, 280, 680))} />
                 <div style={{ width: rightWidth }} className="shrink-0 overflow-hidden">
-                  {renderTool('running')}
+                  {renderTool(rightTool)}
                 </div>
               </>
             )}
@@ -1305,7 +1446,7 @@ export default function App(): React.JSX.Element {
               size={rightWidth}
               onResizeDelta={(dx) => setRightWidth((w) => clamp(w - dx, 280, 680))}
             >
-              {renderTool('running')}
+              {renderTool(rightTool)}
             </DockOverlay>
           )}
           {bottomOverlayTool !== null && (
@@ -1342,8 +1483,8 @@ export default function App(): React.JSX.Element {
       {structureOpen && viewModes.structure === 'float' && (
         <FloatPanel toolId="structure">{(drag) => renderTool('structure', drag)}</FloatPanel>
       )}
-      {rightOpen && viewModes.running === 'float' && (
-        <FloatPanel toolId="running">{(drag) => renderTool('running', drag)}</FloatPanel>
+      {rightOpen && viewModes[rightTool] === 'float' && (
+        <FloatPanel toolId={rightTool}>{(drag) => renderTool(rightTool, drag)}</FloatPanel>
       )}
       {bottomOpen && bottomView === 'logs' && viewModes.logs === 'float' && (
         <FloatPanel toolId="logs">{(drag) => renderTool('logs', drag)}</FloatPanel>

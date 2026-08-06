@@ -25,7 +25,7 @@
 ## 统一验证
 
 ```bash
+pnpm install    # 仓库根执行(pnpm workspace);失败时加 --registry=https://registry.npmmirror.com
 cd examples
-npm install    # 失败时:npm install --registry=https://registry.npmmirror.com
-npm run build  # 对每个示例执行 tsc --noEmit + esbuild --bundle → dist/main.js
+pnpm run build  # 对每个示例执行 tsc --noEmit + esbuild --bundle → dist/main.js
 ```
