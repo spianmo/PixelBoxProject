@@ -5,21 +5,28 @@
  * - viewBox 统一 0 0 16 16,描边 1.2px、圆角端点/拐角(linecap/linejoin round)
  * - 语言方块类(TS/JS/C/C++/H)为品牌色圆角方块 + 粗体字母
  * - 文档类共用「折角纸张」轮廓 + 类型色内容线
- * - 色板贴近 IDE 暗色主题:灰 #9DA0A8 / 蓝 #548AF7 / 黄 #E2C55A / 绿 #5FAD65 /
- *   橙 #E08855 / 紫 #B387D7 / 青 #56B6C2
+ * - 字形/描边色经 CSS 变量承载(--pb-fi-*,深浅两组值见 assets/main.css):
+ *   dark 与 v2.3 观感一致,light 档加深保白底辨识,主题切换零 JS 即时跟随;
+ *   语言方块的徽标底 + 徽标内文字为品牌色,两主题保持静态
  */
 
-// ---- 公共色板 ----
-const GRAY = '#9DA0A8'
-const DIM = '#6F737A'
-const BLUE = '#548AF7'
-const YELLOW = '#E2C55A'
-const GREEN = '#5FAD65'
-const ORANGE = '#E08855'
-const PURPLE = '#B387D7'
-const CYAN = '#56B6C2'
-const FOLDER = '#7F8B99' // 文件夹灰蓝描边
+// ---- 公共色板(字形/描边:主题变量;徽标:静态品牌色) ----
+const GRAY = 'var(--pb-fi-gray)'
+const DIM = 'var(--pb-fi-dim)'
+const BLUE = 'var(--pb-fi-blue)'
+const YELLOW = 'var(--pb-fi-yellow)'
+const GREEN = 'var(--pb-fi-green)'
+const ORANGE = 'var(--pb-fi-orange)'
+const PURPLE = 'var(--pb-fi-purple)'
+const CYAN = 'var(--pb-fi-cyan)'
+const FOLDER = 'var(--pb-fi-folder)' // 文件夹灰蓝描边
+/** 语言方块徽标底(静态品牌色,徽标内深色文字两主题对比不变) */
+const BADGE_YELLOW = '#E2C55A'
+const BADGE_PURPLE = '#B387D7'
+/** 徽标内文字深色(非主题色:徽标底静态,文字对比恒定) */
 const DARK = '#1E1F22'
+/** 根项目徽标底衬(镂空模拟:同文件树面板背景,随主题) */
+const CUTOUT = 'rgb(var(--pb-bg-editor))'
 
 const FONT = 'ui-sans-serif, system-ui, sans-serif'
 
@@ -135,7 +142,7 @@ export function FolderRootIcon(p: IconProps): React.JSX.Element {
         strokeLinejoin="round"
       />
       {/* 徽标底衬(镂空)+ 强调蓝方块 */}
-      <rect x="8.4" y="7.9" width="7" height="7" rx="2" fill={DARK} />
+      <rect x="8.4" y="7.9" width="7" height="7" rx="2" fill={CUTOUT} />
       <rect x="9.65" y="9.15" width="4.5" height="4.5" rx="1.2" fill={BLUE} />
     </Svg>
   )
@@ -150,19 +157,19 @@ export function TsIcon(p: IconProps): React.JSX.Element {
 }
 
 export function JsIcon(p: IconProps): React.JSX.Element {
-  return <Badge bg={YELLOW} fg={DARK} label="JS" {...p} />
+  return <Badge bg={BADGE_YELLOW} fg={DARK} label="JS" {...p} />
 }
 
 export function CIcon(p: IconProps): React.JSX.Element {
-  return <Badge bg={PURPLE} fg={DARK} label="C" {...p} />
+  return <Badge bg={BADGE_PURPLE} fg={DARK} label="C" {...p} />
 }
 
 export function CppIcon(p: IconProps): React.JSX.Element {
-  return <Badge bg={PURPLE} fg={DARK} label="C++" fontSize={6} {...p} />
+  return <Badge bg={BADGE_PURPLE} fg={DARK} label="C++" fontSize={6} {...p} />
 }
 
 export function HIcon(p: IconProps): React.JSX.Element {
-  return <Badge bg={PURPLE} fg={DARK} label="H" {...p} />
+  return <Badge bg={BADGE_PURPLE} fg={DARK} label="H" {...p} />
 }
 
 /** React 组件(⚛ 原子轨道):tsx 蓝 / jsx 黄 */

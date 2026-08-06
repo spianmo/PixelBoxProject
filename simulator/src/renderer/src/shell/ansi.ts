@@ -10,28 +10,31 @@ export interface AnsiSpan {
   bold?: boolean
 }
 
-/** 30-37 标准色(对齐深色终端惯例) */
+/**
+ * 30-37 标准色 —— 经 CSS 变量承载(--pb-ansi-*,深浅两组值见 assets/main.css):
+ * span 以 style.color 内联消费 var(),主题切换零 JS 重算即时跟随
+ */
 const FG: Record<number, string> = {
-  30: '#5A5D63',
-  31: '#F26D78', // red
-  32: '#6AAB73', // green
-  33: '#D9A343', // yellow
-  34: '#548AF7', // blue
-  35: '#C77DBB', // magenta
-  36: '#2AACB8', // cyan
-  37: '#DFE1E5'
+  30: 'var(--pb-ansi-30)',
+  31: 'var(--pb-ansi-31)', // red
+  32: 'var(--pb-ansi-32)', // green
+  33: 'var(--pb-ansi-33)', // yellow
+  34: 'var(--pb-ansi-34)', // blue
+  35: 'var(--pb-ansi-35)', // magenta
+  36: 'var(--pb-ansi-36)', // cyan
+  37: 'var(--pb-ansi-37)'
 }
 
-/** 90-97 亮色 */
+/** 90-97 亮色(同上,变量承载) */
 const FG_BRIGHT: Record<number, string> = {
-  90: '#7A7E85',
-  91: '#FF8583',
-  92: '#88C57F',
-  93: '#F2C55C',
-  94: '#6E9BFF',
-  95: '#E08BD6',
-  96: '#4CC4D0',
-  97: '#FFFFFF'
+  90: 'var(--pb-ansi-90)',
+  91: 'var(--pb-ansi-91)',
+  92: 'var(--pb-ansi-92)',
+  93: 'var(--pb-ansi-93)',
+  94: 'var(--pb-ansi-94)',
+  95: 'var(--pb-ansi-95)',
+  96: 'var(--pb-ansi-96)',
+  97: 'var(--pb-ansi-97)'
 }
 
 // eslint 无此工程:控制字符正则为 ANSI 解析刻意使用

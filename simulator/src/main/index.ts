@@ -15,7 +15,8 @@ import { registerToolchainIpc, disposeToolchain } from './toolchain'
 import { registerProjectScaffoldIpc } from './projectScaffold'
 import { registerTerminalIpc, disposeTerminal } from './pty'
 import { registerToolWindowIpc, disposeToolWindows } from './toolWindows'
-import { registerSettingsIpc, getSettings, getSettingsSync } from './settings'
+import { registerSettingsIpc, getSettings, getSettingsSync, setSettings } from './settings'
+import { registerThemeIpc, windowBackgroundColor, onThemeAppliedLine } from './theme'
 import {
   registerSettingsWindowIpc,
   disposeSettingsWindow,
@@ -23,6 +24,7 @@ import {
 } from './settingsWindow'
 import { registerSessionIpc, flushSessionState } from './sessionState'
 import { trackWindowState, windowStateFor, flushWindowStates } from './windowState'
+import { registerFullscreenIpc, wireFullscreen, runFullscreenSmoke } from './fullscreen'
 
 // device-sim:沙箱 iframe 隐藏在页面中,禁用 Chromium 对后台/离屏帧的定时器与渲染节流,
 // 否则沙箱内 setTimeout/setInterval(动画、IMU、GPS 定时回调)会被限到 1Hz
@@ -43,7 +45,7 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     show: false,
     title: 'PixelBox Simulator',
-    backgroundColor: '#1e1f22', // 对齐 JetBrains dark 编辑器背景
+    backgroundColor: windowBackgroundColor(), // 底色随当前有效主题(防首帧闪色;见 theme.ts)
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icon.png'),
     // 自绘标题栏:macOS 隐藏原生标题栏但保留红绿灯(hiddenInset);
@@ -64,6 +66,10 @@ function createWindow(): BrowserWindow {
 
   win.on('ready-to-show', () => win.show())
   wireShellWindowEvents(win)
+  // mac-fullscreen:原生全屏全入口(绿灯/⌃⌘F/菜单)收敛 simpleFullScreen,
+  // 红绿灯保持窗体内自绘标题栏行内,无原生灰条;Win/Linux 补 F11 原生全屏。
+  // 上次退出处于 simpleFullScreen 时随会话恢复(windowState 落盘位)
+  wireFullscreen(win, { restoreSimpleFullScreen: saved?.simpleFullScreen === true })
   // 会话恢复:主窗 bounds/最大化 500ms 去抖落盘
   trackWindowState(win, 'main')
   // 退出双保险之一:主窗关闭即同步兜底落盘(before-quit 为另一道,见下)
@@ -100,6 +106,7 @@ app.whenReady().then(async () => {
     if (existsSync(dockIcon)) app.dock.setIcon(dockIcon)
   }
   registerSettingsIpc() // 最先注册:其余服务(工具链/终端)读设置时缓存已在预热
+  registerThemeIpc() // 主题桥:theme:get-system / nativeTheme updated 广播 / 窗口底色同步
   registerSettingsWindowIpc()
   registerSessionIpc() // 会话恢复(session:startup / update / report)
   registerWorkspaceIpc()
@@ -107,6 +114,7 @@ app.whenReady().then(async () => {
   registerDevdIpc()
   registerSimBridgeIpc()
   registerShellIpc()
+  registerFullscreenIpc() // 全屏态查询(win:is-fullscreen;变化经 win:fullscreen 广播)
   registerDeviceProfilesIpc()
   registerToolchainIpc()
   registerProjectScaffoldIpc()
@@ -127,6 +135,54 @@ app.whenReady().then(async () => {
   // 冒烟钩子(与 pty.ts 的 PIXELBOX_FORCE_PIPE 同风格):启动即打开设置窗口,
   // 无 UI 驱动手段的环境也能真实走一遍 ?window=settings 渲染链路
   if (process.env.PIXELBOX_OPEN_SETTINGS === '1') void openSettingsWindow()
+
+  // 冒烟钩子(mac-fullscreen,无 UI 驱动环境):模拟原生全屏请求 → 断言收敛为
+  // simpleFullScreen → 再触发退出 → 断言回窗口态与 bounds 恢复(详见 fullscreen.ts)
+  if (process.env.PIXELBOX_SMOKE_FS === '1') {
+    mainWin.once('ready-to-show', () => runFullscreenSmoke(mainWin))
+  }
+
+  // 冒烟钩子(light-theme,无 UI 驱动环境):经 SettingsService 依次切
+  // dark → light → system(走真实 set-many → settings:changed 广播链路),
+  // renderer 主题管理器每次应用后经 theme:applied 回报,main 侧打印
+  // 「[theme] applied=...」并收集断言:三种设置值各至少回报一次,且
+  // dark/light 的有效主题与设置值一致;收尾恢复原值,打印 SMOKE PASS/FAIL 后退出
+  if (process.env.PIXELBOX_SMOKE_THEME === '1') {
+    // 监听须先于 renderer 初始化回报注册(首条 applied=<原值> 也计入证据)
+    const seen = new Map<string, string>() // 设置值 → 有效主题
+    onThemeAppliedLine((line) => {
+      const m = /applied=(\S+) effective=(dark|light)/.exec(line)
+      if (m) seen.set(m[1], m[2])
+    })
+    mainWin.once('ready-to-show', () => {
+      const original = getSettingsSync().appearance.theme
+      const seq: Array<'dark' | 'light' | 'system'> = ['dark', 'light', 'system']
+      seq.forEach((theme, i) => {
+        setTimeout(() => void setSettings({ 'appearance.theme': theme }), 1500 + i * 1200)
+      })
+      // 收尾:恢复冒烟前的主题设置(不污染真实用户配置)→ 断言 → 正常退出
+      setTimeout(() => void setSettings({ 'appearance.theme': original }), 5400)
+      setTimeout(() => {
+        let failed = 0
+        const assert = (label: string, pass: boolean): void => {
+          if (pass) console.log(`[theme] ✓ ${label}`)
+          else {
+            failed++
+            process.exitCode = 1
+            console.error(`[theme] ✗ ${label}`)
+          }
+        }
+        assert('applied=dark 回报且有效主题为 dark', seen.get('dark') === 'dark')
+        assert('applied=light 回报且有效主题为 light', seen.get('light') === 'light')
+        assert(
+          `applied=system 回报(nativeTheme 解析为 ${seen.get('system') ?? '?'})`,
+          seen.get('system') === 'dark' || seen.get('system') === 'light'
+        )
+        console.log(failed === 0 ? '[theme] SMOKE PASS' : `[theme] SMOKE FAIL(${failed} 项)`)
+        app.quit()
+      }, 6800)
+    })
+  }
 
   // 冒烟钩子(会话恢复,无 UI 驱动环境):
   // PIXELBOX_SMOKE_SESSION=1 第一轮 —— 模拟用户改窗口位置(setBounds,走 500ms 去抖

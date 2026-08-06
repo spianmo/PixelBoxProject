@@ -233,7 +233,14 @@ export function TitleBar(props: Props): React.JSX.Element {
   const { profiles } = useDeviceProfiles()
   const notif = useSyncExternalStore(notificationStore.subscribe, notificationStore.get)
   const [recents, setRecents] = useState<string[]>([])
+  // 全屏态(macOS simpleFullScreen / Win-Linux F11):挂载对账一次 + 订阅变化
+  const [fullscreen, setFullscreen] = useState(false)
   const isMac = window.api.platform === 'darwin'
+
+  useEffect(() => {
+    void window.api.windowIsFullScreen().then(setFullscreen)
+    return window.api.onWindowFullScreen(setFullscreen)
+  }, [])
 
   // 最近工作区(打开新工作区后刷新)
   useEffect(() => {
@@ -406,7 +413,9 @@ export function TitleBar(props: Props): React.JSX.Element {
 
   return (
     <div
-      className="app-drag flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0"
+      // 全屏(macOS simpleFullScreen 窗体铺满屏)下禁用拖拽区,防止拖动破坏全屏位;
+      // 红绿灯仍在窗体内 hiddenInset 位(main 侧强制可见),80px 预留保持不变
+      className={`${fullscreen ? '' : 'app-drag'} flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0`}
       style={{ paddingLeft: isMac ? 80 : 8 }}
       onDoubleClick={(e) => {
         // Windows/Linux:双击空白区最大化/还原(macOS 由系统处理)

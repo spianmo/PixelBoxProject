@@ -14,6 +14,7 @@ import { BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import type { StandaloneToolId, ToolWindowClosedEvent } from '../shared/ipc-types'
 import { trackWindowState, windowStateFor } from './windowState'
+import { windowBackgroundColor } from './theme'
 
 /** 支持独立窗口的工具窗白名单(与 renderer shell/viewMode.ts 的 WINDOWABLE 一致) */
 const SUPPORTED: ReadonlySet<string> = new Set<StandaloneToolId>(['terminal', 'build'])
@@ -48,12 +49,18 @@ function openToolWindow(id: StandaloneToolId): void {
     minHeight: 320,
     show: false,
     title: id === 'terminal' ? 'PixelBox Terminal' : 'PixelBox Build Output',
-    backgroundColor: '#1e1f22', // 深色壳同主题(编辑器背景)
+    backgroundColor: windowBackgroundColor(), // 底色随当前有效主题(防首帧闪色)
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icon.png'),
-    // 与主窗一致:macOS 隐藏原生标题栏保留红绿灯;Windows/Linux 无边框自绘
+    // 与主窗一致:macOS 隐藏原生标题栏保留红绿灯;Windows/Linux 无边框自绘。
+    // 独立工具窗不需全屏能力(mac-fullscreen):fullscreenable:false 使绿灯回退为
+    // zoom(最大化),避免误入原生全屏出现灰条(主窗的收敛逻辑不作用于此窗)
     ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 10 } }
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 12, y: 10 },
+          fullscreenable: false
+        }
       : { frame: false }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

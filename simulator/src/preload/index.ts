@@ -9,6 +9,7 @@ import type {
   BuildResult,
   DevdDevice,
   DeviceProfile,
+  EffectiveTheme,
   FirmwareStatus,
   FirmwareTaskKind,
   FirmwareTaskResult,
@@ -48,6 +49,11 @@ const api = {
   windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke('win:is-maximized'),
   onWindowMaximized: (cb: (maximized: boolean) => void): (() => void) =>
     subscribe('win:maximized', cb),
+  /** 查询当前窗口全屏态(macOS simpleFullScreen / Win-Linux 原生全屏) */
+  windowIsFullScreen: (): Promise<boolean> => ipcRenderer.invoke('win:is-fullscreen'),
+  /** 全屏态变化订阅(TitleBar 全屏下禁用拖拽区等样式微调) */
+  onWindowFullScreen: (cb: (fullscreen: boolean) => void): (() => void) =>
+    subscribe('win:fullscreen', cb),
   /** 读取工作区 git 分支(非 git 仓库返回 null) */
   gitBranch: (root: string): Promise<string | null> => ipcRenderer.invoke('shell:git-branch', root),
   /** 截图 PNG 字节落盘到 ~/Downloads,返回完整路径 */
@@ -117,6 +123,15 @@ const api = {
   /** 设置窗口 ✕ 拦截:main 请求 renderer 决定(有未应用修改时弹确认框) */
   onSettingsCloseRequest: (cb: () => void): (() => void) =>
     subscribe('settings:close-request', cb),
+
+  // ---- 主题(appearance.theme = system 时经 main 侧 nativeTheme 解析) ----
+  /** 查询系统主题(nativeTheme.shouldUseDarkColors) */
+  themeGetSystem: (): Promise<EffectiveTheme> => ipcRenderer.invoke('theme:get-system'),
+  /** 系统主题变化推送(nativeTheme updated,全窗口广播;仅「跟随系统」时影响有效主题) */
+  onSystemThemeChanged: (cb: (mode: EffectiveTheme) => void): (() => void) =>
+    subscribe('theme:system-changed', cb),
+  /** renderer 已应用主题回报:main 打日志([theme] 前缀,冒烟断言)+ 同步窗口底色 */
+  themeApplied: (text: string): void => ipcRenderer.send('theme:applied', text),
 
   // ---- 会话恢复(阶段 2:窗口状态 / 上次工作区 / 编辑器标签) ----
   /** 启动恢复信息(restore 开关位 + 上次工作区 + 编辑器会话;App 挂载时查询一次) */

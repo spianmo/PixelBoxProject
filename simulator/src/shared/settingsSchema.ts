@@ -63,8 +63,8 @@ const trimmedString =
 /** dot-path → 校验器(键集合即设置项白名单) */
 const SANITIZERS: Record<string, Sanitizer> = {
   'appearance.language': (v) => (v === 'zh-CN' || v === 'en' ? v : undefined),
-  // 亮色主题规划中:schema 暂只接受 dark,防脏数据;开放亮色时改这一行即可
-  'appearance.theme': (v) => (v === 'dark' ? v : undefined),
+  // 主题三值:dark / light / system(system 由 main 侧 nativeTheme 解析为有效主题)
+  'appearance.theme': (v) => (v === 'dark' || v === 'light' || v === 'system' ? v : undefined),
   'system.restoreSession': bool,
   'system.quitOnMainWindowClose': bool,
   'editor.minimap': bool,

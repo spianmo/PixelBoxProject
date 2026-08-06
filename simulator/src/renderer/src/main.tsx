@@ -15,6 +15,10 @@ import { setupMonaco } from './editor/monacoSetup'
 import { StandaloneToolWindow } from './shell/StandaloneToolWindow'
 import { SettingsWindow } from './settings/SettingsWindow'
 import { initSettings } from './settings/store'
+import { applyThemeMirrorEarly, initTheme } from './theme'
+
+// 主题首帧防闪:按冷启动镜像同步上屏(真值稍后由 initTheme 经设置镜像 + nativeTheme 校正)
+applyThemeMirrorEarly()
 
 // 窗口分流(main 进程按 query 参数打开的从属窗口):
 // - ?toolwindow=<id>:独立工具窗(视图模式 Window),只渲染对应工具窗深色壳
@@ -28,6 +32,9 @@ const windowKind = params.get('window')
 // 首帧渲染等镜像就绪(快速 IPC):布局/会话恢复(App)与设置表单据此拿到真实值,
 // 避免以默认值初始化后再闪变(IPC 失败时 initSettings 内部落默认值兜底,渲染不被阻塞)
 const settingsReady = initSettings()
+// 主题:设置镜像就绪后解析有效主题(dark/light/system→nativeTheme)并置 <html data-theme>,
+// 全部窗口(主窗 / 设置窗 / 独立工具窗)统一走这一条链路
+const themeReady = settingsReady.then(() => initTheme())
 
 const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement)
 
@@ -55,4 +62,4 @@ function render(): void {
   }
 }
 
-void settingsReady.finally(render)
+void themeReady.finally(render)

@@ -15,6 +15,7 @@
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { trackWindowState, windowStateFor } from './windowState'
+import { windowBackgroundColor } from './theme'
 
 let win: BrowserWindow | null = null
 /** renderer 确认后置 true,放行 close(否则 close 一律转为 close-request) */
@@ -42,12 +43,18 @@ export async function openSettingsWindow(): Promise<void> {
     minHeight: 520,
     show: false,
     title: 'PixelBox Settings',
-    backgroundColor: '#1e1f22', // 深色壳同主题
+    backgroundColor: windowBackgroundColor(), // 底色随当前有效主题(防首帧闪色)
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icon.png'),
-    // 与主窗一致:macOS 隐藏原生标题栏保留红绿灯;Windows/Linux 无边框自绘
+    // 与主窗一致:macOS 隐藏原生标题栏保留红绿灯;Windows/Linux 无边框自绘。
+    // 设置窗不需全屏能力(mac-fullscreen):fullscreenable:false 使绿灯回退为
+    // zoom(最大化),避免误入原生全屏出现灰条(主窗的收敛逻辑不作用于此窗)
     ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 10 } }
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 12, y: 10 },
+          fullscreenable: false
+        }
       : { frame: false }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

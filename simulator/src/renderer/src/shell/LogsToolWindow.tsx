@@ -46,13 +46,13 @@ const LEVEL_OF: Record<LogLine['level'], Level> = {
 
 const LEVEL_ORDER: Record<Level, number> = { V: 0, D: 1, I: 2, W: 3, E: 4 }
 
-/** Logcat 风格级别徽标配色(W=黄 E=红) */
+/** Logcat 风格级别徽标配色(W=黄 E=红;底色经 --pb-log-* 变量随主题微调) */
 const LEVEL_BADGE: Record<Level, string> = {
-  V: 'bg-[#5A5D63] text-white',
-  D: 'bg-[#548AF7] text-white',
-  I: 'bg-[#6AAB73] text-white',
-  W: 'bg-[#D9A343] text-black/80',
-  E: 'bg-[#F26D78] text-black/80'
+  V: 'bg-[var(--pb-log-v)] text-white',
+  D: 'bg-[var(--pb-log-d)] text-white',
+  I: 'bg-[var(--pb-log-i)] text-white',
+  W: 'bg-[var(--pb-log-w)] text-black/80',
+  E: 'bg-[var(--pb-log-e)] text-black/80'
 }
 
 /** 行文本配色(级别弱着色,内容仍以徽标区分为主) */

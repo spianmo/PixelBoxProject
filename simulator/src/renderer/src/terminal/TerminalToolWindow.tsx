@@ -505,10 +505,10 @@ export function TerminalPanel(): React.JSX.Element {
   }, [])
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#1E1F22]">
-      {/* pipe 兜底模式横幅(node-pty 加载失败时明示体验受限) */}
+    <div className="flex h-full min-h-0 flex-col bg-ink-900">
+      {/* pipe 兜底模式横幅(node-pty 加载失败时明示体验受限;底色/文字随主题) */}
       {st.backend === 'pipe' && (
-        <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-ink-700 bg-[#3d3223] px-2 text-xs text-yellow-300">
+        <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-ink-700 bg-[rgb(var(--pb-banner-warn-bg))] px-2 text-xs text-yellow-300">
           <LuTriangleAlert className="shrink-0" />
           <span className="truncate">{t('terminal.pipeBanner')}</span>
         </div>

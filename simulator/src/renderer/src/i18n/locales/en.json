@@ -209,8 +209,9 @@
       "languageHint": "Previews immediately in this window; applies everywhere and persists after Apply / OK",
       "theme": "Theme",
       "themeDark": "Dark",
-      "themeLight": "Light (planned)",
-      "themeHint": "Light theme is planned; only Dark is available for now"
+      "themeLight": "Light",
+      "themeSystem": "Sync with OS",
+      "themeHint": "Dark, Light, or follow the OS appearance; applies to all windows immediately on Apply/OK"
     },
     "system": {
       "sectionStartup": "Startup & Exit",

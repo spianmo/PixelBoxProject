@@ -3,21 +3,170 @@
 @tailwind utilities;
 
 /*
- * JetBrains/Android Studio New UI dark 色板(RGB 分量,供 tailwind rgb(var()/alpha) 组合)
- * 后续亮色主题:新增 [data-theme='light'] 覆写同名变量即可,组件类名不变
+ * JetBrains/Android Studio New UI 色板(RGB 分量,供 tailwind rgb(var()/alpha) 组合)
+ * - :root 为 dark 默认值;[data-theme='light'] 覆写同名变量(IntelliJ Light New UI),
+ *   组件类名不变,<html data-theme> 由 src/renderer/src/theme.ts 按有效主题驱动
+ * - 派生色(强分隔/弱化图标/滚动条/ANSI/徽标/横幅)同样双主题成对定义,
+ *   禁止组件里再写死单主题 hex
  */
 :root {
   --pb-bg-editor: 30 31 34; /* #1E1F22 编辑器背景 */
   --pb-bg-panel: 43 45 48; /* #2B2D30 面板/标题栏/工具窗背景 */
   --pb-border: 57 59 64; /* #393B40 边框分隔线 */
+  --pb-border-strong: 70 72 77; /* #46484D 强分隔/输入框描边 */
   --pb-bg-hover: 53 55 59; /* #35373B 悬停 */
   --pb-selection: 46 67 110; /* #2E436E 选中行/项(半透蓝) */
   --pb-text: 223 225 229; /* #DFE1E5 主文字 */
   --pb-text-muted: 157 160 168; /* #9DA0A8 次级文字 */
+  --pb-icon-dim: 90 93 99; /* #5A5D63 弱化图标/禁用文字 */
   --pb-accent: 53 116 240; /* #3574F0 强调蓝 */
+  --pb-accent-dim: 42 91 192; /* #2A5BC0 强调蓝按下/主按钮底 */
+  --pb-scrollbar-thumb: 57 59 64; /* 滚动条滑块 */
+  --pb-scrollbar-thumb-hover: 75 78 84; /* #4B4E54 滑块悬停 */
+  --pb-md-code-bg: 30 31 34; /* MD 预览代码块底(dark 同编辑器背景) */
+  --pb-banner-warn-bg: 61 50 35; /* #3D3223 警示横幅底(终端 pipe 模式等) */
+
+  /* 语义状态色(tailwind gray/red/green/yellow… 常用档位的主题化承载;
+     dark 值 = tailwind 默认值,dark 观感与 v2.3 完全一致) */
+  --pb-c-gray-100: 243 244 246;
+  --pb-c-gray-200: 229 231 235;
+  --pb-c-gray-300: 209 213 219;
+  --pb-c-gray-500: 107 114 128;
+  --pb-c-red-300: 252 165 165;
+  --pb-c-red-400: 248 113 113;
+  --pb-c-red-500: 239 68 68;
+  --pb-c-red-600: 220 38 38;
+  --pb-c-green-300: 134 239 172;
+  --pb-c-green-400: 74 222 128;
+  --pb-c-green-500: 34 197 94;
+  --pb-c-yellow-300: 253 224 71;
+  --pb-c-yellow-400: 250 204 21;
+  --pb-c-yellow-500: 234 179 8;
+  --pb-c-yellow-600: 202 138 4;
+  --pb-c-orange-300: 253 186 116;
+  --pb-c-orange-400: 251 146 60;
+  --pb-c-purple-400: 192 132 252;
+  --pb-c-cyan-400: 34 211 238;
+  --pb-c-sky-300: 125 211 252;
+
+  /* 构建输出 ANSI 前景(shell/ansi.ts 以 var() 内联消费) */
+  --pb-ansi-30: #5a5d63;
+  --pb-ansi-31: #f26d78;
+  --pb-ansi-32: #6aab73;
+  --pb-ansi-33: #d9a343;
+  --pb-ansi-34: #548af7;
+  --pb-ansi-35: #c77dbb;
+  --pb-ansi-36: #2aacb8;
+  --pb-ansi-37: #dfe1e5;
+  --pb-ansi-90: #7a7e85;
+  --pb-ansi-91: #ff8583;
+  --pb-ansi-92: #88c57f;
+  --pb-ansi-93: #f2c55c;
+  --pb-ansi-94: #6e9bff;
+  --pb-ansi-95: #e08bd6;
+  --pb-ansi-96: #4cc4d0;
+  --pb-ansi-97: #ffffff;
+
+  /* 日志级别徽标底色(LogsToolWindow) */
+  --pb-log-v: #5a5d63;
+  --pb-log-d: #548af7;
+  --pb-log-i: #6aab73;
+  --pb-log-w: #d9a343;
+  --pb-log-e: #f26d78;
+
+  /* 文件类型图标字形/描边色(components/fileIcons;徽标底等品牌色保持静态) */
+  --pb-fi-gray: #9da0a8;
+  --pb-fi-dim: #6f737a;
+  --pb-fi-folder: #7f8b99;
+  --pb-fi-blue: #548af7;
+  --pb-fi-yellow: #e2c55a;
+  --pb-fi-green: #5fad65;
+  --pb-fi-orange: #e08855;
+  --pb-fi-purple: #b387d7;
+  --pb-fi-cyan: #56b6c2;
 }
 
-/* 全局深色滚动条(对齐面板色板) */
+/*
+ * 亮色主题(IntelliJ Light New UI):同名变量整组覆写,
+ * 深浅两组值一一对应,新增变量必须两边成对补齐
+ */
+[data-theme='light'] {
+  --pb-bg-editor: 255 255 255; /* #FFFFFF 编辑器背景 */
+  --pb-bg-panel: 247 248 250; /* #F7F8FA 面板/标题栏 */
+  --pb-border: 235 236 240; /* #EBECF0 边框分隔线 */
+  --pb-border-strong: 211 213 219; /* #D3D5DB 强分隔/输入框描边 */
+  --pb-bg-hover: 233 234 236; /* #E9EAEC 悬停 */
+  --pb-selection: 212 226 255; /* #D4E2FF 选中行/项 */
+  --pb-text: 39 40 46; /* #27282E 主文字 */
+  --pb-text-muted: 108 112 126; /* #6C707E 次级文字 */
+  --pb-icon-dim: 168 172 184; /* #A8ACB8 弱化图标/禁用文字 */
+  --pb-accent: 53 116 240; /* #3574F0 强调蓝(两主题一致) */
+  --pb-accent-dim: 46 98 204; /* #2E62CC */
+  --pb-scrollbar-thumb: 201 203 209; /* #C9CBD1 */
+  --pb-scrollbar-thumb-hover: 178 182 190; /* #B2B6BE */
+  --pb-md-code-bg: 246 248 250; /* #F6F8FA GitHub light 代码块底 */
+  --pb-banner-warn-bg: 251 238 204; /* #FBEECC */
+
+  /* 语义状态色亮色档(加深保对比,白底可读) */
+  --pb-c-gray-100: 39 40 46; /* 深色里的近白正文 → 亮色主文字 */
+  --pb-c-gray-200: 51 53 60;
+  --pb-c-gray-300: 73 75 87;
+  --pb-c-gray-500: 108 112 126;
+  --pb-c-red-300: 229 87 101;
+  --pb-c-red-400: 219 59 75;
+  --pb-c-red-500: 194 43 53;
+  --pb-c-red-600: 196 43 28;
+  --pb-c-green-300: 85 167 106;
+  --pb-c-green-400: 32 138 60;
+  --pb-c-green-500: 31 117 54;
+  --pb-c-yellow-300: 168 115 10;
+  --pb-c-yellow-400: 158 108 0;
+  --pb-c-yellow-500: 176 114 3;
+  --pb-c-yellow-600: 168 115 10;
+  --pb-c-orange-300: 196 118 31;
+  --pb-c-orange-400: 180 93 23;
+  --pb-c-purple-400: 143 91 184;
+  --pb-c-cyan-400: 14 124 134;
+  --pb-c-sky-300: 26 125 189;
+
+  /* ANSI 亮色档(VS Code Light+ 系,白底终端惯例) */
+  --pb-ansi-30: #000000;
+  --pb-ansi-31: #cd3131;
+  --pb-ansi-32: #107c10;
+  --pb-ansi-33: #866702;
+  --pb-ansi-34: #0451a5;
+  --pb-ansi-35: #bc05bc;
+  --pb-ansi-36: #0598bc;
+  --pb-ansi-37: #555555;
+  --pb-ansi-90: #666666;
+  --pb-ansi-91: #cd3131;
+  --pb-ansi-92: #2e9636;
+  --pb-ansi-93: #866702;
+  --pb-ansi-94: #0451a5;
+  --pb-ansi-95: #bc05bc;
+  --pb-ansi-96: #0598bc;
+  --pb-ansi-97: #8e9299;
+
+  /* 日志级别徽标亮色档(白底上微调饱和/明度,徽标内文字对比不降) */
+  --pb-log-v: #6c707e;
+  --pb-log-d: #3574f0;
+  --pb-log-i: #549159;
+  --pb-log-w: #dfa641;
+  --pb-log-e: #ed6c74;
+
+  /* 文件类型图标字形/描边亮色档(白底树面板上加深保辨识) */
+  --pb-fi-gray: #6c707e;
+  --pb-fi-dim: #878b96;
+  --pb-fi-folder: #647080;
+  --pb-fi-blue: #3574f0;
+  --pb-fi-yellow: #a8730a;
+  --pb-fi-green: #208a3c;
+  --pb-fi-orange: #b45d17;
+  --pb-fi-purple: #8f5bb8;
+  --pb-fi-cyan: #0e7c86;
+}
+
+/* 全局滚动条(滑块色随主题变量) */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -26,13 +175,13 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgb(var(--pb-border));
+  background: rgb(var(--pb-scrollbar-thumb));
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4b4e54;
+  background: rgb(var(--pb-scrollbar-thumb-hover));
   background-clip: content-box;
 }
 
@@ -148,13 +297,14 @@ input[type='checkbox'] {
 .md-preview code {
   font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
   font-size: 0.9em;
-  background: rgb(var(--pb-bg-editor));
+  /* 代码块底:dark 同编辑器背景,light 走 GitHub light 灰底(白底上仍有块面) */
+  background: rgb(var(--pb-md-code-bg));
   border: 1px solid rgb(var(--pb-border));
   border-radius: 4px;
   padding: 0.1em 0.35em;
 }
 .md-preview pre {
-  background: rgb(var(--pb-bg-editor));
+  background: rgb(var(--pb-md-code-bg));
   border: 1px solid rgb(var(--pb-border));
   border-radius: 6px;
   padding: 10px 12px;
@@ -199,4 +349,16 @@ input[type='checkbox'] {
   border: 0;
   border-top: 1px solid rgb(var(--pb-border));
   margin: 18px 0;
+}
+
+/*
+ * 设备模拟外壳(SimPanel):屏幕区域恒黑(真机即黑),白色壳体在亮色主题下
+ * 需要描边与更实的投影才能与浅背景分离;dark 下描边近乎不可见,观感不变
+ */
+.sim-device-shell {
+  border: 1px solid rgb(0 0 0 / 0.06);
+}
+[data-theme='light'] .sim-device-shell {
+  border-color: rgb(var(--pb-border-strong));
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.14);
 }

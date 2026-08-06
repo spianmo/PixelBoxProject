@@ -165,6 +165,12 @@ export interface ToolchainSettings {
 /** 界面语言 */
 export type UiLanguage = 'zh-CN' | 'en'
 
+/** 主题设置值(system = 跟随操作系统,经 main 侧 nativeTheme 解析) */
+export type AppTheme = 'dark' | 'light' | 'system'
+
+/** 解析后的有效主题(驱动 <html data-theme> 与 Monaco/xterm 主题切换) */
+export type EffectiveTheme = 'dark' | 'light'
+
 /**
  * 全量 IDE 设置(类型化 schema;默认值与逐项校验见 shared/settingsSchema.ts)。
  * 读写走 dot-path 补丁(如 'editor.fontSize'),新增设置项在 settingsSchema.ts
@@ -175,8 +181,8 @@ export interface AppSettings {
   appearance: {
     /** 界面语言(设置窗口内立即预览,Apply 落盘) */
     language: UiLanguage
-    /** 主题(当前仅深色;亮色规划中) */
-    theme: 'dark'
+    /** 主题:深色 / 亮色 / 跟随系统(nativeTheme 解析,updated 事件全窗口推送) */
+    theme: AppTheme
   }
   /** 外观与行为 › 系统设置 */
   system: {

@@ -209,8 +209,9 @@
       "languageHint": "选择后本窗口立即预览;点击「应用」或「确定」后全窗口生效并保存",
       "theme": "主题",
       "themeDark": "深色",
-      "themeLight": "亮色(规划中)",
-      "themeHint": "亮色主题规划中,当前仅提供深色"
+      "themeLight": "亮色",
+      "themeSystem": "跟随系统",
+      "themeHint": "深色 / 亮色,或跟随操作系统外观;点击「应用」或「确定」后全窗口立即生效"
     },
     "system": {
       "sectionStartup": "启动与退出",

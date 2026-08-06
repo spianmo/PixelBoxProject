@@ -12,10 +12,16 @@ import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 // 唯一契约文件:整个仓库的设备 API 类型(禁止修改,只读注入)
 import pixelboxDts from '../../../../../sdk/types/pixelbox.d.ts?raw'
+import { getEffectiveTheme, subscribeTheme } from '../theme'
 
 let initialized = false
 
-/** 自定义主题:对齐 IDE 外壳的 JetBrains dark 色板(编辑器背景 #1E1F22) */
+/** 有效主题 → Monaco 主题名(pixelbox-dark / pixelbox-light 成对定义) */
+export function monacoThemeName(): string {
+  return getEffectiveTheme() === 'light' ? 'pixelbox-light' : 'pixelbox-dark'
+}
+
+/** 自定义主题(深浅成对):对齐 IDE 外壳的 JetBrains 色板,token 规则一一对称 */
 function definePixelboxTheme(): void {
   monaco.editor.defineTheme('pixelbox-dark', {
     base: 'vs-dark',
@@ -55,6 +61,45 @@ function definePixelboxTheme(): void {
       'minimap.background': '#1E1F22'
     }
   })
+
+  // 亮色:vs 基底微调,token 规则与暗色一一对称(IntelliJ Light 语法惯例)
+  monaco.editor.defineTheme('pixelbox-light', {
+    base: 'vs',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '8C8C8C' },
+      { token: 'keyword', foreground: '0033B3' },
+      { token: 'string', foreground: '067D17' },
+      { token: 'number', foreground: '1750EB' },
+      { token: 'regexp', foreground: '264EFF' },
+      { token: 'type.identifier', foreground: '871094' },
+      { token: 'delimiter', foreground: '27282E' }
+    ],
+    colors: {
+      'editor.background': '#FFFFFF',
+      'editor.foreground': '#27282E',
+      'editorLineNumber.foreground': '#ADB1BA',
+      'editorLineNumber.activeForeground': '#6C707E',
+      'editor.lineHighlightBackground': '#F2F5F9',
+      'editor.selectionBackground': '#D4E2FF',
+      'editor.inactiveSelectionBackground': '#D4E2FF80',
+      'editorCursor.foreground': '#27282E',
+      'editorIndentGuide.background1': '#EBECF0',
+      'editorIndentGuide.activeBackground1': '#D3D5DB',
+      'editorWidget.background': '#F7F8FA',
+      'editorWidget.border': '#EBECF0',
+      'editorSuggestWidget.background': '#FFFFFF',
+      'editorSuggestWidget.border': '#EBECF0',
+      'editorSuggestWidget.selectedBackground': '#D4E2FF',
+      'editorHoverWidget.background': '#F7F8FA',
+      'editorHoverWidget.border': '#EBECF0',
+      'scrollbarSlider.background': '#D3D5DB80',
+      'scrollbarSlider.hoverBackground': '#B8BCC4A0',
+      'scrollbarSlider.activeBackground': '#B8BCC4C0',
+      'editorGutter.background': '#FFFFFF',
+      'minimap.background': '#FFFFFF'
+    }
+  })
 }
 
 export function setupMonaco(): void {
@@ -62,6 +107,10 @@ export function setupMonaco(): void {
   initialized = true
 
   definePixelboxTheme()
+
+  // 主题热切换:setTheme 全局生效(全部编辑器实例),订阅有效主题即时跟随,无需重启
+  monaco.editor.setTheme(monacoThemeName())
+  subscribeTheme(() => monaco.editor.setTheme(monacoThemeName()))
 
   // 代码字体 JetBrains Mono 经 @fontsource 异步加载(woff2):字体就绪后让 Monaco
   // 重新量字,避免编辑器先以回退字体测宽导致光标/选区错位(load 对已就绪字体立即 resolve)

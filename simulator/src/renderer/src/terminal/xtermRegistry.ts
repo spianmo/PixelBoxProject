@@ -5,20 +5,24 @@
  * TermPane 挂载时把 holder 接入布局、卸载时摘下,工具窗隐藏/底部区切换
  * (日志 ⇄ 终端)期间实例与滚回缓冲全程保留。
  *
- * 主题:JetBrains Dark 近似 ANSI 16 色,背景对齐编辑器 #1E1F22,
+ * 主题:深浅两套 ANSI 16 色成对定义(dark = JetBrains Dark 近似,背景对齐编辑器
+ * #1E1F22;light = IntelliJ Light 近似,背景纯白),subscribeTheme 对全部已开
+ * 会话热切 options.theme(含滚回缓冲即时重绘,无需重开会话);
  * 字号走 IDE 设置(工具 › 终端;settings:changed 对全部已开会话即时生效),
  * JetBrains Mono 优先的等宽回退链(与 tailwind fontFamily.mono 一致)。
  */
 import { Terminal } from '@xterm/xterm'
+import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalSessionInfo } from '../../../shared/ipc-types'
 import { getAppSettings, subscribeSettings } from '../settings/store'
+import { getEffectiveTheme, subscribeTheme } from '../theme'
 
 /** JetBrains Dark(Darcula console 系)近似 ANSI 色板;背景/前景对齐 IDE 色板 */
-const JETBRAINS_DARK_THEME = {
+const JETBRAINS_DARK_THEME: ITheme = {
   background: '#1E1F22',
   foreground: '#DFE1E5',
   cursor: '#DFE1E5',
@@ -40,7 +44,37 @@ const JETBRAINS_DARK_THEME = {
   brightMagenta: '#D0A8FF',
   brightCyan: '#3EB8B8',
   brightWhite: '#FEFEFE'
-} as const
+}
+
+/** IntelliJ Light 近似 ANSI 色板(白底终端惯例:普通档加深保对比,亮档略饱和) */
+const INTELLIJ_LIGHT_THEME: ITheme = {
+  background: '#FFFFFF',
+  foreground: '#27282E',
+  cursor: '#27282E',
+  cursorAccent: '#FFFFFF',
+  selectionBackground: '#D4E2FF',
+  black: '#000000',
+  red: '#C22B35',
+  green: '#1F7536',
+  yellow: '#A8730A',
+  blue: '#2E62CC',
+  magenta: '#8F5BB8',
+  cyan: '#0E7C86',
+  white: '#8E9299',
+  brightBlack: '#6C707E',
+  brightRed: '#DB3B4B',
+  brightGreen: '#208A3C',
+  brightYellow: '#9E6C00',
+  brightBlue: '#3574F0',
+  brightMagenta: '#B05EDA',
+  brightCyan: '#0598BC',
+  brightWhite: '#27282E'
+}
+
+/** 当前有效主题对应的 xterm 色板(建实例与热切共用同一入口) */
+function xtermTheme(): ITheme {
+  return getEffectiveTheme() === 'light' ? INTELLIJ_LIGHT_THEME : JETBRAINS_DARK_THEME
+}
 
 const FONT_FAMILY = '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace'
 
@@ -89,6 +123,13 @@ subscribeSettings(() => {
   fitAllTerms()
 })
 
+// 主题热切换:有效主题变化 → 全部已开会话 options.theme(xterm 即时重绘,
+// 含滚回缓冲;仅 SGR 指定过的前景/背景色保持原义,默认色随新色板)
+subscribeTheme(() => {
+  const theme = xtermTheme()
+  for (const inst of registry.values()) inst.term.options.theme = theme
+})
+
 /** ⌘F 请求回调(UI 层注入,打开对应会话的搜索条) */
 let searchRequestHandler: ((sessionId: string) => void) | null = null
 export function setSearchRequestHandler(cb: (sessionId: string) => void): void {
@@ -107,7 +148,7 @@ export function createTermInstance(info: TerminalSessionInfo): TermInstance {
   const term = new Terminal({
     fontSize: getAppSettings().terminal.fontSize,
     fontFamily: FONT_FAMILY,
-    theme: JETBRAINS_DARK_THEME,
+    theme: xtermTheme(), // 深浅色板随当前有效主题(后续切换经 subscribeTheme 热切)
     cursorBlink: true,
     scrollback: 8000,
     // pipe 兜底模式输出是裸 \n(无 pty 不做 ONLCR 翻译),xterm 侧补 CR

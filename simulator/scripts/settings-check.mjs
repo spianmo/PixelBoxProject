@@ -178,7 +178,7 @@ if (onDisk.editor.fontSize === 16 && onDisk.appearance.language === 'en') {
 changedEvents.length = 0
 const afterBad = await invoke('settings:set-many', {
   'editor.fontSize': 99, // 超出 12-20
-  'appearance.theme': 'light', // 亮色规划中,schema 拒绝
+  'appearance.theme': 'blue', // 非法主题值(合法三值:dark/light/system)
   'evil.path': 'x', // 未知键
   'toolchain.defaultTarget': 'rm -rf /' // 非法芯片名
 })
@@ -188,12 +188,20 @@ if (
   afterBad.evil === undefined &&
   afterBad.toolchain.defaultTarget === 'esp32s3'
 ) {
-  ok('坏值/未知键全部拒绝', 'fontSize=99 theme=light evil.path badTarget')
+  ok('坏值/未知键全部拒绝', 'fontSize=99 theme=blue evil.path badTarget')
 } else {
   fail('坏值拒绝', JSON.stringify(afterBad))
 }
 if (changedEvents.length === 0) ok('无实际变化不广播')
 else fail('无变化广播', `收到 ${changedEvents.length} 份`)
+
+// 主题三值(light-theme 阶段开放):dark / light / system 逐值接受并生效,
+// 收尾回 dark(= 默认值,不影响后续冷启动回读断言)
+for (const theme of ['light', 'system', 'dark']) {
+  const afterTheme = await invoke('settings:set-many', { 'appearance.theme': theme })
+  if (afterTheme.appearance.theme === theme) ok(`appearance.theme=${theme} 接受并生效`)
+  else fail(`appearance.theme=${theme}`, JSON.stringify(afterTheme.appearance))
+}
 
 // 冷启动回读:fresh module 实例重读磁盘
 console.log('    —— 冷启动回读(fresh module 实例)')

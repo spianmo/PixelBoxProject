@@ -5,7 +5,7 @@
  * - Cmd/Ctrl+S 保存当前文件(经 IPC 写盘)
  */
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
-import { monaco, languageForPath } from './monacoSetup'
+import { monaco, languageForPath, monacoThemeName } from './monacoSetup'
 import { editorViewSettings, subscribeEditorSettings } from './editorSettings'
 
 export interface EditorHostHandle {
@@ -79,7 +79,7 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
     if (!containerRef.current) return
     const view = editorViewSettings()
     const editor = monaco.editor.create(containerRef.current, {
-      theme: 'pixelbox-dark', // 自定义主题,对齐 IDE 色板(monacoSetup.ts)
+      theme: monacoThemeName(), // 自定义深浅主题成对,随有效主题热切(monacoSetup.ts)
       automaticLayout: true,
       // 字号/字体族/Tab 宽度/minimap 走 IDE 设置(settings.json editor 段)
       fontSize: view.fontSize,

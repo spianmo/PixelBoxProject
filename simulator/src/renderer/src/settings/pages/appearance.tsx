@@ -1,6 +1,7 @@
 /**
  * 设置页:外观与行为 › 外观
- * 界面语言(设置窗口内立即预览,Apply 落盘)+ 主题(深色;亮色规划中 disabled)
+ * 界面语言(设置窗口内立即预览,Apply 落盘)+ 主题(深色 / 亮色 / 跟随系统;
+ * Apply 落盘后 settings:changed 广播,主题管理器全窗口即时切换,无需重启)
  */
 import { useTranslation } from 'react-i18next'
 import type { SettingsPage } from '../registry'
@@ -26,8 +27,9 @@ function AppearancePage(): React.JSX.Element {
           label={t('settings.appearance.theme')}
           options={[
             { value: 'dark', label: t('settings.appearance.themeDark') },
-            // 亮色项 disabled:主题规划中(色板已 CSS 变量化,阶段 2 切 :root 变量)
-            { value: 'light', label: t('settings.appearance.themeLight'), disabled: true }
+            { value: 'light', label: t('settings.appearance.themeLight') },
+            // 跟随系统:main 侧 nativeTheme 解析,系统深浅切换时全窗口即时跟随
+            { value: 'system', label: t('settings.appearance.themeSystem') }
           ]}
           hint={t('settings.appearance.themeHint')}
         />

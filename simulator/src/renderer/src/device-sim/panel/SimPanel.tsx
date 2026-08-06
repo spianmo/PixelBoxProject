@@ -392,9 +392,9 @@ function ScreenView({
 
   return (
     <div ref={areaRef} className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-2">
-      {/* 白色圆角盒子外框(产品外观) */}
+      {/* 白色圆角盒子外框(产品外观;亮色主题下经 .sim-device-shell 补描边/投影与浅背景分离) */}
       <div
-        className="flex items-center justify-center rounded-2xl bg-white shadow-lg"
+        className="sim-device-shell flex items-center justify-center rounded-2xl bg-white shadow-lg"
         style={{ width: boxW + 24, height: boxH + 24 }}
       >
         <div
