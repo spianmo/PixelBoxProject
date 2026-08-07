@@ -10,12 +10,18 @@
  * (attachScreen 会立即重绘 latestFrame,无像素丢失),卸载 cleanup 归还
  * (attachScreen(null) + onFrame=null),随后挂载的 2D ScreenView 自行 attach。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { BoardSpec, Hardware3D, ScreenPlacement } from '../../../../shared/ipc-types'
 import { HardwareViewer } from '../../hardware/three/HardwareViewer'
+import { getAppSettings, subscribeSettings } from '../../settings/store'
 import type { SimEngine } from '../engine'
 import type { ScreenSize } from './SimPanel'
+
+/** uiStore 亮度(0..100)→ 屏幕材质颜色系数(与 2D CSS filter 同款 5% 下限) */
+function brightness01(v: number): number {
+  return Math.max(5, v) / 100
+}
 
 /** 档案未提供屏幕放置时的兜底:按屏幕像素宽高比居中铺在板面(四周留 4mm 边) */
 function defaultPlacement(board: BoardSpec, screen: ScreenSize): ScreenPlacement {
@@ -47,6 +53,9 @@ export function ScreenView3D({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const viewerRef = useRef<HardwareViewer | null>(null)
+  // 屏幕控制状态(screen-ctl:熄屏/亮度)随 engine.uiStore,与 2D ScreenView 行为对齐;
+  // rotation 不作用于 3D(纹理旋转会与触摸 UV 映射打架),工具条旋转钮在 3D 模式禁用
+  const ui = useSyncExternalStore(engine.uiStore.subscribe, engine.uiStore.get)
   // 爆炸目标经 ref 透传给创建 effect(viewer 重建时恢复当前爆炸态,且不触发重建)
   const explodeRef = useRef(explode)
   explodeRef.current = explode
@@ -66,13 +75,23 @@ export function ScreenView3D({
     const viewer = new HardwareViewer(canvas, {
       interactive: true,
       background: null,
+      // 重建时按当前设置恢复(与熄屏/亮度的「重建时恢复」约定一致)
+      axes: getAppSettings().appearance.show3dAxes,
+      // UV → 像素坐标夹取到 [0, W-1]/[0, H-1](契约同 2D:u=1 不得产生 x=W 越界)
       onScreenTouch: (type: 'down' | 'move' | 'up', u: number, v: number) =>
-        engine.sendTouch(type, Math.round(u * screen.width), Math.round(v * screen.height))
+        engine.sendTouch(
+          type,
+          Math.max(0, Math.min(screen.width - 1, Math.floor(u * screen.width))),
+          Math.max(0, Math.min(screen.height - 1, Math.floor(v * screen.height)))
+        )
     })
     viewerRef.current = viewer
     viewer.setHardware(hardware)
     viewer.attachScreenCanvas(hidden, hardware.screen ?? defaultPlacement(hardware.board, screen))
     viewer.setExplode(explodeRef.current ? 1 : 0)
+    // viewer 重建时恢复当前熄屏/亮度(下方订阅 effect 仅在状态变化时触发)
+    const ui0 = engine.uiStore.get()
+    viewer.setScreenState(ui0.power, brightness01(ui0.brightness))
 
     // attachScreen 会立即把 latestFrame 重绘进隐藏 canvas → 先绘后标脏
     engine.attachScreen(hidden)
@@ -98,6 +117,18 @@ export function ScreenView3D({
   useEffect(() => {
     viewerRef.current?.setExplode(explode ? 1 : 0)
   }, [explode])
+
+  // 熄屏/亮度 → 3D 屏幕面材质(熄屏置黑,亮度乘颜色;语义对齐 2D 的遮罩/filter)
+  useEffect(() => {
+    viewerRef.current?.setScreenState(ui.power, brightness01(ui.brightness))
+  }, [ui.power, ui.brightness])
+
+  // 坐标轴指示器开关(settings 实时生效)
+  useEffect(() => {
+    return subscribeSettings(() => {
+      viewerRef.current?.setAxesVisible(getAppSettings().appearance.show3dAxes)
+    })
+  }, [])
 
   // 提示浮层 4s 后淡出
   useEffect(() => {

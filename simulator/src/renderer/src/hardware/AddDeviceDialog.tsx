@@ -3,7 +3,7 @@
  *
  * - 名称默认「<项目名> 板卡」(project:info 取 manifest 名,回退目录名)
  * - 芯片默认取工程 manifest.chip(非法/缺省回退 esp32s3);PSRAM 档位随芯片能力收敛
- * - 分辨率默认 368x448(内置 AMOLED 档案同款),psram/flash 默认 8/16
+ * - 分辨率默认 480x480(微雪 ESP32-S3-Touch-AMOLED-2.16 实机屏幕),psram/flash 默认 8/16
  * - 提交:saveDeviceProfile({...档案, hardware3d: {board, enclosure, screen, designRoot}})
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -42,7 +42,7 @@ export function AddDeviceDialog(props: {
   onClose: () => void
 }): React.JSX.Element {
   const { t } = useTranslation()
-  const { boardSpec, screen, enclosure } = useHardware()
+  const { boardSpec, screen, scad } = useHardware()
 
   const folderName = useMemo(
     () => props.workspaceRoot.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? 'board',
@@ -51,8 +51,8 @@ export function AddDeviceDialog(props: {
 
   const [name, setName] = useState(() => t('hw.addDevice.defaultName', { name: folderName }))
   const [chip, setChip] = useState('esp32s3')
-  const [screenW, setScreenW] = useState('368')
-  const [screenH, setScreenH] = useState('448')
+  const [screenW, setScreenW] = useState('480')
+  const [screenH, setScreenH] = useState('480')
   const [psramMB, setPsramMB] = useState(8)
   const [flashMB, setFlashMB] = useState(16)
   const [error, setError] = useState<string | null>(null)
@@ -110,7 +110,9 @@ export function AddDeviceDialog(props: {
       createdAt: 0,
       hardware3d: {
         board: boardSpec,
-        enclosure,
+        // OpenSCAD 外壳编译产物(b64 可 JSON 落盘;enclosure 参数字段已随
+        // enclosure.json 退役,仅旧档案读取路径还认它)
+        ...(scad ? { scad } : {}),
         screen: screen ?? undefined,
         designRoot: props.workspaceRoot
       }

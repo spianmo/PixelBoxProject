@@ -73,7 +73,9 @@ export async function evalTsxFsMap(
   try {
     const circuitJson = await Promise.race([
       (async () => {
-        await worker.executeWithFsMap({ fsMap, entrypoint: entry })
+        // mainComponentPath(非 entrypoint):设计文件按约定默认导出电路组件;
+        // entrypoint 语义要求文件内显式 circuit.add(...),与模板不符
+        await worker.executeWithFsMap({ fsMap, mainComponentPath: entry })
         await worker.renderUntilSettled()
         return worker.getCircuitJson()
       })(),

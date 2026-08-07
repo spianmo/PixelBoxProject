@@ -29,11 +29,16 @@ interface PrinterCfg {
 const BTN_CLASS =
   'flex h-7 items-center gap-1.5 rounded border border-ink-600 px-2 text-[12px] text-jb-muted hover:bg-ink-800 hover:text-jb-text disabled:cursor-not-allowed disabled:text-ink-500 disabled:hover:bg-transparent'
 
-/** printer:<code> → i18n 文案(未知码回落原始信息) */
+/**
+ * printer:<code> → i18n 文案(未知码回落原始信息)。
+ * 取**最后一个**匹配:ipcRenderer.invoke 把主进程报错包装成
+ * "Error invoking remote method 'printer:test': Error: printer:unreachable",
+ * 首个匹配是 IPC 通道名(test/upload/job/pick)而非错误码。
+ */
 function printerErrText(t: TFunction, err: unknown): string {
   const msg = (err instanceof Error ? err.message : String(err)).split('\n')[0]
-  const m = /printer:([A-Za-z]+)/.exec(msg)
-  return m ? t(`hw.printer.errors.${m[1]}`, { defaultValue: msg }) : msg
+  const code = [...msg.matchAll(/printer:([A-Za-z]+)/g)].pop()?.[1]
+  return code ? t(`hw.printer.errors.${code}`, { defaultValue: msg }) : msg
 }
 
 /** 秒 → mm:ss */

@@ -89,6 +89,13 @@ function ToolchainPage(): React.JSX.Element {
           width={160}
           options={BAUD_OPTIONS.map((b) => ({ value: b, label: String(b) }))}
         />
+        <TextField
+          path="toolchain.clangdPath"
+          label={t('fw.settings.clangdPath')}
+          placeholder={t('fw.settings.clangdPathPlaceholder')}
+          mono
+          hint={t('fw.settings.clangdPathHint')}
+        />
       </SettingsSection>
     </div>
   )
@@ -104,6 +111,7 @@ export const page: SettingsPage = {
     '烧录',
     '波特率',
     '芯片',
+    '补全',
     'idf',
     'esp-idf',
     'toolchain',
@@ -111,7 +119,10 @@ export const page: SettingsPage = {
     'flash',
     'baud',
     'chip',
-    'target'
+    'target',
+    'clangd',
+    'lsp',
+    'completion'
   ],
   order: 10,
   Component: ToolchainPage

@@ -8,6 +8,7 @@
 import {
   CIcon,
   CmakeIcon,
+  ScadIcon,
   CppIcon,
   CssIcon,
   CsvIcon,
@@ -99,6 +100,8 @@ function byExt(ext: string, size?: number): React.JSX.Element | null {
       return <HIcon size={size} />
     case 'cmake':
       return <CmakeIcon size={size} />
+    case 'scad':
+      return <ScadIcon size={size} />
     case 'txt':
     case 'log':
       return <TxtIcon size={size} />

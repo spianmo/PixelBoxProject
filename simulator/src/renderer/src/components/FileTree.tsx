@@ -13,6 +13,7 @@ import { FolderIcon, fileIconFor } from './fileIcons'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { InputModal, ConfirmModal } from './Modal'
 import { showToast } from './toast'
+import { GIT_STATUS_CLS, gitMarkFor, type GitTreeMark } from '../git/fileStatusColors'
 
 interface Props {
   root: string
@@ -24,6 +25,8 @@ interface Props {
   onFileRemoved: (path: string) => void
   /** 当前激活文件(选中行高亮) */
   activePath?: string | null
+  /** Git 文件状态(绝对路径 → 状态字母,含 'I' 忽略;行文字按状态着色,active 时选中样式优先) */
+  gitStatus?: ReadonlyMap<string, GitTreeMark>
 }
 
 interface MenuState {
@@ -60,7 +63,7 @@ function baseName(p: string): string {
   return i >= 0 ? p.slice(i + 1) : p
 }
 
-export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePath }: Props): React.JSX.Element {
+export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePath, gitStatus }: Props): React.JSX.Element {
   const { t } = useTranslation()
   // 已加载目录 → 子项
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map())
@@ -162,12 +165,17 @@ export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePa
     return entries.flatMap((entry) => {
       const isExpanded = entry.isDir && expanded.has(entry.path)
       const isActive = !entry.isDir && entry.path === activePath
+      // git 状态着色(active 时选中样式优先;映射统一在 git/fileStatusColors.ts,
+      // 目录仅 ignored 着色;ignored 目录下的条目经祖先链继承橄榄色)
+      const gitMark = gitMarkFor(gitStatus, entry.path, entry.isDir)
       const row = (
         <div
           key={entry.path}
           style={{ paddingLeft: depth * 14 + 6 }}
           className={`group flex h-6 cursor-pointer items-center gap-1.5 pr-2 text-[13px] ${
-            isActive ? 'bg-jb-selection text-jb-text' : 'text-jb-text hover:bg-ink-800'
+            isActive
+              ? 'bg-jb-selection text-jb-text'
+              : `${gitMark ? GIT_STATUS_CLS[gitMark] : 'text-jb-text'} hover:bg-ink-800`
           }`}
           onClick={() => (entry.isDir ? toggleDir(entry) : onOpenFile(entry.path))}
           onContextMenu={(e) => {

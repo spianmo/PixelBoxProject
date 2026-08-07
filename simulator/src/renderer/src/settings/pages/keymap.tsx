@@ -17,7 +17,9 @@ interface KeyRow {
 
 /** 只读键位表(与 App.tsx / xtermRegistry / EditorHost 中的真实绑定一致) */
 const KEY_ROWS: KeyRow[] = [
-  { actionKey: 'settings.keymap.quickOpen', mac: '⌘ P', other: 'Ctrl+P' },
+  { actionKey: 'settings.keymap.quickOpen', mac: '⌘ P / ⇧⌘ O', other: 'Ctrl+P / Ctrl+Shift+O' },
+  { actionKey: 'settings.keymap.findInFile', mac: '⌘ F', other: 'Ctrl+F' },
+  { actionKey: 'settings.keymap.findInFiles', mac: '⇧⌘ F', other: 'Ctrl+Shift+F' },
   { actionKey: 'settings.keymap.save', mac: '⌘ S', other: 'Ctrl+S' },
   { actionKey: 'settings.keymap.run', mac: '⌃ R', other: 'Shift+F10' },
   { actionKey: 'settings.keymap.stop', mac: '⌘ F2', other: 'Ctrl+F2' },

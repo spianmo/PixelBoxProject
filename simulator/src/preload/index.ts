@@ -17,6 +17,18 @@ import type {
   FirmwareTaskResult,
   FsEntry,
   FsWatchEvent,
+  GitBranchInfo,
+  GitCommitInfo,
+  GitDetectResult,
+  GitFileChange,
+  GitInfo,
+  GitMenuActionEvent,
+  GitOpOutput,
+  GitRemoteInfo,
+  GitResolveStrategy,
+  GitStatusResult,
+  ContentSearchOptions,
+  ContentSearchResult,
   HardwareExportFile,
   HardwareExportResult,
   PrinterJobStatus,
@@ -72,6 +84,75 @@ const api = {
   /** 外部链接交给系统浏览器(仅 http(s)/mailto;Markdown 预览用) */
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
 
+  // ---- Git 集成 ----
+  /** 检测 git 可执行文件(设置页实时回显;可传草稿路径不落盘试探) */
+  gitDetect: (overridePath?: string): Promise<GitDetectResult> =>
+    ipcRenderer.invoke('git:detect', overridePath),
+  /** 仓库概览(是否 git 仓库 / 分支 / upstream / ahead-behind;顺带重挂 .git watcher) */
+  gitInfo: (root: string): Promise<GitInfo> => ipcRenderer.invoke('git:info', root),
+  /** 初始化仓库(addAll=true 时顺带 git add -A) */
+  gitInit: (root: string, addAll?: boolean): Promise<void> =>
+    ipcRenderer.invoke('git:init', root, addAll),
+  /** 变更列表(staged/unstaged/untracked/conflicted 四组,路径为绝对路径) */
+  gitStatus: (root: string): Promise<GitStatusResult> => ipcRenderer.invoke('git:status', root),
+  /** 暂存指定文件(绝对路径数组) */
+  gitStage: (root: string, paths: string[]): Promise<void> =>
+    ipcRenderer.invoke('git:stage', root, paths),
+  /** 取消暂存指定文件 */
+  gitUnstage: (root: string, paths: string[]): Promise<void> =>
+    ipcRenderer.invoke('git:unstage', root, paths),
+  /** 丢弃工作区修改(untracked=true 走 clean 删除未跟踪文件;调用前须经用户确认) */
+  gitDiscard: (root: string, paths: string[], untracked?: boolean): Promise<void> =>
+    ipcRenderer.invoke('git:discard', root, paths, untracked),
+  /** 提交暂存区(空暂存区抛 git:nothingToCommit) */
+  gitCommit: (root: string, message: string): Promise<void> =>
+    ipcRenderer.invoke('git:commit', root, message),
+  /** 推送(流式输出经 onGitOpOutput;无 upstream 自动 -u origin <branch>) */
+  gitPush: (root: string): Promise<void> => ipcRenderer.invoke('git:push', root),
+  /** 拉取(流式输出经 onGitOpOutput;冲突抛 git:conflict) */
+  gitPull: (root: string): Promise<void> => ipcRenderer.invoke('git:pull', root),
+  /** 取消进行中的 push/pull(杀进程组) */
+  gitCancelOp: (): Promise<void> => ipcRenderer.invoke('git:cancel-op'),
+  /** 提交历史(最近 200 条;parents 供车道图布局) */
+  gitLog: (root: string): Promise<GitCommitInfo[]> => ipcRenderer.invoke('git:log', root),
+  /** 某 commit 的变更文件列表(diff-tree 相对第一父) */
+  gitCommitFiles: (root: string, hash: string): Promise<GitFileChange[]> =>
+    ipcRenderer.invoke('git:commit-files', root, hash),
+  /** 某版本的文件内容(该版本无此文件返回空串;diff 页签数据源) */
+  gitShowFile: (root: string, rev: string, relPath: string): Promise<string> =>
+    ipcRenderer.invoke('git:show-file', root, rev, relPath),
+  /** 本地分支列表(current 标记当前分支) */
+  gitBranches: (root: string): Promise<GitBranchInfo[]> =>
+    ipcRenderer.invoke('git:branches', root),
+  /** 切分支(create=true 时新建;脏工作区冲突抛 git:dirtyWorktree) */
+  gitCheckout: (root: string, branch: string, create?: boolean): Promise<void> =>
+    ipcRenderer.invoke('git:checkout', root, branch, create),
+  /** 冲突解决(ours/theirs 先 checkout 对应侧再 add;mark 仅 add 标记已解决) */
+  gitResolve: (root: string, paths: string[], strategy: GitResolveStrategy): Promise<void> =>
+    ipcRenderer.invoke('git:resolve', root, paths, strategy),
+  /** Remote 列表(`git remote -v` 解析;fetch/push URL 分列) */
+  gitRemotes: (root: string): Promise<GitRemoteInfo[]> => ipcRenderer.invoke('git:remotes', root),
+  /** 添加 remote(名称 [A-Za-z0-9_.-]+ 且不以 - 开头;URL 非空不以 - 开头) */
+  gitRemoteAdd: (root: string, name: string, url: string): Promise<void> =>
+    ipcRenderer.invoke('git:remote-add', root, name, url),
+  /** 删除 remote */
+  gitRemoteRemove: (root: string, name: string): Promise<void> =>
+    ipcRenderer.invoke('git:remote-remove', root, name),
+  /** 修改 remote URL */
+  gitRemoteSetUrl: (root: string, name: string, url: string): Promise<void> =>
+    ipcRenderer.invoke('git:remote-set-url', root, name, url),
+  /** 仓库变化订阅(.git 目录 watcher 去抖广播;外部 git 操作也触发) */
+  onGitChanged: (cb: (ev: { root: string }) => void): (() => void) =>
+    subscribe('git:changed', cb),
+  /** push/pull 流式输出订阅(kind=done 为结束标记,exitCode 有效) */
+  onGitOpOutput: (cb: (ev: GitOpOutput) => void): (() => void) =>
+    subscribe('git:op-output', cb),
+  /** 原生 Git 菜单动作订阅(main menu.ts 广播;git/menuBridge.ts 消费) */
+  onGitMenuAction: (cb: (ev: GitMenuActionEvent) => void): (() => void) =>
+    subscribe('menu:git-action', cb),
+  /** 请求重建原生应用菜单(语言切换后菜单文案即时跟随) */
+  menuRefresh: (): Promise<void> => ipcRenderer.invoke('menu:refresh'),
+
   // ---- 新建项目向导 ----
   /** 默认项目位置(~/PixelBoxProjects) */
   projectDefaultLocation: (): Promise<string> => ipcRenderer.invoke('project:default-location'),
@@ -93,6 +174,9 @@ const api = {
   recentWorkspaces: (): Promise<string[]> => ipcRenderer.invoke('workspace:recents'),
   /** 工作区文件全量列举(相对路径,Cmd+P 快速打开) */
   listWorkspaceFiles: (): Promise<string[]> => ipcRenderer.invoke('workspace:list-files'),
+  /** 项目内容检索(IDEA ⇧⌘F Find in Files;遍历规则同 ⌘P,命中上限/超时见 main/search.ts) */
+  searchContent: (query: string, opts: ContentSearchOptions): Promise<ContentSearchResult> =>
+    ipcRenderer.invoke('search:content', query, opts),
   readDir: (dir: string): Promise<FsEntry[]> => ipcRenderer.invoke('fs:read-dir', dir),
   readFile: (p: string): Promise<string> => ipcRenderer.invoke('fs:read-file', p),
   /** 二进制读取(Markdown 预览的相对路径图片) */

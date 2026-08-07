@@ -119,6 +119,7 @@ export interface EnclosureParams {
   cornerR: number                // 外壳圆角,默认 2
   screenWindow: boolean          // 顶盖开屏幕窗(需 screen 放置)
   ports: EnclosurePort[]
+  colorHex?: string              // 外壳颜色 '#rrggbb'(base+lid 材质色;缺省回退查看器内置灰)
 }
 // DEFAULT_ENCLOSURE 常量放 `src/shared/hardwareDefaults.ts`(新文件,owner: main-services;
 // ipc-types.ts 保持纯类型零运行时代码的约定)
@@ -186,7 +187,7 @@ export function detectScreenPlacement(circuitJson: AnyCircuitElement[]): ScreenP
 export function buildBoardGroup(spec: BoardSpec): THREE.Group                        // name:'board';板体+元件盒
 
 // renderer/src/hardware/three/enclosureBuilder.ts
-export interface EnclosureParts { base: THREE.Group; lid: THREE.Group }              // name:'base'/'lid'
+export interface EnclosureParts { base: THREE.Group; lid: THREE.Group; display: THREE.Group | null; battery: THREE.Group | null }  // name:'base'/'lid'/'display'/'battery'
 export function buildEnclosure(spec: BoardSpec, params: EnclosureParams, screen: ScreenPlacement | null): EnclosureParts
 //   世界坐标系:mm,Y 轴向上(three 默认),板顶面为 y=standoffHeight+底板厚;XZ 平面对应板 XY(Circuit Y→three -Z)
 
@@ -208,6 +209,13 @@ export class HardwareViewer {
   dispose(): void
 }
 ```
+
+物理模型修正(实物堆叠,微雪 2.16 复刻):`setHardware` 额外组装两个**非打印**部件 ——
+`display` 前置显示模组(screenWindow+screen 时:近黑亮面薄块 2.2mm 厚,顶面 = 顶盖外表面 −0.2mm,从内侧正好填住顶盖屏幕窗;屏幕 CanvasTexture 贴片挂其顶面 +0.05,爆炸随之抬升 0.55×lid —— 屏幕在壳体最外侧而非沉在板顶,无顶盖开窗时贴片回退板顶)与
+`battery` 电池占位(可选 `EnclosureParams.batteryMM?: {w,h,t}`,底盒内腔地面居中的钢青色圆角扁块,足印避让四角支撑柱、厚度钳制不越过板底面;爆炸小幅 -Y)。
+两者不在 `HardwarePartId` 中(无单件导出),`exportSTL('assembly')` 从克隆体剔除后再导出。
+
+
 
 ### 2.5 hardware UI 模块(owner: hardware-ui)
 
@@ -254,7 +262,7 @@ export function HardwareDesignPanel(props: { workspaceRoot: string | null }): Re
 
 - **app**(现状保留,pixelbox.json 增 `"type":"app"`)。
 - **firmware**:`pixelbox.json {type:'firmware', id, name, version:'0.1.0', entry:'', chip}` + `CMakeLists.txt`(cmake 3.16, include $ENV{IDF_PATH}/tools/cmake/project.cmake, project(<name>)) + `main/CMakeLists.txt`(idf_component_register SRCS "main.c") + `main/main.c`(FreeRTOS hello 循环 + ESP_LOGI) + `sdkconfig.defaults`(空注释) + `.gitignore`(build*/、sdkconfig、managed_components/) + `README.md`(编译烧录说明)。
-- **hardware**:`pixelbox.json {type:'hardware', id, name, version:'0.1.0', entry:'', chip}` + `design/board.tsx`(**只用内置元素**的 ESP32 开发板示例:board 60×45 + chip[soic16 占位 ESP32 模组] + 2×pinheader + resistor+led + 名为 `SCREEN1` 的 chip 元件占位屏幕 20×15) + `design/enclosure.json`(DEFAULT_ENCLOSURE) + `README.md` + `.gitignore`(export/)。
+- **hardware**:`pixelbox.json {type:'hardware', id, name, version:'0.1.0', entry:'', chip}` + `design/board.tsx`(**只用内置元素**的**微雪 ESP32-S3-Touch-AMOLED-2.16 复刻板**,按官方原理图/外壳尺寸图 1:1 归纳:board 40×40[装入 46×46×22.5 外壳:40+2×1 间隙+2×2 壁厚],正面 `SCREEN1` 2.16" AMOLED 480×480[参数化封装 `soic14_w39mm_p6.4mm`,可视区 39×39mm,占满正面];北侧板边三颗侧按键 SW1/SW2/SW3[+/KEY、PWR、BOOT/-,间距 10mm,`pushbutton` 通孔件放 layer="bottom" —— 顶层已被屏幕 courtyard 占满,DRC 教训]+上拉 R1;背面 layer="bottom":U1 ESP32-S3R8、U2 XM25QH128 16MB Flash、U3 AXP2101、U4 PCF85063 RTC、U5 QMI8658 IMU、U6 ES8311、U7 ES7210 双麦 ADC、U8 NS4150B 功放、TP1 CST9220 触摸、MIC1/MIC2 双 MEMS 麦、J1 电池座 MX1.25、J2 IPEX 天线座、SD1 microSD[西侧板边]、USB1 Type-C[南侧板边];3 条示例走线[共享 I2C 两段 + 按键上拉]。沙箱实测 1021 元素、20 pcb_component、0 DRC error)。**v3.1 更新**:U1 改用 `design/esp32-s3-mini.tsx` 的真实 ESP32-S3-MINI-1-N8 模组封装(73 焊盘;来源 github.com/tscircuit/motor-controller-pd-stepper,移除 cadModel CDN 引用保持离线),board.tsx 相对导入、走 CircuitRunner.executeWithFsMap 多文件评估,沙箱实测 1320 元素、20 pcb_component、U1 73 焊盘、0 DRC error;Monaco 侧由 syncDesignSiblingLibs 把 design/ 兄弟文件注册为 extraLib 支撑跨文件解析 + `design/enclosure.json`(WAVESHARE_216_ENCLOSURE:wall 2 / clearance 1 / cornerR 5.8 / base 15 + lid 3.5 → 总高 22.5mm、白色 `colorHex:'#f2f2f4'`、北壁 3×Φ5.3 按钮孔 + 南壁 USB-C 9.2×3.6 + 西壁 microSD 12×2.4;**不改** hardwareDefaults 的通用 DEFAULT_ENCLOSURE) + `README.md`(含元件↔原理图块对照表、官方 wiki 链接、480×480 分辨率建议) + `.gitignore`(export/)。EnclosureParams 追加可选 `colorHex?: string`('#rrggbb',enclosureBuilder base+lid 材质色,缺省回退内置灰);EnclosureForm 增「外壳颜色」字段(`hw.enclosure.color`);AddDeviceDialog 分辨率默认 480×480。
 - 模板 **必须实测**:`node --input-type=module -e "import('@tscircuit/eval')…runTscircuitCode(源码)"` 在 simulator/node_modules 下跑通并含 pcb_board,再落库。
 
 ### 2.8 NewProjectModal(owner: new-project-dialog)

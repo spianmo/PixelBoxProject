@@ -44,7 +44,8 @@
     "terminal": "终端",
     "problems": "问题",
     "runningDevices": "运行的设备",
-    "hardware": "硬件设计"
+    "hardware": "硬件设计",
+    "git": "Git"
   },
   "toolwindow": {
     "hide": "隐藏",
@@ -143,6 +144,14 @@
     "unsaved": "未保存",
     "closeDirtyConfirm": "{{name}} 有未保存的修改,确定关闭吗?"
   },
+  "editorTabs": {
+    "close": "关闭",
+    "closeOthers": "关闭其他",
+    "closeUnmodified": "关闭未修改",
+    "splitRight": "左右拆分",
+    "splitDown": "上下拆分",
+    "openInOtherGroup": "在另一分组打开"
+  },
   "session": {
     "workspaceGone": "上次的工作区已不存在,已返回欢迎页"
   },
@@ -171,6 +180,17 @@
     "placeholder": "输入文件名进行模糊搜索…",
     "noWorkspace": "请先打开工作区",
     "empty": "没有匹配的文件"
+  },
+  "search": {
+    "placeholder": "在项目中检索内容…",
+    "caseSensitive": "区分大小写",
+    "wholeWord": "整词匹配",
+    "regex": "正则表达式",
+    "empty": "没有命中",
+    "badPattern": "正则表达式语法错误",
+    "hint": "↑↓ 选择 · Enter 打开 · Esc 关闭",
+    "count": "{{count}} 处命中",
+    "truncated": "命中过多,仅显示前 {{count}} 处(请收窄查询)"
   },
   "notifications": {
     "title": "通知",
@@ -205,6 +225,7 @@
       "system": "系统设置",
       "editor": "编辑器",
       "toolchain": "固件工具链",
+      "git": "Git",
       "printer": "3D 打印机",
       "terminal": "终端",
       "keymap": "快捷键"
@@ -217,7 +238,9 @@
       "themeDark": "深色",
       "themeLight": "亮色",
       "themeSystem": "跟随系统",
-      "themeHint": "深色 / 亮色,或跟随操作系统外观;点击「应用」或「确定」后全窗口立即生效"
+      "themeHint": "深色 / 亮色,或跟随操作系统外观;点击「应用」或「确定」后全窗口立即生效",
+      "show3dAxes": "3D 视图坐标轴指示器",
+      "show3dAxesHint": "在硬件 3D / 模拟器 3D 视图左下角显示 XYZ 坐标轴(随视角实时转动),即时生效"
     },
     "system": {
       "sectionStartup": "启动与退出",
@@ -246,6 +269,8 @@
       "colAction": "操作",
       "colKeys": "快捷键",
       "quickOpen": "快速打开文件",
+      "findInFile": "当前文件内查找",
+      "findInFiles": "项目内容检索",
       "save": "保存当前文件",
       "run": "运行",
       "stop": "停止",
@@ -506,6 +531,21 @@
       "gerberDone": "Gerber 已导出到 {{dir}}",
       "failed": "导出失败:{{msg}}"
     },
+    "scad": {
+      "title": "OpenSCAD 外壳(design/enclosure.scad)",
+      "desc": "外壳即代码:编辑 .scad 即时重渲染 3D;打印导出使用全质量编译。语法提示与内置模块文档见编辑器联想。",
+      "openFile": "打开 enclosure.scad",
+      "compiling": "正在编译…",
+      "ok": "编译通过",
+      "metaTitle": "契约元数据(PB_META)",
+      "metaOuter": "外形",
+      "metaBoardTop": "板顶面高度",
+      "metaScreen": "屏幕开窗",
+      "migrated": "已将参数化外壳迁移为 design/enclosure.scad(原 enclosure.json 已不再使用,可删除)",
+      "migrating": "正在从旧版 enclosure.json 迁移到 OpenSCAD(评估完成后自动生成 enclosure.scad)…",
+      "logToggle": "展开/收起编译日志",
+      "exportSlow": "打印导出使用全质量编译,可能需要 20-60 秒…"
+    },
     "enclosure": {
       "wallMM": "壁厚 (mm)",
       "clearanceMM": "板边间隙 (mm)",
@@ -587,9 +627,120 @@
       "badFile": "无效的 G-code 文件路径"
     }
   },
+  "git": {
+    "viewChanges": "变更",
+    "viewHistory": "历史",
+    "viewBranches": "分支",
+    "refresh": "刷新",
+    "commit": "提交",
+    "push": "推送",
+    "pull": "拉取",
+    "stage": "暂存",
+    "unstage": "取消暂存",
+    "discard": "丢弃修改",
+    "discardConfirm": "确定丢弃 {{name}} 的修改吗?此操作不可撤销。",
+    "discarded": "已丢弃 {{name}} 的修改",
+    "init": "初始化 Git 仓库",
+    "initDone": "已初始化 Git 仓库",
+    "notRepo": "当前工作区不是 Git 仓库",
+    "noWorkspace": "未打开工作区",
+    "noGit": "未找到 git 可执行文件,请到 设置 › Git 配置路径",
+    "noChanges": "没有变更",
+    "noCommits": "暂无提交",
+    "commitPlaceholder": "提交说明(⌘Enter 提交)",
+    "commitDone": "提交完成",
+    "pushDone": "推送完成",
+    "pullDone": "拉取完成",
+    "opLog": "推送 / 拉取输出",
+    "diffVsHead": "工作区 vs HEAD",
+    "group": {
+      "staged": "已暂存",
+      "unstaged": "未暂存",
+      "untracked": "未跟踪",
+      "conflicted": "冲突"
+    },
+    "branches": "分支",
+    "switchBranch": "切换分支",
+    "newBranch": "新建分支…",
+    "newBranchTitle": "新建分支",
+    "newBranchPlaceholder": "分支名",
+    "checkedOut": "已切换到分支 {{name}}",
+    "time": {
+      "justNow": "刚刚",
+      "minutesAgo": "{{count}} 分钟前",
+      "hoursAgo": "{{count}} 小时前",
+      "daysAgo": "{{count}} 天前"
+    },
+    "settings": {
+      "group": "Git",
+      "path": "git 路径",
+      "pathPlaceholder": "留空自动检测(PATH 中的 git 或 /usr/bin/git)",
+      "detecting": "正在检测 git…",
+      "detected": "已检测到 git {{version}}:{{path}}",
+      "notFound": "未找到 git 可执行文件"
+    },
+    "stageAll": "全部暂存",
+    "stageAllDone": "已暂存全部变更",
+    "resolveOurs": "采用我方",
+    "resolveTheirs": "采用对方",
+    "resolveMark": "标记已解决",
+    "resolveDone": "已解决冲突:{{name}}",
+    "conflictsResolved": "冲突已解决,请提交",
+    "currentBranch": "当前分支",
+    "remotes": {
+      "title": "Remotes",
+      "add": "添加 Remote…",
+      "nameTitle": "Remote 名称",
+      "namePlaceholder": "origin",
+      "urlTitle": "{{name}} 的 URL",
+      "urlPlaceholder": "https://… 或 git@…",
+      "editUrl": "修改 URL",
+      "remove": "删除",
+      "removeConfirm": "确定删除 remote {{name}} 吗?",
+      "empty": "暂无 remote",
+      "addDone": "已添加 remote {{name}}",
+      "removeDone": "已删除 remote {{name}}",
+      "urlDone": "已更新 {{name}} 的 URL"
+    },
+    "errors": {
+      "notRepo": "不是 Git 仓库",
+      "noGit": "未找到 git 可执行文件(设置 › Git 可配置路径)",
+      "busy": "已有 Git 操作进行中,请稍候",
+      "conflict": "存在合并冲突,请解决后再提交",
+      "authFailed": "远程认证失败(检查凭据 / SSH key)",
+      "timeout": "Git 命令超时",
+      "dirtyWorktree": "工作区有未提交修改,无法切换分支",
+      "nothingToCommit": "暂存区为空,没有可提交的内容",
+      "emptyMessage": "提交说明不能为空",
+      "badRoot": "工作区路径校验失败",
+      "badPaths": "文件路径校验失败",
+      "badRev": "非法的版本号 / 分支名",
+      "failed": "Git 操作失败",
+      "badRemoteName": "非法的 remote 名称(仅限字母数字与 _.- 且不以 - 开头)",
+      "badRemoteUrl": "非法的 remote URL",
+      "remoteExists": "同名 remote 已存在",
+      "noSuchRemote": "remote 不存在",
+      "badStrategy": "非法的冲突解决策略"
+    }
+  },
+  "menu": {
+    "git": {
+      "title": "Git",
+      "commit": "提交…",
+      "push": "推送",
+      "pull": "拉取",
+      "stageAll": "全部暂存",
+      "newBranch": "新建分支…",
+      "switchBranch": "切换分支",
+      "remotes": "Remotes…",
+      "showPanel": "显示 Git 工具窗"
+    }
+  },
   "common": {
     "ok": "确定",
     "cancel": "取消",
-    "error": "出错了"
+    "error": "出错了",
+    "yes": "是",
+    "no": "否"
   }
 }

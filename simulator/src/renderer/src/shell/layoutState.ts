@@ -21,7 +21,7 @@ export interface MainLayoutState {
   rightWidth: number
   bottomHeight: number
   structTopHeight: number
-  leftTool: 'project' | 'devices' | null
+  leftTool: 'project' | 'devices' | 'git' | null
   structureOpen: boolean
   rightOpen: boolean
   bottomOpen: boolean
@@ -71,7 +71,7 @@ export function loadMainLayout(): MainLayoutState {
       rightWidth: clamp(raw.rightWidth, 280, 680, d.rightWidth),
       bottomHeight: clamp(raw.bottomHeight, 120, 480, d.bottomHeight),
       structTopHeight: clamp(raw.structTopHeight, 120, 640, d.structTopHeight),
-      leftTool: oneOf(raw.leftTool, ['project', 'devices', null] as const, d.leftTool),
+      leftTool: oneOf(raw.leftTool, ['project', 'devices', 'git', null] as const, d.leftTool),
       structureOpen: typeof raw.structureOpen === 'boolean' ? raw.structureOpen : d.structureOpen,
       rightOpen: typeof raw.rightOpen === 'boolean' ? raw.rightOpen : d.rightOpen,
       bottomOpen: typeof raw.bottomOpen === 'boolean' ? raw.bottomOpen : d.bottomOpen,

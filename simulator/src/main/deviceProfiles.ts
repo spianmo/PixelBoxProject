@@ -12,7 +12,7 @@ import { promises as fsp } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import type { DeviceProfile } from '../shared/ipc-types'
+import type { DeviceProfile, Hardware3D } from '../shared/ipc-types'
 import {
   BUILTIN_DEVICE_PROFILE,
   BUILTIN_PROFILE_ID,
@@ -63,6 +63,25 @@ async function listProfiles(): Promise<DeviceProfile[]> {
   return [BUILTIN_DEVICE_PROFILE, ...user]
 }
 
+/**
+ * hardware3d 最小结构校验(board 有 mm 尺寸,外壳为 enclosure 参数(旧档案)
+ * 或 scad 编译产物(新档案)至少其一;容忍额外字段,与 isProfileShape 同宽容度)
+ */
+function isHardware3DShape(v: unknown): v is Hardware3D {
+  if (typeof v !== 'object' || v === null) return false
+  const h = v as Record<string, unknown>
+  const board = h.board as Record<string, unknown> | undefined
+  const hasEnclosure = typeof h.enclosure === 'object' && h.enclosure !== null
+  const hasScad = typeof h.scad === 'object' && h.scad !== null
+  return (
+    typeof board === 'object' &&
+    board !== null &&
+    typeof board.widthMM === 'number' &&
+    typeof board.heightMM === 'number' &&
+    (hasEnclosure || hasScad)
+  )
+}
+
 /** 规范化 + 校验一份待保存档案;抛错时消息为 i18n 错误码 */
 function normalizeProfile(input: DeviceProfile): DeviceProfile {
   const cap = chipCapability(input.chip)
@@ -76,7 +95,9 @@ function normalizeProfile(input: DeviceProfile): DeviceProfile {
     psramMB: cap.psram ? Number(input.psramMB) : 0,
     flashMB: Number(input.flashMB),
     note: String(input.note ?? '').slice(0, 200),
-    createdAt: typeof input.createdAt === 'number' && input.createdAt > 0 ? input.createdAt : Date.now()
+    createdAt: typeof input.createdAt === 'number' && input.createdAt > 0 ? input.createdAt : Date.now(),
+    // 硬件设计工程注册的 3D 外观(v3 契约 §2.1 可选字段):结构合法才透传,否则静默丢弃
+    ...(isHardware3DShape(input.hardware3d) ? { hardware3d: input.hardware3d } : {})
   }
   const err = validateProfileFields(p)
   if (err) throw new Error(`profile:${err}`)

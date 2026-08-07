@@ -4,11 +4,14 @@
  *   构建期静态分析拆出独立 worker chunk,dev/prod 均从本地加载)
  * - TS/JS 语言服务开启,注入 sdk/types/pixelbox.d.ts(?raw 随构建打入)
  *   使 px / pixelbox 全 API 具备补全与 hover
+ * - 固件工程语言:C/C++/ini 走 monaco 内置 basic-languages(全量 'monaco-editor'
+ *   入口已包含全部 contribution);CMake 无内置支持,此处自定义 Monarch 注册
  */
 import * as monaco from 'monaco-editor'
 // 唯一契约文件:整个仓库的设备 API 类型(禁止修改,只读注入)
 import pixelboxDts from '../../../../../sdk/types/pixelbox.d.ts?raw'
 import { getEffectiveTheme, subscribeTheme } from '../theme'
+import { registerOpenscadLanguage } from './openscadLanguage'
 
 let initialized = false
 
@@ -98,11 +101,167 @@ function definePixelboxTheme(): void {
   })
 }
 
+/**
+ * 注册 CMake 语言(Monaco 无内置 cmake basic-language,此处自定义 Monarch 分词)
+ * - 命令词判定:标识符后跟 '('(CMake 命令仅出现在语句首,宽松匹配已足够)
+ * - CMake 命令大小写不敏感,但不能开 Monarch 的 ignoreCase(会连带使全大写常量
+ *   规则失效),改为关键词表小写维护 + 叠加全大写变体,覆盖两种主流书写惯例
+ * - ${VAR} 变量引用用独立状态实现,支持嵌套(如 ${${prefix}_SRCS});
+ *   全部规则均为线性匹配,无嵌套回溯风险
+ */
+function registerCMakeLanguage(): void {
+  monaco.languages.register({
+    id: 'cmake',
+    extensions: ['.cmake'],
+    filenames: ['CMakeLists.txt']
+  })
+
+  monaco.languages.setLanguageConfiguration('cmake', {
+    comments: { lineComment: '#' },
+    brackets: [
+      ['(', ')'],
+      ['[', ']']
+    ],
+    autoClosingPairs: [
+      { open: '(', close: ')' },
+      { open: '[', close: ']' },
+      { open: '"', close: '"', notIn: ['string'] }
+    ],
+    surroundingPairs: [
+      { open: '(', close: ')' },
+      { open: '[', close: ']' },
+      { open: '"', close: '"' }
+    ]
+  })
+
+  // 流程控制关键词(keyword.control)
+  const flowKeywords = [
+    'if',
+    'elseif',
+    'else',
+    'endif',
+    'foreach',
+    'endforeach',
+    'while',
+    'endwhile',
+    'function',
+    'endfunction',
+    'macro',
+    'endmacro'
+  ]
+  // 高频命令(keyword.control):CMake 官方命令 + ESP-IDF 的 idf_component_register
+  const commonCommands = [
+    'cmake_minimum_required',
+    'project',
+    'add_executable',
+    'add_library',
+    'target_link_libraries',
+    'target_include_directories',
+    'set',
+    'include',
+    'idf_component_register',
+    'add_subdirectory',
+    'message',
+    'option',
+    'list',
+    'string',
+    'file',
+    'install'
+  ]
+  const withUpper = (words: string[]): string[] => [...words, ...words.map((w) => w.toUpperCase())]
+
+  monaco.languages.setMonarchTokensProvider('cmake', {
+    defaultToken: '',
+    flowKeywords: withUpper(flowKeywords),
+    commonCommands: withUpper(commonCommands),
+    brackets: [
+      { open: '(', close: ')', token: 'delimiter.parenthesis' },
+      { open: '[', close: ']', token: 'delimiter.square' }
+    ],
+    tokenizer: {
+      root: [
+        [/#.*$/, 'comment'],
+        // 命令调用:标识符后跟 '(';不在两张关键词表内的按普通 keyword 着色
+        [
+          /[A-Za-z_]\w*(?=[ \t]*\()/,
+          {
+            cases: {
+              '@flowKeywords': 'keyword.control',
+              '@commonCommands': 'keyword.control',
+              '@default': 'keyword'
+            }
+          }
+        ],
+        [/\$\{/, { token: 'variable', next: '@variable' }],
+        [/"/, { token: 'string.quote', next: '@string' }],
+        [/\d+(\.\d+)*/, 'number'],
+        // 标识符统一匹配后按形态分流:全大写按 CMake 惯例视为常量/标志位
+        // (如 PUBLIC REQUIRED STATUS);$0~ 守卫两端锚定整词比对,无前瞻回溯
+        [
+          /[A-Za-z_][\w\-.]*/,
+          {
+            cases: {
+              '$0~[A-Z_][A-Z0-9_]*': 'constant',
+              '@default': 'identifier'
+            }
+          }
+        ],
+        [/[()[\]]/, '@brackets'],
+        [/[ \t\r\n]+/, 'white']
+      ],
+      // 双引号字符串:支持 ${VAR} 插值与 \ 转义
+      string: [
+        [/\$\{/, { token: 'variable', next: '@variable' }],
+        [/[^"\\$]+/, 'string'],
+        [/\\./, 'string.escape'],
+        [/"/, { token: 'string.quote', next: '@pop' }],
+        [/\$/, 'string']
+      ],
+      // ${...} 变量引用:遇 ${ 递归进入自身以支持嵌套
+      variable: [
+        [/\$\{/, { token: 'variable', next: '@variable' }],
+        [/\}/, { token: 'variable', next: '@pop' }],
+        [/[^${}]+/, 'variable'],
+        [/\$/, 'variable']
+      ]
+    }
+  } as monaco.languages.IMonarchLanguage)
+}
+
+// ---------------------------------------------------------------
+// 跨文件定义跳转(⌘+点击 / F12)落地
+// ---------------------------------------------------------------
+// standalone Monaco 的 StandaloneCodeEditorService.findModel 对「目标 uri ≠ 当前
+// model uri」一律返回 null 并静默放弃 —— 不注册 opener 时任何跨文件跳转(包括
+// design/ 兄弟文件之间)都无响应。setupMonaco 注册的 opener 统一接管:真实文件
+// 转交 App 走常规页签;extraLib 虚拟库(file:///node_modules/...)取注册内容开
+// 只读页签。回调由 App 挂载(setEditorOpenHandler),避免本模块反向依赖 UI。
+
+export interface EditorOpenRequest {
+  /** 目标:真实文件为绝对 fs 路径;虚拟库为 uri.path(/node_modules/...) */
+  path: string
+  /** 是否 extraLib 虚拟库(无对应磁盘文件,须以 content 开只读页签) */
+  virtual: boolean
+  /** 虚拟库的声明文本(extraLib 注册内容) */
+  content?: string
+  line?: number
+  column?: number
+}
+
+let editorOpenHandler: ((req: EditorOpenRequest) => void) | null = null
+
+/** App 挂载页签打开回调(卸载时传 null);opener 拿不到回调时保持默认静默 */
+export function setEditorOpenHandler(fn: ((req: EditorOpenRequest) => void) | null): void {
+  editorOpenHandler = fn
+}
+
 export function setupMonaco(): void {
   if (initialized) return
   initialized = true
 
   definePixelboxTheme()
+  registerCMakeLanguage()
+  registerOpenscadLanguage() // 硬件工程 design/enclosure.scad(高亮/补全/hover)
 
   // 主题热切换:setTheme 全局生效(全部编辑器实例),订阅有效主题即时跟随,无需重启
   monaco.editor.setTheme(monacoThemeName())
@@ -159,6 +318,16 @@ export function setupMonaco(): void {
     moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
     // 设备运行时无 DOM,仅 ES 标准库 + pixelbox.d.ts
     lib: ['es2020'],
+    // 硬件设计工程 design/*.tsx(tscircuit):启用 JSX 检查。选 ReactJSX 而非
+    // Preserve/React(classic):@tscircuit/core 的 IntrinsicElements 经
+    // `declare module "react/jsx-runtime"` 扩充声明,ReactJSX 自动解析该模块取
+    // JSX 命名空间,设计文件无需 import React(classic 模式反而要求 React 在
+    // 作用域内);类型桩与 d.ts 由 tscircuitTypes.ts 惰性注入(冒烟实证:元素/
+    // 属性补全 + 脚手架模板零错误)。对纯 .ts 文件此选项无效果,应用工程不受影响
+    jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
+    // @tscircuit/core d.ts 含 `import react__default from 'react'`(其编译目标
+    // @types/react 是 export= 风格):放行合成默认导入,避免该 d.ts 内部报错降级
+    allowSyntheticDefaultImports: true,
     strict: true,
     allowNonTsExtensions: true,
     allowJs: true,
@@ -175,16 +344,68 @@ export function setupMonaco(): void {
   monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true)
   monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true)
 
+  // ⌘+点击 / F12 跨文件跳转(机制见 setEditorOpenHandler 头注释)
+  monaco.editor.registerEditorOpener({
+    openCodeEditor(_source, resource, selectionOrPosition): boolean {
+      if (!editorOpenHandler || resource.scheme !== 'file') return false
+      let line: number | undefined
+      let column: number | undefined
+      if (selectionOrPosition) {
+        if ('startLineNumber' in selectionOrPosition) {
+          line = selectionOrPosition.startLineNumber
+          column = selectionOrPosition.startColumn
+        } else {
+          line = selectionOrPosition.lineNumber
+          column = selectionOrPosition.column
+        }
+      }
+      // 虚拟库两类:extraLib 注册路径(file:///node_modules/...)与 TS 标准库
+      // (worker 返回裸名 lib.es2020.*.d.ts,Uri.parse 规范化为 file:///lib.*.d.ts)。
+      // 标准库若误走真实文件分支,readFile 会被工作区路径牢笼拒绝 → 死页签
+      if (
+        resource.path.startsWith('/node_modules/') ||
+        /^\/lib\.[^/]+\.d\.ts$/.test(resource.path)
+      ) {
+        // 内容优先取 extraLib 注册文本(ts/js 两侧、原始 key 与 Uri 规范化 key
+        // 都查),兜底取定义跳转链路(LibFiles)已建的同 uri model(标准库恒走此兜底)
+        const keys = [resource.toString(), 'file://' + resource.path]
+        const pools = [
+          monaco.languages.typescript.typescriptDefaults.getExtraLibs(),
+          monaco.languages.typescript.javascriptDefaults.getExtraLibs()
+        ]
+        let content: string | undefined
+        for (const pool of pools) {
+          for (const key of keys) content ??= pool[key]?.content
+        }
+        content ??= monaco.editor.getModel(resource)?.getValue()
+        if (content == null) return false
+        editorOpenHandler({ path: resource.path, virtual: true, content, line, column })
+        return true
+      }
+      // 真实文件(design/ 兄弟文件等):走 App 常规打开链路(读盘 + 页签)
+      editorOpenHandler({ path: resource.fsPath, virtual: false, line, column })
+      return true
+    }
+  })
+
   // 冒烟钩子配套(PIXELBOX_SMOKE_MONACO,见 main/index.ts):暴露 monaco 顶层 API,
   // 供 main 经 webContents.executeJavaScript 真实驱动 ts.worker 补全链路
   // (断言 px 命名空间补全 → worker 拉起 + pixelbox.d.ts extraLib 注入均未回退)
   ;(window as unknown as { __pixelboxMonaco?: typeof monaco }).__pixelboxMonaco = monaco
 }
 
-/** 根据文件名推断 Monaco language id */
+/** 根据文件名推断 Monaco language id(先看整名再看扩展名:固件工程大量文件按名识别) */
 export function languageForPath(path: string): string {
   const name = path.toLowerCase()
-  const ext = name.slice(name.lastIndexOf('.') + 1)
+  // basename:兼容 '/' 与 '\' 两种分隔符(渲染层可能收到任一平台风格的路径)
+  const base = name.slice(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1)
+
+  // 按文件名(而非扩展名)识别的固件工程文件
+  if (base === 'cmakelists.txt') return 'cmake'
+  // sdkconfig / sdkconfig.defaults / sdkconfig.old / Kconfig / Kconfig.projbuild → ini 近似高亮
+  if (base.startsWith('sdkconfig') || base.startsWith('kconfig')) return 'ini'
+
+  const ext = base.slice(base.lastIndexOf('.') + 1)
   switch (ext) {
     case 'ts':
     case 'tsx':
@@ -207,6 +428,23 @@ export function languageForPath(path: string): string {
     case 'yml':
     case 'yaml':
       return 'yaml'
+    // 固件工程:C/C++ 用 monaco 内置 basic-languages(全量入口已含 'c'/'cpp' 两个 id)
+    case 'c':
+    case 'h':
+      return 'c'
+    case 'cpp':
+    case 'cc':
+    case 'cxx':
+    case 'hpp':
+    case 'hh':
+    case 'ino':
+      return 'cpp'
+    case 'cmake':
+      return 'cmake'
+    case 'scad':
+      return 'openscad'
+    case 'ini':
+      return 'ini'
     default:
       return 'plaintext'
   }

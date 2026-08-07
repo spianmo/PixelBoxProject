@@ -10,8 +10,12 @@ import { registerBuilderIpc, disposeBuilder } from './builder'
 import { registerDevdIpc, disposeDevd } from './devd'
 import { registerSimBridgeIpc, disposeSimBridge } from './simbridge'
 import { registerShellIpc, wireShellWindowEvents } from './shell'
+import { registerGitIpc, disposeGit } from './git'
+import { registerSearchIpc } from './search'
+import { initAppMenu } from './menu'
 import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProfiles'
 import { registerToolchainIpc, disposeToolchain } from './toolchain'
+import { registerClangdIpc, disposeClangd } from './clangd'
 import { registerProjectScaffoldIpc } from './projectScaffold'
 import { registerPrinterIpc, disposePrinter } from './printer'
 import { registerHardwareExportIpc } from './hardwareExport'
@@ -30,7 +34,8 @@ import {
   registerFullscreenIpc,
   wireFullscreen,
   runFullscreenSmoke,
-  runFullscreenVisualSmoke
+  runFullscreenVisualSmoke,
+  runTrafficLightsDiffSmoke
 } from './fullscreen'
 
 // device-sim:沙箱 iframe 隐藏在页面中,禁用 Chromium 对后台/离屏帧的定时器与渲染节流,
@@ -121,9 +126,12 @@ app.whenReady().then(async () => {
   registerDevdIpc()
   registerSimBridgeIpc()
   registerShellIpc()
+  registerGitIpc() // Git 集成(git:info/status/commit/push/pull…,见 main/git.ts)
+  registerSearchIpc() // 项目内容检索(search:content,IDEA ⇧⌘F)
   registerFullscreenIpc() // 全屏态查询(win:is-fullscreen;变化经 win:fullscreen 广播)
   registerDeviceProfilesIpc()
   registerToolchainIpc()
+  registerClangdIpc() // 固件工程 C/C++ LSP(clangd:start/stop/request/notify)
   registerProjectScaffoldIpc()
   registerPrinterIpc() // 3D 打印机联机(printer:test/pick-gcode/upload/job)
   registerHardwareExportIpc() // 硬件导出(hardware:export → <root>/export/<kind>/)
@@ -140,6 +148,7 @@ app.whenReady().then(async () => {
   // 需要真实落盘值而非默认值(getSettings 带缓存,registerSettingsIpc 已在预热)
   await getSettings()
   const mainWin = createWindow()
+  initAppMenu() // 原生应用菜单(含 Git 顶级菜单;动态分支子菜单随 git 活动去抖重建)
 
   // 冒烟钩子(与 pty.ts 的 PIXELBOX_FORCE_PIPE 同风格):启动即打开设置窗口,
   // 无 UI 驱动手段的环境也能真实走一遍 ?window=settings 渲染链路
@@ -158,6 +167,13 @@ app.whenReady().then(async () => {
   // 精确恢复结果(详见 fullscreen.ts)
   if (process.env.PIXELBOX_SMOKE_FS_VISUAL === '1') {
     mainWin.once('ready-to-show', () => runFullscreenVisualSmoke(mainWin))
+  }
+
+  // 红绿灯一比一对齐冒烟钩子(配套 scripts/traffic-lights-diff-check.mjs):
+  // 窗口态已知矩形(真件基准采样)→ 哨兵进原生全屏(假件采样)→ 哨兵退出
+  // (详见 fullscreen.ts runTrafficLightsDiffSmoke)
+  if (process.env.PIXELBOX_SMOKE_TL_DIFF === '1') {
+    mainWin.once('ready-to-show', () => runTrafficLightsDiffSmoke(mainWin))
   }
 
   // 冒烟钩子(light-theme,无 UI 驱动环境):经 SettingsService 依次切
@@ -255,6 +271,32 @@ app.whenReady().then(async () => {
     })
   }
 
+  // 冒烟钩子(脚手架生成,无 UI 驱动环境):PIXELBOX_SMOKE_SCAFFOLD='<kind>:<目标目录>'
+  // → createProject 生成后立即退出(配套 scripts/firmware-scaffold-check 等外部编译验证)
+  const smokeScaffold = process.env.PIXELBOX_SMOKE_SCAFFOLD
+  if (smokeScaffold && smokeScaffold.includes(':')) {
+    const kind = smokeScaffold.slice(0, smokeScaffold.indexOf(':')) as 'app' | 'firmware' | 'hardware'
+    const location = smokeScaffold.slice(smokeScaffold.indexOf(':') + 1)
+    void (async () => {
+      try {
+        const { createProject } = await import('./projectScaffold')
+        const created = await createProject({
+          kind,
+          name: 'smoke',
+          location,
+          chip: 'esp32s3',
+          appId: 'com.example.smoke',
+          template: 'blank'
+        })
+        console.log(`[scaffold-smoke] OK ${created.root}(kind=${created.kind})`)
+      } catch (err) {
+        process.exitCode = 1
+        console.error(`[scaffold-smoke] FAIL ${String(err)}`)
+      }
+      app.quit()
+    })()
+  }
+
   // 冒烟钩子(硬件设计链路,无 UI 驱动环境):main 侧创建临时 hardware 工程,
   // 经 executeJavaScript 在真实 renderer 走 evaluateDesign(blob worker eval)→
   // 外壳分件 → HardwareViewer 离屏 STL 导出的完整生产链路。
@@ -348,7 +390,9 @@ app.on('before-quit', () => {
   void disposeBuilder()
   disposeDevd()
   disposeSimBridge()
+  disposeGit() // 杀流式 push/pull 进程组 + 关 .git watcher
   disposeToolchain() // 不留后台固件构建/烧录进程
+  disposeClangd() // 杀净 clangd LSP 进程
   disposePrinter() // 中止在飞的打印机请求(长上传不阻塞退出)
   disposeTerminal() // 杀净全部集成终端会话
   disposeToolWindows() // 关净全部独立工具窗

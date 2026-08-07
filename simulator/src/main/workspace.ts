@@ -190,7 +190,16 @@ export function registerWorkspaceIpc(): void {
     await watcher?.close()
     watchedRoot = resolve(root)
     watcher = chokidar.watch(watchedRoot, {
-      ignored: [/(^|[/\\])\../, /node_modules/, /(^|[/\\])dist([/\\]|$)/],
+      // dist 为 app 工程构建产物;build*(build/build_c6/build_p4…)与 managed_components
+      // 为 ESP-IDF 产物 —— v3 起固件任务的 cwd 就是被监听的工作区,idf.py 单次构建写入
+      // 数千文件,不忽略会让 awaitWriteFinish 轮询 + fs-event 广播打满 IPC
+      ignored: [
+        /(^|[/\\])\../,
+        /node_modules/,
+        /(^|[/\\])dist([/\\]|$)/,
+        /(^|[/\\])build([._-][^/\\]*)?([/\\]|$)/,
+        /(^|[/\\])managed_components([/\\]|$)/
+      ],
       ignoreInitial: true,
       persistent: true,
       awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 }

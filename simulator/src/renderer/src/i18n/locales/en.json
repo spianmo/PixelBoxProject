@@ -44,7 +44,8 @@
     "terminal": "Terminal",
     "problems": "Problems",
     "runningDevices": "Running Devices",
-    "hardware": "Hardware Design"
+    "hardware": "Hardware Design",
+    "git": "Git"
   },
   "toolwindow": {
     "hide": "Hide",
@@ -143,6 +144,14 @@
     "unsaved": "Unsaved",
     "closeDirtyConfirm": "{{name}} has unsaved changes. Close anyway?"
   },
+  "editorTabs": {
+    "close": "Close",
+    "closeOthers": "Close Others",
+    "closeUnmodified": "Close Unmodified",
+    "splitRight": "Split Right",
+    "splitDown": "Split Down",
+    "openInOtherGroup": "Open in Other Group"
+  },
   "session": {
     "workspaceGone": "The last workspace no longer exists. Returned to the welcome screen."
   },
@@ -171,6 +180,17 @@
     "placeholder": "Type a file name to fuzzy search…",
     "noWorkspace": "Open a workspace first",
     "empty": "No matching files"
+  },
+  "search": {
+    "placeholder": "Search content in project…",
+    "caseSensitive": "Match case",
+    "wholeWord": "Whole words",
+    "regex": "Regular expression",
+    "empty": "No matches",
+    "badPattern": "Invalid regular expression",
+    "hint": "↑↓ select · Enter open · Esc close",
+    "count": "{{count}} matches",
+    "truncated": "Too many matches; showing first {{count}} (narrow your query)"
   },
   "notifications": {
     "title": "Notifications",
@@ -205,6 +225,7 @@
       "system": "System Settings",
       "editor": "Editor",
       "toolchain": "Firmware Toolchain",
+      "git": "Git",
       "printer": "3D Printer",
       "terminal": "Terminal",
       "keymap": "Keymap"
@@ -217,7 +238,9 @@
       "themeDark": "Dark",
       "themeLight": "Light",
       "themeSystem": "Sync with OS",
-      "themeHint": "Dark, Light, or follow the OS appearance; applies to all windows immediately on Apply/OK"
+      "themeHint": "Dark, Light, or follow the OS appearance; applies to all windows immediately on Apply/OK",
+      "show3dAxes": "3D view axes indicator",
+      "show3dAxesHint": "Show an XYZ axes gizmo in the bottom-left corner of hardware / simulator 3D views (tracks the camera); applies immediately"
     },
     "system": {
       "sectionStartup": "Startup & Exit",
@@ -246,6 +269,8 @@
       "colAction": "Action",
       "colKeys": "Shortcut",
       "quickOpen": "Quick open file",
+      "findInFile": "Find in current file",
+      "findInFiles": "Find in files",
       "save": "Save current file",
       "run": "Run",
       "stop": "Stop",
@@ -506,6 +531,21 @@
       "gerberDone": "Gerber exported to {{dir}}",
       "failed": "Export failed: {{msg}}"
     },
+    "scad": {
+      "title": "OpenSCAD enclosure (design/enclosure.scad)",
+      "desc": "Enclosure as code: editing the .scad re-renders 3D instantly; print export uses a full-quality compile. Built-in module docs appear in editor completions.",
+      "openFile": "Open enclosure.scad",
+      "compiling": "Compiling…",
+      "ok": "Compiled",
+      "metaTitle": "Contract metadata (PB_META)",
+      "metaOuter": "Outer size",
+      "metaBoardTop": "Board top height",
+      "metaScreen": "Screen window",
+      "migrated": "Parametric enclosure migrated to design/enclosure.scad (enclosure.json is no longer used and can be deleted)",
+      "migrating": "Migrating from legacy enclosure.json to OpenSCAD (enclosure.scad is generated after evaluation)…",
+      "logToggle": "Toggle compile log",
+      "exportSlow": "Print export uses a full-quality compile and may take 20-60 s…"
+    },
     "enclosure": {
       "wallMM": "Wall thickness (mm)",
       "clearanceMM": "Board clearance (mm)",
@@ -587,9 +627,120 @@
       "badFile": "Invalid G-code file path"
     }
   },
+  "git": {
+    "viewChanges": "Changes",
+    "viewHistory": "History",
+    "viewBranches": "Branches",
+    "refresh": "Refresh",
+    "commit": "Commit",
+    "push": "Push",
+    "pull": "Pull",
+    "stage": "Stage",
+    "unstage": "Unstage",
+    "discard": "Discard changes",
+    "discardConfirm": "Discard changes in {{name}}? This cannot be undone.",
+    "discarded": "Discarded changes in {{name}}",
+    "init": "Initialize Git Repository",
+    "initDone": "Git repository initialized",
+    "notRepo": "This workspace is not a Git repository",
+    "noWorkspace": "No workspace open",
+    "noGit": "git executable not found. Configure it in Settings › Git",
+    "noChanges": "No changes",
+    "noCommits": "No commits yet",
+    "commitPlaceholder": "Commit message (⌘Enter to commit)",
+    "commitDone": "Committed",
+    "pushDone": "Push finished",
+    "pullDone": "Pull finished",
+    "opLog": "Push / Pull output",
+    "diffVsHead": "Worktree vs HEAD",
+    "group": {
+      "staged": "Staged",
+      "unstaged": "Unstaged",
+      "untracked": "Untracked",
+      "conflicted": "Conflicts"
+    },
+    "branches": "Branches",
+    "switchBranch": "Switch branch",
+    "newBranch": "New Branch…",
+    "newBranchTitle": "New Branch",
+    "newBranchPlaceholder": "Branch name",
+    "checkedOut": "Switched to branch {{name}}",
+    "time": {
+      "justNow": "just now",
+      "minutesAgo": "{{count}} min ago",
+      "hoursAgo": "{{count}} h ago",
+      "daysAgo": "{{count}} d ago"
+    },
+    "settings": {
+      "group": "Git",
+      "path": "git path",
+      "pathPlaceholder": "Leave empty to auto-detect (git on PATH or /usr/bin/git)",
+      "detecting": "Detecting git…",
+      "detected": "Found git {{version}}: {{path}}",
+      "notFound": "git executable not found"
+    },
+    "stageAll": "Stage All",
+    "stageAllDone": "All changes staged",
+    "resolveOurs": "Accept ours",
+    "resolveTheirs": "Accept theirs",
+    "resolveMark": "Mark resolved",
+    "resolveDone": "Conflict resolved: {{name}}",
+    "conflictsResolved": "All conflicts resolved — commit when ready",
+    "currentBranch": "Current branch",
+    "remotes": {
+      "title": "Remotes",
+      "add": "Add Remote…",
+      "nameTitle": "Remote Name",
+      "namePlaceholder": "origin",
+      "urlTitle": "URL for {{name}}",
+      "urlPlaceholder": "https://… or git@…",
+      "editUrl": "Change URL",
+      "remove": "Remove",
+      "removeConfirm": "Remove remote {{name}}?",
+      "empty": "No remotes",
+      "addDone": "Remote {{name}} added",
+      "removeDone": "Remote {{name}} removed",
+      "urlDone": "URL of {{name}} updated"
+    },
+    "errors": {
+      "notRepo": "Not a Git repository",
+      "noGit": "git executable not found (configure in Settings › Git)",
+      "busy": "Another Git operation is in progress",
+      "conflict": "Merge conflicts detected. Resolve them before committing",
+      "authFailed": "Remote authentication failed (check credentials / SSH key)",
+      "timeout": "Git command timed out",
+      "dirtyWorktree": "Uncommitted local changes block this operation",
+      "nothingToCommit": "Nothing staged to commit",
+      "emptyMessage": "Commit message must not be empty",
+      "badRoot": "Workspace path validation failed",
+      "badPaths": "File path validation failed",
+      "badRev": "Invalid revision / branch name",
+      "failed": "Git operation failed",
+      "badRemoteName": "Invalid remote name (letters, digits and _.- only; must not start with -)",
+      "badRemoteUrl": "Invalid remote URL",
+      "remoteExists": "A remote with that name already exists",
+      "noSuchRemote": "No such remote",
+      "badStrategy": "Invalid conflict resolve strategy"
+    }
+  },
+  "menu": {
+    "git": {
+      "title": "Git",
+      "commit": "Commit…",
+      "push": "Push",
+      "pull": "Pull",
+      "stageAll": "Stage All",
+      "newBranch": "New Branch…",
+      "switchBranch": "Switch Branch",
+      "remotes": "Remotes…",
+      "showPanel": "Show Git Tool Window"
+    }
+  },
   "common": {
     "ok": "OK",
     "cancel": "Cancel",
-    "error": "Error"
+    "error": "Error",
+    "yes": "Yes",
+    "no": "No"
   }
 }

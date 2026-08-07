@@ -83,8 +83,10 @@ function PrinterPage(): React.JSX.Element {
       const info = await window.api.printerTest()
       setTest({ status: 'ok', info })
     } catch (err) {
+      // Electron 包装为 "Error invoking remote method 'printer:test': Error: printer:<code>",
+      // 首个匹配恒为通道名 → 取最后一个匹配才是真实错误码
       const raw = err instanceof Error ? err.message : String(err)
-      const code = /printer:(\w+)/.exec(raw)?.[1] ?? 'requestFailed'
+      const code = [...raw.matchAll(/printer:(\w+)/g)].pop()?.[1] ?? 'requestFailed'
       setTest({ status: 'error', code, raw })
     }
   }

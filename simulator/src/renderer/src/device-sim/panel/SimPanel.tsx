@@ -294,7 +294,8 @@ function ToolStrip({
       <ToolStripButton title={t('sim.toolbar.screenshot')} onClick={() => void screenshot()}>
         <LuCamera />
       </ToolStripButton>
-      <ToolStripButton title={t('sim.toolbar.rotate')} onClick={() => engine.rotateScreen()}>
+      {/* 3D 视图不应用显示旋转(纹理旋转与触摸 UV 映射冲突),禁用避免静默 no-op */}
+      <ToolStripButton title={t('sim.toolbar.rotate')} disabled={viewMode === '3d'} onClick={() => engine.rotateScreen()}>
         <LuRotateCw />
       </ToolStripButton>
       <ToolStripButton title={t('sim.toolbar.volume')} onClick={() => engine.setMuted(!ui.muted)}>

@@ -6,7 +6,7 @@
 import { useTranslation } from 'react-i18next'
 import type { SettingsPage } from '../registry'
 import { CAT_APPEARANCE_BEHAVIOR } from '../categories'
-import { SettingsSection, SelectField } from '../controls'
+import { SettingsSection, SelectField, CheckboxField } from '../controls'
 
 function AppearancePage(): React.JSX.Element {
   const { t } = useTranslation()
@@ -33,6 +33,11 @@ function AppearancePage(): React.JSX.Element {
           ]}
           hint={t('settings.appearance.themeHint')}
         />
+        <CheckboxField
+          path="appearance.show3dAxes"
+          label={t('settings.appearance.show3dAxes')}
+          hint={t('settings.appearance.show3dAxesHint')}
+        />
       </SettingsSection>
     </div>
   )
@@ -42,7 +47,7 @@ export const page: SettingsPage = {
   id: 'appearance',
   category: [CAT_APPEARANCE_BEHAVIOR],
   titleKey: 'settings.page.appearance',
-  keywords: ['外观', '语言', '主题', '中文', 'appearance', 'language', 'theme', 'dark', 'light'],
+  keywords: ['外观', '语言', '主题', '中文', '坐标轴', 'appearance', 'language', 'theme', 'dark', 'light', 'axes', '3d'],
   order: 10,
   Component: AppearancePage
 }

@@ -36,6 +36,7 @@ export type ToolWindowId =
   | 'project'
   | 'structure'
   | 'devices'
+  | 'git'
   | 'running'
   | 'hardware'
   | 'logs'
@@ -76,6 +77,7 @@ const ALL_IDS: readonly ToolWindowId[] = [
   'project',
   'structure',
   'devices',
+  'git',
   'running',
   'hardware',
   'logs',

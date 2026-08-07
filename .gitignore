@@ -11,3 +11,6 @@ firmware/components/jsvm/quickjs-ng/
 .espressif/
 .idea/
 firmware/build_*/
+
+# Claude Code 本地会话产物
+.claude/

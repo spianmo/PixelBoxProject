@@ -172,6 +172,11 @@ export function HIcon(p: IconProps): React.JSX.Element {
   return <Badge bg={BADGE_PURPLE} fg={DARK} label="H" {...p} />
 }
 
+/** OpenSCAD(.scad,外壳即代码):黄底立方体线框 */
+export function ScadIcon(p: IconProps): React.JSX.Element {
+  return <Badge bg={BADGE_YELLOW} fg={DARK} label="3D" {...p} />
+}
+
 /** React 组件(⚛ 原子轨道):tsx 蓝 / jsx 黄 */
 function AtomIcon({ color, ...p }: IconProps & { color: string }): React.JSX.Element {
   return (

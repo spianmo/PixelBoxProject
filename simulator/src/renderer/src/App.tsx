@@ -8,7 +8,7 @@
  *       └ 状态栏(26px)
  * 全部工具窗可拖拽调宽/高、可折叠;Cmd+P 快速打开文件
  */
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   LuCircuitBoard,
@@ -16,6 +16,7 @@ import {
   LuEye,
   LuFolderOpen,
   LuFolderTree,
+  LuGitBranch,
   LuHammer,
   LuListTree,
   LuMonitorSmartphone,
@@ -36,6 +37,8 @@ import type {
 } from '../../shared/ipc-types'
 import { reloadRunningSessions, useAnySimRunning } from './device-sim'
 import { EditorHost, type EditorHostHandle } from './editor/EditorHost'
+import { modelRegistry } from './editor/modelRegistry'
+import { setEditorOpenHandler, monaco } from './editor/monacoSetup'
 import { FileTree } from './components/FileTree'
 import { EditorTabs, type TabInfo } from './components/EditorTabs'
 import { DragHandle } from './components/DragHandle'
@@ -60,6 +63,7 @@ import { RunningDevicesPanel } from './shell/RunningDevicesPanel'
 import { DeviceManagerPanel } from './shell/DeviceManagerPanel'
 import { DeviceWizardHost } from './shell/DeviceWizardModal'
 import { QuickOpen } from './shell/QuickOpen'
+import { SearchInFiles } from './shell/SearchInFiles'
 import { FlashDialog } from './shell/FlashDialog'
 import { NewProjectModal } from './shell/NewProjectModal'
 import { StructureView } from './editor/StructureView'
@@ -79,6 +83,9 @@ import {
 } from './shell/store'
 import { getAppSettings, subscribeSettings } from './settings/store'
 import { loadMainLayout, saveMainLayout } from './shell/layoutState'
+import { GitPanel } from './git/GitPanel'
+import { DiffView, type DiffSpec } from './editor/DiffView'
+import { gitFileStatusMap, gitChangeCount, initGitStore, setGitRoot, useGitState } from './git/store'
 
 const MAX_LOG_LINES = 2000
 
@@ -90,8 +97,8 @@ const HardwareDesignPanel = lazy(() =>
 /** 启动恢复只跑一次(StrictMode 双挂载 / 热重载防重入) */
 let sessionRestoreStarted = false
 
-/** 左侧工具窗:项目树 / 设备管理器(阶段 2) */
-type LeftTool = 'project' | 'devices' | null
+/** 左侧工具窗:项目树 / 设备管理器 / Git */
+type LeftTool = 'project' | 'devices' | 'git' | null
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v))
@@ -111,6 +118,126 @@ function isOverlayMode(m: ToolWindowViewMode): boolean {
 function fmtSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
   return `${(bytes / 1024).toFixed(1)} KB`
+}
+
+/**
+ * 编辑器组(分屏单元):页签条 + EditorHost + Markdown 预览 / Git diff 页签的
+ * 组内渲染。Markdown 查看模式为组内状态(每组各自按自己的激活页签判定);
+ * diff/虚拟页签的合成键可能以 .md 结尾,判定时排除(历史缺陷回归防线)。
+ */
+function EditorGroupView(props: {
+  editorRef: React.RefObject<EditorHostHandle>
+  tabs: TabInfo[]
+  activePath: string | null
+  dirtyPaths: ReadonlySet<string>
+  workspaceRoot: string | null
+  /** 空页签时是否显示欢迎语(仅单组模式的组 0) */
+  showWelcome: boolean
+  splitDir: 'row' | 'col' | null
+  onSelect: (path: string) => void
+  onClose: (path: string) => void
+  onCloseOthers: (path: string) => void
+  onCloseUnmodified: () => void
+  onSplit: (dir: 'row' | 'col', path: string) => void
+  onFocused: () => void
+  onCursorChange: (line: number, column: number) => void
+  onViewStateChange: () => void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const { tabs, activePath, editorRef } = props
+  const activeDiffTab = tabs.find((tb) => tb.path === activePath && tb.kind === 'diff')
+  const activeTabSpecial = tabs.some(
+    (tb) => tb.path === activePath && (tb.kind === 'diff' || tb.virtual === true)
+  )
+  const isMdFile = activePath !== null && !activeTabSpecial && /\.(md|markdown)$/i.test(activePath)
+  const [mdMode, setMdModeState] = useState<MdViewMode>('split')
+  useEffect(() => {
+    if (isMdFile && activePath) setMdModeState(getMdViewMode(activePath))
+  }, [activePath, isMdFile])
+  const changeMdMode = (mode: MdViewMode): void => {
+    if (!activePath) return
+    setMdModeState(mode)
+    setMdViewMode(activePath, mode)
+  }
+  return (
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-ink-900"
+      onPointerDownCapture={props.onFocused}
+    >
+      {tabs.length > 0 && (
+        <EditorTabs
+          tabs={tabs}
+          activePath={activePath}
+          dirtyPaths={props.dirtyPaths}
+          onSelect={props.onSelect}
+          onClose={props.onClose}
+          onCloseOthers={props.onCloseOthers}
+          onCloseUnmodified={props.onCloseUnmodified}
+          onSplit={props.onSplit}
+          splitDir={props.splitDir}
+          trailing={
+            // md 文件:编辑 / 分屏 / 预览 切换按钮组(记忆每文件模式)
+            isMdFile ? (
+              <div className="flex items-center gap-0.5 rounded border border-ink-700 p-0.5">
+                {(
+                  [
+                    { mode: 'edit', icon: <LuPencil />, label: t('markdown.modeEdit') },
+                    { mode: 'split', icon: <LuColumns2 />, label: t('markdown.modeSplit') },
+                    { mode: 'preview', icon: <LuEye />, label: t('markdown.modePreview') }
+                  ] as Array<{ mode: MdViewMode; icon: React.ReactNode; label: string }>
+                ).map((b) => (
+                  <button
+                    key={b.mode}
+                    title={b.label}
+                    onClick={() => changeMdMode(b.mode)}
+                    className={`flex h-5 w-6 items-center justify-center rounded text-[13px] ${
+                      mdMode === b.mode
+                        ? 'bg-jb-selection text-jb-text'
+                        : 'text-jb-muted hover:bg-ink-800 hover:text-jb-text'
+                    }`}
+                  >
+                    {b.icon}
+                  </button>
+                ))}
+              </div>
+            ) : undefined
+          }
+        />
+      )}
+      <div className="relative flex min-h-0 flex-1">
+        {/* 预览模式 / diff 页签:编辑器隐藏但保持挂载(monaco 实例/模型不销毁) */}
+        <div
+          className={`h-full min-w-0 ${
+            (isMdFile && mdMode === 'preview') || activeDiffTab ? 'hidden' : 'flex-1'
+          }`}
+        >
+          <EditorHost
+            ref={editorRef}
+            onCursorChange={props.onCursorChange}
+            onViewStateChange={props.onViewStateChange}
+            onFocused={props.onFocused}
+          />
+        </div>
+        {/* Git diff 页签(EditorHost hidden 兄弟节点;key 按页签路径,切换即重建) */}
+        {activeDiffTab?.diff && props.workspaceRoot && (
+          <div className="h-full min-w-0 flex-1">
+            <DiffView key={activeDiffTab.path} root={props.workspaceRoot} spec={activeDiffTab.diff} />
+          </div>
+        )}
+        {isMdFile && activePath && mdMode !== 'edit' && (
+          <>
+            {mdMode === 'split' && <div className="w-px shrink-0 bg-ink-700" />}
+            <MarkdownPreview path={activePath} editorRef={editorRef} />
+          </>
+        )}
+        {props.showWelcome && tabs.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center bg-ink-900">
+            <span className="text-[13px] text-ink-500">{t('editor.welcome')}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export default function App(): React.JSX.Element {
@@ -146,6 +273,8 @@ export default function App(): React.JSX.Element {
   const rightOverlayRef = useRef<HTMLDivElement>(null)
   const bottomOverlayRef = useRef<HTMLDivElement>(null)
   const [quickOpenVisible, setQuickOpenVisible] = useState(false)
+  // 项目内容检索弹窗(IDEA ⇧⌘F)
+  const [searchVisible, setSearchVisible] = useState(false)
   // 结构视图(左侧面板下分栏;允许只开结构)
   const [structureOpen, setStructureOpen] = useState(initialLayout.structureOpen)
   const [structTopHeight, setStructTopHeight] = useState(initialLayout.structTopHeight)
@@ -182,12 +311,26 @@ export default function App(): React.JSX.Element {
   // ---- 工作区 / 编辑器 ----
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
   const [gitBranch, setGitBranch] = useState<string | null>(null)
+  // 编辑器分组(IDE v3.x 分屏):组 0 常驻(tabs/activePath/editorRef),
+  // 组 1 仅分屏时存在(splitDir 非 null);activeGroupIdx 决定新文件落点与
+  // StructureView/状态栏等「当前文件」语义。模型层在 modelRegistry(refCount),
+  // 同一文件可同时在两组打开互不干扰
   const [tabs, setTabs] = useState<TabInfo[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
+  const [tabs2, setTabs2] = useState<TabInfo[]>([])
+  const [activePath2, setActivePath2] = useState<string | null>(null)
+  const [splitDir, setSplitDir] = useState<'row' | 'col' | null>(null)
+  const [activeGroupIdx, setActiveGroupIdx] = useState<0 | 1>(0)
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set())
-  const [closingDirty, setClosingDirty] = useState<string | null>(null)
+  const [closingDirty, setClosingDirty] = useState<{ path: string; gi: 0 | 1 } | null>(null)
   const [cursor, setCursor] = useState<{ line: number; column: number } | null>(null)
   const editorRef = useRef<EditorHostHandle>(null)
+  const editorRef2 = useRef<EditorHostHandle>(null)
+  const activeGroupIdxRef = useRef<0 | 1>(0)
+  activeGroupIdxRef.current = splitDir === null ? 0 : activeGroupIdx
+  /** 活动组的编辑器 handle(组 1 未挂载时回退组 0) */
+  const activeEditor = (): EditorHostHandle | null =>
+    (activeGroupIdxRef.current === 1 ? editorRef2.current : editorRef.current) ?? editorRef.current
 
   // ---- 日志 / 问题 ----
   const [appLogs, setAppLogs] = useState<LogLine[]>([])
@@ -210,18 +353,25 @@ export default function App(): React.JSX.Element {
   projectKindRef.current = projectKind
   /** project:info 请求序号(快速切换工作区时丢弃过期结果) */
   const projectInfoSeqRef = useRef(0)
+  /** 上次已应用的 manifest.chip(pixelbox.json 任意 fs-event 都会重取项目信息,
+   *  仅在 manifest.chip 真实变化时才同步下拉,避免覆盖用户手动选择的芯片) */
+  const appliedManifestChipRef = useRef<string | null>(null)
 
-  /** 读取工作区项目信息:kind 存 state 供门控;manifest.chip 合法时同步外壳芯片选择 */
+  /** 读取工作区项目信息:kind 存 state 供门控;manifest.chip 合法且有变化时同步外壳芯片选择 */
   const refreshProjectInfo = useCallback(async (root: string): Promise<void> => {
     const seq = ++projectInfoSeqRef.current
     try {
       const info = await window.api.projectInfo(root)
       if (seq !== projectInfoSeqRef.current) return
       setProjectKind(info.kind)
-      // 固件/硬件工程打开时按 manifest.chip 切换目标芯片(非法值忽略)
-      if (info.chip && (CHIP_TARGETS as readonly string[]).includes(info.chip)) {
-        setChip(info.chip as ChipTarget)
+      // 固件/硬件工程打开时按 manifest.chip 切换目标芯片(非法值忽略);
+      // 同值重复事件(版本号改动等)不再 setChip,保留用户下拉选择
+      const manifestChip =
+        info.chip && (CHIP_TARGETS as readonly string[]).includes(info.chip) ? info.chip : null
+      if (manifestChip && manifestChip !== appliedManifestChipRef.current) {
+        setChip(manifestChip as ChipTarget)
       }
+      appliedManifestChipRef.current = manifestChip
     } catch {
       if (seq === projectInfoSeqRef.current) setProjectKind(null)
     }
@@ -232,8 +382,7 @@ export default function App(): React.JSX.Element {
   const [flashOpen, setFlashOpen] = useState(false)
   // 新建项目向导
   const [newProjectOpen, setNewProjectOpen] = useState(false)
-  // Markdown 查看模式(仅活动文件为 md 时生效;切文件时从记忆恢复)
-  const [mdMode, setMdModeState] = useState<MdViewMode>('split')
+  // (Markdown 查看模式状态已下沉到 EditorGroupView,每组独立)
   /** 烧录默认波特率(设置页持久化;打开烧录对话框时刷新) */
   const [defaultBaud, setDefaultBaud] = useState(460800)
 
@@ -463,6 +612,35 @@ export default function App(): React.JSX.Element {
         setQuickOpenVisible((v) => !v)
         return
       }
+      // IDEA 同款检索键位:⇧⌘O 文件搜索(复用 QuickOpen)/ ⇧⌘F 项目内容检索 /
+      // ⌘F 文件内查找(聚焦活动编辑器并唤起 Monaco 查找;焦点在终端/输入框时
+      // 不抢 —— 终端自带 ⌘F 搜索,输入框走浏览器原生)
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault()
+        e.stopPropagation()
+        setQuickOpenVisible((v) => !v)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSearchVisible((v) => !v)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        const target = e.target as HTMLElement | null
+        const inOther =
+          target instanceof HTMLElement &&
+          target.closest('input,textarea,[contenteditable],.xterm') !== null
+        const editor = activeEditor()?.getEditor()
+        if (!inOther && editor && editor.getModel()) {
+          e.preventDefault()
+          e.stopPropagation()
+          editor.focus()
+          editor.trigger('keyboard', 'actions.find', null)
+        }
+        return
+      }
       // 运行(JetBrains 默认键位):macOS ⌃R;其他平台 ⇧F10
       const runHit = isMac
         ? e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'r'
@@ -487,7 +665,8 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // git 分支:打开工作区时读取,之后 8s 轮询(切分支/提交后自动跟随)
+  // git 分支:打开工作区时读取;git:changed 即时刷新(.git watcher)+ 8s 轮询兜底
+  // (watcher 覆盖不到的场景,如 git 目录被整体替换)
   useEffect(() => {
     if (!workspaceRoot) {
       setGitBranch(null)
@@ -500,11 +679,51 @@ export default function App(): React.JSX.Element {
     }
     void refresh()
     const timer = window.setInterval(() => void refresh(), 8000)
+    const unsubChanged = window.api.onGitChanged((ev) => {
+      if (ev.root === workspaceRoot) void refresh()
+    })
     return () => {
       alive = false
       window.clearInterval(timer)
+      unsubChanged()
     }
   }, [workspaceRoot])
+
+  // ---- Git 集成:store 全局订阅(幂等)+ 工作区切换换根 ----
+  useEffect(() => {
+    initGitStore()
+  }, [])
+  // 原生 Git 菜单的 UI 类动作(menuBridge 派发):App 只负责打开左侧 Git 工具窗,
+  // 面板挂载后自行消费同一事件(聚焦提交框/切分支视图等)
+  useEffect(() => {
+    const onGitUi = (): void => setLeftTool('git')
+    window.addEventListener('pixelbox:git-ui', onGitUi)
+    return () => window.removeEventListener('pixelbox:git-ui', onGitUi)
+  }, [])
+  useEffect(() => {
+    setGitRoot(workspaceRoot)
+  }, [workspaceRoot])
+  const gitState = useGitState()
+  // FileTree git 着色映射(status 变化才重算)
+  const gitStatusMap = useMemo(() => gitFileStatusMap(gitState), [gitState])
+  // 左轨道 Git 图标徽标 = 变更文件数(去重)
+  const gitBadge = useMemo(() => gitChangeCount(gitState), [gitState])
+
+  /** 打开 diff 页签(GitPanel 注入;path 用合成键 pbdiff:// 保证唯一,不进会话)——进活动组 */
+  const handleOpenDiff = useCallback((spec: DiffSpec): void => {
+    const key = `pbdiff://${spec.leftRev}..${spec.rightRev}/${spec.relPath}`
+    const gi = activeGroupIdxRef.current
+    const g = gi === 1
+      ? { setTabs: setTabs2, setActive: setActivePath2 }
+      : { setTabs, setActive: setActivePath }
+    g.setTabs((prev) => {
+      const existing = prev.find((tb) => tb.path === key)
+      if (existing) return prev
+      return [...prev, { path: key, name: spec.title, kind: 'diff', diff: spec }]
+    })
+    g.setActive(key)
+    // eslint 无此工程:setter 恒稳定
+  }, [])
 
   // ---- 动作 ----
 
@@ -519,37 +738,21 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  /** 切换到新工作区(重置编辑器 / 停止运行 / 开启监听) */
-  const applyWorkspace = useCallback(
-    async (root: string): Promise<void> => {
-      for (const tab of tabs) editorRef.current?.closeFile(tab.path)
-      setTabs([])
-      setActivePath(null)
-      setCursor(null)
-      setDirtyPaths(new Set())
-      if (running) handleStop()
-      setWorkspaceRoot(root)
-      setProjectKind(null) // 先复位门控,project:info 返回后按真实类型放开
-      setLeftTool('project')
-      await window.api.watchWorkspace(root)
-      await refreshProjectInfo(root)
-    },
-    // eslint 无此工程:handleStop 为组件内函数,依赖 tabs/running 即可
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tabs, running]
-  )
-  // 启动恢复 / 冒烟钩子经 ref 调用(挂载一次的 effect 不依赖其闭包版本)
-  const applyWorkspaceRef = useRef(applyWorkspace)
-  applyWorkspaceRef.current = applyWorkspace
-
   // ---- 会话恢复:编辑器会话(标签 / 激活 / viewState)去抖推送 main 落盘 ----
-  // main 侧内存即时 + 500ms 去抖写 sessions/,退出时 close/before-quit 双保险同步兜底
+  // main 侧内存即时 + 500ms 去抖写 <root>/.ide/session.json,
+  // 退出时 close/before-quit 双保险同步兜底
   const sessionReadyRef = useRef(false) // 恢复完成前不推送(避免空初值覆盖上次会话)
   const sessionSaveTimerRef = useRef<number | null>(null)
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
   const activePathValRef = useRef(activePath)
   activePathValRef.current = activePath
+  const tabs2Ref = useRef(tabs2)
+  tabs2Ref.current = tabs2
+  const activePath2ValRef = useRef(activePath2)
+  activePath2ValRef.current = activePath2
+  const splitDirRef = useRef(splitDir)
+  splitDirRef.current = splitDir
 
   const pushSessionUpdate = useCallback((): void => {
     const root = workspaceRootRef.current
@@ -557,16 +760,32 @@ export default function App(): React.JSX.Element {
       window.api.sessionUpdate({ workspaceRoot: null }) // 欢迎页:启动不再恢复工作区
       return
     }
+    // 虚拟库页签(⌘+点击打开的 d.ts)与 diff 页签不进会话:无磁盘文件,恢复时 readFile 必失败
+    const persistGroup = (
+      list: TabInfo[],
+      active: string | null,
+      ref: React.RefObject<EditorHostHandle | null>
+    ): { tabs: { path: string; viewState: unknown | null }[]; activePath: string | null } => {
+      const real = list.filter((tb) => !tb.virtual && tb.kind !== 'diff')
+      const activeSpecial = list.some((tb) => tb.path === active && (tb.virtual || tb.kind === 'diff'))
+      return {
+        // 脏文件内容不落盘(以保存过的为准),只记路径与 viewState(滚动/光标)
+        tabs: real.map((tb) => ({ path: tb.path, viewState: ref.current?.getViewState(tb.path) ?? null })),
+        activePath: activeSpecial ? null : active
+      }
+    }
+    const g0 = persistGroup(tabsRef.current, activePathValRef.current, editorRef)
+    const g1 = persistGroup(tabs2Ref.current, activePath2ValRef.current, editorRef2)
     window.api.sessionUpdate({
       workspaceRoot: root,
       session: {
         root,
-        // 脏文件内容不落盘(以保存过的为准),只记路径与 viewState(滚动/光标)
-        tabs: tabsRef.current.map((tb) => ({
-          path: tb.path,
-          viewState: editorRef.current?.getViewState(tb.path) ?? null
-        })),
-        activePath: activePathValRef.current,
+        // 旧字段 = 组 0(旧版 IDE 仍可读);分屏经 groups/splitDir 附加字段还原
+        tabs: g0.tabs,
+        activePath: g0.activePath,
+        ...(splitDirRef.current !== null && g1.tabs.length > 0
+          ? { groups: [g0, g1], splitDir: splitDirRef.current }
+          : {}),
         savedAt: Date.now()
       }
     })
@@ -581,12 +800,165 @@ export default function App(): React.JSX.Element {
     }, 600)
   }, [pushSessionUpdate])
 
-  // 标签 / 激活 / 工作区 / 光标变化 → 去抖推送(滚动经 EditorHost onViewStateChange)
+  // 标签 / 激活 / 工作区 / 光标 / 分屏变化 → 去抖推送(滚动经 EditorHost onViewStateChange)
   useEffect(() => {
     scheduleSessionSave()
-  }, [tabs, activePath, workspaceRoot, cursor, scheduleSessionSave])
+  }, [tabs, activePath, tabs2, activePath2, splitDir, workspaceRoot, cursor, scheduleSessionSave])
 
-  // ---- 会话恢复:启动时重开上次工作区 + 编辑器标签(受「恢复上次会话」开关控制) ----
+  /**
+   * 切换到新工作区(重置编辑器 / 停止运行 / 开启监听),随后恢复该工程的
+   * .ide/session.json 会话(JetBrains 式:每个工程各自记住上次打开的标签与光标)。
+   * 启动恢复 / 最近列表 / 新建项目 / 手动打开 / 冒烟钩子全部走本函数,恢复链路唯一。
+   */
+  // applyWorkspace 重入序号:恢复循环 await 窗口内再次切工作区时,旧 run 立刻让位
+  // (否则两条恢复循环交叉:旧 run 的 finally 会以新 root + 旧 tabs 污染 session.json)
+  const applyWorkspaceSeqRef = useRef(0)
+
+  const applyWorkspace = useCallback(
+    async (root: string): Promise<void> => {
+      const seq = ++applyWorkspaceSeqRef.current
+      const stale = (): boolean => seq !== applyWorkspaceSeqRef.current
+      // 离开旧工作区:立即推送最终会话(光标/滚动以此刻 Monaco 实况为准,
+      // 不等 600ms 去抖 —— A→B→A 快速切换也能拿回 A 的精确位置),
+      // 随后挂起推送:恢复窗口内 tabs 清空/重开的中间态不得覆盖两侧已存会话
+      if (sessionReadyRef.current) pushSessionUpdate()
+      sessionReadyRef.current = false
+      if (sessionSaveTimerRef.current !== null) {
+        window.clearTimeout(sessionSaveTimerRef.current)
+        sessionSaveTimerRef.current = null
+      }
+      try {
+        for (const tab of tabsRef.current) editorRef.current?.closeFile(tab.path)
+        for (const tab of tabs2Ref.current) editorRef2.current?.closeFile(tab.path)
+        setTabs([])
+        tabsRef.current = [] // 手动同步 ref:恢复结束的立即推送不等重渲染
+        setActivePath(null)
+        activePathValRef.current = null
+        setTabs2([])
+        tabs2Ref.current = []
+        setActivePath2(null)
+        activePath2ValRef.current = null
+        setSplitDir(null)
+        splitDirRef.current = null
+        setActiveGroupIdx(0)
+        setCursor(null)
+        setDirtyPaths(new Set())
+        if (runningRef.current) handleStop()
+        setWorkspaceRoot(root)
+        workspaceRootRef.current = root
+        setProjectKind(null) // 先复位门控,project:info 返回后按真实类型放开
+        appliedManifestChipRef.current = null // 新工作区打开时 manifest.chip 必定重新应用
+        setLeftTool('project')
+        await window.api.watchWorkspace(root)
+        if (stale()) return
+        await refreshProjectInfo(root)
+        if (stale()) return
+        // 恢复该工程会话(main 侧优先级:内存待落盘 > .ide/session.json > 旧版迁移;
+        // 新建工程无会话 → null,保持空编辑器,由调用方打开入口文件)
+        const session = await window.api.sessionForRoot(root).catch(() => null)
+        if (stale()) return
+        let opened = 0
+        let skipped = 0
+        // 分组会话:groups/splitDir 存在则双组恢复;旧格式(平铺 tabs)进组 0。
+        // 组 1 的 EditorHost 要等 splitDir 置位重渲染后才挂载,其 openFile 延后执行
+        const wantedGroups =
+          session?.groups && session.groups.length > 0
+            ? session.groups.slice(0, 2)
+            : session
+              ? [{ tabs: session.tabs, activePath: session.activePath }]
+              : []
+        const restoredByGroup: TabInfo[][] = [[], []]
+        for (let gi = 0; gi < wantedGroups.length; gi++) {
+          const ref = gi === 1 ? editorRef2 : editorRef
+          for (const tab of wantedGroups[gi].tabs ?? []) {
+            if (stale()) {
+              for (const tb of restoredByGroup.flat()) editorRef.current?.closeFile(tb.path)
+              return
+            }
+            if (gi === 0) {
+              try {
+                await ref.current?.openFile(tab.path)
+                if (tab.viewState) ref.current?.restoreViewState(tab.path, tab.viewState)
+                restoredByGroup[0].push({ path: tab.path, name: baseName(tab.path) })
+                opened++
+              } catch {
+                skipped++ // 文件已删除:静默跳过
+              }
+            } else {
+              // 组 1:先登记页签(splitDir 置位后其 EditorHost 挂载,见下方延后 open)
+              restoredByGroup[1].push({ path: tab.path, name: baseName(tab.path) })
+            }
+          }
+        }
+        if (stale()) {
+          for (const tb of restoredByGroup[0]) editorRef.current?.closeFile(tb.path)
+          return
+        }
+        if (restoredByGroup[0].length > 0) {
+          setTabs(restoredByGroup[0])
+          tabsRef.current = restoredByGroup[0]
+          const wanted = wantedGroups[0]?.activePath
+          const active =
+            wanted && restoredByGroup[0].some((tb) => tb.path === wanted)
+              ? wanted
+              : restoredByGroup[0][restoredByGroup[0].length - 1].path
+          setActivePath(active)
+          activePathValRef.current = active
+          editorRef.current?.setActive(active)
+          window.api.sessionReport(
+            `已恢复工作区 ${root}:标签 ${opened} 个(缺失跳过 ${skipped}),激活 ${baseName(active)}`
+          )
+        }
+        if (restoredByGroup[1].length > 0 && session?.splitDir) {
+          const g1Tabs = restoredByGroup[1]
+          const g1States = wantedGroups[1]?.tabs ?? []
+          setTabs2(g1Tabs)
+          tabs2Ref.current = g1Tabs
+          setSplitDir(session.splitDir)
+          splitDirRef.current = session.splitDir
+          const wanted1 = wantedGroups[1]?.activePath
+          const active1 =
+            wanted1 && g1Tabs.some((tb) => tb.path === wanted1)
+              ? wanted1
+              : g1Tabs[g1Tabs.length - 1].path
+          setActivePath2(active1)
+          activePath2ValRef.current = active1
+          // 组 1 EditorHost 下一帧才挂载:延后打开(文件缺失静默剔除该页签)
+          window.setTimeout(() => {
+            void (async () => {
+              for (const tb of g1Tabs) {
+                try {
+                  await editorRef2.current?.openFile(tb.path)
+                  const vs = g1States.find((s) => s.path === tb.path)?.viewState
+                  if (vs) editorRef2.current?.restoreViewState(tb.path, vs)
+                } catch {
+                  setTabs2((prev) => prev.filter((x) => x.path !== tb.path))
+                }
+              }
+              editorRef2.current?.setActive(active1)
+            })()
+          }, 0)
+        }
+      } finally {
+        // 恢复结束:放开推送并立即登记一次(lastWorkspaceRoot 指向新根 +
+        // 恢复后的会话幂等写回;失败路径同样执行,避免推送永久挂起)。
+        // 已被新 run 接管时不动任何全局态:由最新 run 的 finally 统一收口
+        if (!stale()) {
+          sessionReadyRef.current = true
+          pushSessionUpdate()
+        }
+      }
+    },
+    // eslint 无此工程:handleStop 为组件内函数声明(提升可见),状态经 ref 读取
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pushSessionUpdate, refreshProjectInfo]
+  )
+  // 启动恢复 / 冒烟钩子经 ref 调用(挂载一次的 effect 不依赖其闭包版本)
+  const applyWorkspaceRef = useRef(applyWorkspace)
+  applyWorkspaceRef.current = applyWorkspace
+
+  // ---- 会话恢复:启动时重开上次工作区(受「恢复上次会话」开关控制;
+  //      标签/光标恢复在 applyWorkspace 内完成,与切换工作区共用同一链路) ----
   useEffect(() => {
     if (sessionRestoreStarted) return
     sessionRestoreStarted = true
@@ -614,39 +986,12 @@ export default function App(): React.JSX.Element {
           return
         }
         await applyWorkspaceRef.current(root)
-        let opened = 0
-        let skipped = 0
-        const restoredTabs: TabInfo[] = []
-        for (const tab of info.session?.tabs ?? []) {
-          try {
-            await editorRef.current?.openFile(tab.path)
-            if (tab.viewState) editorRef.current?.restoreViewState(tab.path, tab.viewState)
-            restoredTabs.push({ path: tab.path, name: baseName(tab.path) })
-            opened++
-          } catch {
-            skipped++ // 文件已删除:静默跳过
-          }
-        }
-        let active: string | null = null
-        if (restoredTabs.length > 0) {
-          setTabs(restoredTabs)
-          const wanted = info.session?.activePath
-          active =
-            wanted && restoredTabs.some((tb) => tb.path === wanted)
-              ? wanted
-              : restoredTabs[restoredTabs.length - 1].path
-          setActivePath(active)
-          editorRef.current?.setActive(active)
-        }
-        window.api.sessionReport(
-          `已恢复工作区 ${root}:标签 ${opened} 个(缺失跳过 ${skipped}),激活 ${active ? baseName(active) : '(无)'}`
-        )
       } catch (err) {
         window.api.sessionReport(
           `恢复失败(回欢迎页):${err instanceof Error ? err.message : String(err)}`
         )
       } finally {
-        sessionReadyRef.current = true // 恢复流程结束后才开始记录新会话
+        sessionReadyRef.current = true // 欢迎页早退分支也放开推送(恢复分支已在 applyWorkspace 内放开)
       }
     })()
     // eslint 无此工程:仅首挂载执行一次(模块级 sessionRestoreStarted 防重入)
@@ -698,82 +1043,249 @@ export default function App(): React.JSX.Element {
   }
 
   const handleOpenFile = useCallback((path: string): void => {
-    setTabs((prev) => (prev.some((tb) => tb.path === path) ? prev : [...prev, { path, name: baseName(path) }]))
-    setActivePath(path)
-    void editorRef.current?.openFile(path)
+    const gi = activeGroupIdxRef.current
+    const g = gi === 1
+      ? { setTabs: setTabs2, setActive: setActivePath2, ref: editorRef2 }
+      : { setTabs, setActive: setActivePath, ref: editorRef }
+    g.setTabs((prev) => (prev.some((tb) => tb.path === path) ? prev : [...prev, { path, name: baseName(path) }]))
+    g.setActive(path)
+    void g.ref.current?.openFile(path)
+    // eslint 无此工程:setter/ref 恒稳定
   }, [])
 
-  const closeTab = useCallback((path: string): void => {
-    editorRef.current?.closeFile(path)
-    setDirtyPaths((prev) => {
-      if (!prev.has(path)) return prev
-      const next = new Set(prev)
-      next.delete(path)
-      return next
+  /** 打开文件并定位行列(项目内容检索的结果跳转;等模型就绪后 revealAt) */
+  const openFileAt = useCallback((path: string, line: number, column: number): void => {
+    const gi = activeGroupIdxRef.current
+    const g = gi === 1
+      ? { setTabs: setTabs2, setActive: setActivePath2, ref: editorRef2 }
+      : { setTabs, setActive: setActivePath, ref: editorRef }
+    g.setTabs((prev) => (prev.some((tb) => tb.path === path) ? prev : [...prev, { path, name: baseName(path) }]))
+    g.setActive(path)
+    void g.ref.current
+      ?.openFile(path)
+      .then(() => g.ref.current?.revealAt(line, column))
+      .catch(() => undefined)
+    // eslint 无此工程:setter/ref 恒稳定
+  }, [])
+
+  // ⌘+点击 / F12 定义跳转落地(monacoSetup 的 registerEditorOpener 转交):
+  // 真实文件走常规打开链路;extraLib 虚拟库(如 @tscircuit/core 的 d.ts)开只读
+  // 页签,页签名去掉 /node_modules/ 前缀以便区分同名 index.d.ts
+  useEffect(() => {
+    setEditorOpenHandler((req) => {
+      const gi = activeGroupIdxRef.current
+      const g = gi === 1
+        ? { setTabs: setTabs2, setActive: setActivePath2, ref: editorRef2, tabsRef: tabs2Ref }
+        : { setTabs, setActive: setActivePath, ref: editorRef, tabsRef }
+      if (req.virtual) {
+        const name = req.path.replace(/^\/node_modules\//, '')
+        g.setTabs((prev) =>
+          prev.some((tb) => tb.path === req.path)
+            ? prev
+            : [...prev, { path: req.path, name, virtual: true }]
+        )
+        g.setActive(req.path)
+        void g.ref.current?.openVirtual(req.path, req.content ?? '').then(() => {
+          if (req.line) g.ref.current?.revealAt(req.line, req.column ?? 1)
+        })
+        return
+      }
+      // Uri 归一化匹配已开页签(活动组内):Windows 下 fsPath 盘符恒小写而页签路径
+      // 来自原生对话框/文件树(常为大写盘符),字符串相等会漏判 → 重复页签
+      const wantedUri = monaco.Uri.file(req.path).toString()
+      const existing = g.tabsRef.current.find(
+        (tb) => tb.path === req.path || monaco.Uri.file(tb.path).toString() === wantedUri
+      )
+      const targetPath = existing?.path ?? req.path
+      if (!existing) {
+        g.setTabs((prev) =>
+          prev.some((tb) => tb.path === targetPath)
+            ? prev
+            : [...prev, { path: targetPath, name: baseName(targetPath) }]
+        )
+      }
+      g.setActive(targetPath)
+      void g.ref.current
+        ?.openFile(targetPath)
+        .then(() => {
+          if (req.line) g.ref.current?.revealAt(req.line, req.column ?? 1)
+        })
+        .catch(() => {
+          // 打不开(目标刚被删除 / 不在工作区):回收刚加的页签,
+          // 避免「页签高亮指向 A、编辑器实际显示 B」的状态分叉
+          closeTabIn(gi, targetPath)
+        })
     })
-    setTabs((prev) => {
+    return () => setEditorOpenHandler(null)
+    // closeTabIn 为 useCallback([]) 恒稳定;effect 首次执行时其已初始化
+    // eslint 无此工程,依赖数组刻意为空:仅挂载/卸载一次
+  }, [])
+
+  /** 组内关闭页签(释放该组的模型引用;另一组仍持有时模型继续存活) */
+  const closeTabIn = useCallback((gi: 0 | 1, path: string): void => {
+    const g = gi === 1
+      ? { setTabs: setTabs2, setActive: setActivePath2, ref: editorRef2 }
+      : { setTabs, setActive: setActivePath, ref: editorRef }
+    g.ref.current?.closeFile(path)
+    // dirtyPaths 只在两组都不再持有该文件时才清(registry release 归零由其内部处理;
+    // 此处按 registry 实况回读)
+    window.setTimeout(() => {
+      if (!modelRegistry.get(path)) {
+        setDirtyPaths((prev) => {
+          if (!prev.has(path)) return prev
+          const next = new Set(prev)
+          next.delete(path)
+          return next
+        })
+      }
+    }, 0)
+    g.setTabs((prev) => {
       const idx = prev.findIndex((tb) => tb.path === path)
       const next = prev.filter((tb) => tb.path !== path)
-      setActivePath((cur) => {
+      g.setActive((cur) => {
         if (cur !== path) return cur
         const fallback = next[Math.min(idx, next.length - 1)]
         if (fallback) {
-          editorRef.current?.setActive(fallback.path)
+          g.ref.current?.setActive(fallback.path)
           return fallback.path
         }
-        setCursor(null)
+        if (gi === activeGroupIdxRef.current) setCursor(null)
         return null
       })
       return next
     })
+    // eslint 无此工程:setter/ref 恒稳定
   }, [])
 
-  const handleCloseTab = useCallback(
-    (path: string): void => {
-      if (dirtyPaths.has(path)) setClosingDirty(path)
-      else closeTab(path)
+  /** 兼容旧调用面:在活动组关闭 */
+  const closeTab = useCallback(
+    (path: string): void => closeTabIn(activeGroupIdxRef.current, path),
+    [closeTabIn]
+  )
+  void closeTab // 兼容面保留(QuickOpen 等旧调用点;当前渲染路径均已组感知)
+
+  /** 关闭组内其他页签(有未保存修改的保留 —— 与逐个关闭的确认语义一致且更安全) */
+  const closeOthersIn = useCallback(
+    (gi: 0 | 1, keep: string): void => {
+      const list = gi === 1 ? tabs2Ref.current : tabsRef.current
+      for (const tb of list) {
+        if (tb.path === keep) continue
+        if (dirtyPaths.has(tb.path)) continue
+        closeTabIn(gi, tb.path)
+      }
     },
-    [dirtyPaths, closeTab]
+    [closeTabIn, dirtyPaths]
   )
 
-  const handleDirtyChange = useCallback((path: string, dirty: boolean): void => {
-    setDirtyPaths((prev) => {
-      if (prev.has(path) === dirty) return prev
-      const next = new Set(prev)
-      if (dirty) next.add(path)
-      else next.delete(path)
-      return next
+  /** 关闭组内全部未修改页签(diff/虚拟页签无脏状态,一并视为未修改) */
+  const closeUnmodifiedIn = useCallback(
+    (gi: 0 | 1): void => {
+      const list = gi === 1 ? tabs2Ref.current : tabsRef.current
+      for (const tb of list) {
+        if (dirtyPaths.has(tb.path)) continue
+        closeTabIn(gi, tb.path)
+      }
+    },
+    [closeTabIn, dirtyPaths]
+  )
+
+  // 组空自动收拢分屏:组 1 空 → 撤分屏回单组;组 0 空且有分屏 → 组 1 整体晋升为组 0
+  useEffect(() => {
+    if (splitDir === null) return
+    if (tabs2.length === 0) {
+      setSplitDir(null)
+      setActiveGroupIdx(0)
+      return
+    }
+    if (tabs.length === 0) {
+      // 晋升:组 1 的页签在组 0 的编辑器重开(模型在 registry,引用平移零读盘)
+      const promoted = tabs2
+      const promotedActive = activePath2
+      setTabs(promoted)
+      setActivePath(promotedActive)
+      setTabs2([])
+      setActivePath2(null)
+      setSplitDir(null)
+      setActiveGroupIdx(0)
+      void (async () => {
+        for (const tb of promoted) {
+          if (tb.kind === 'diff') continue // diff 页签无模型
+          if (tb.virtual) continue // 虚拟页签内容在 registry,setActive 命中即可
+          await editorRef.current?.openFile(tb.path).catch(() => undefined)
+        }
+        if (promotedActive) editorRef.current?.setActive(promotedActive)
+      })()
+    }
+  }, [splitDir, tabs.length, tabs2, activePath2, tabs])
+
+  /** 拆分/在另一组打开:无分屏则按方向创建组 1 并在其中打开该文件;已分屏则开到另一组 */
+  const splitOpen = useCallback(
+    (dir: 'row' | 'col', path: string): void => {
+      const src = [...tabs, ...tabs2].find((tb) => tb.path === path)
+      if (!src || src.kind === 'diff' || src.virtual) return // 特殊页签不参与拆分
+      if (splitDir === null) {
+        setSplitDir(dir)
+        setTabs2([{ ...src }])
+        setActivePath2(path)
+        setActiveGroupIdx(1)
+        // 组 1 的 EditorHost 刚挂载:等一帧再 openFile
+        window.setTimeout(() => void editorRef2.current?.openFile(path), 0)
+        return
+      }
+      const inG0 = tabs.some((tb) => tb.path === path)
+      const target: 0 | 1 = inG0 ? 1 : 0
+      const g = target === 1
+        ? { setTabs: setTabs2, setActive: setActivePath2, ref: editorRef2 }
+        : { setTabs, setActive: setActivePath, ref: editorRef }
+      g.setTabs((prev) => (prev.some((tb) => tb.path === path) ? prev : [...prev, { ...src }]))
+      g.setActive(path)
+      setActiveGroupIdx(target)
+      void g.ref.current?.openFile(path)
+    },
+    [tabs, tabs2, splitDir]
+  )
+
+  const handleCloseTabIn = useCallback(
+    (gi: 0 | 1, path: string): void => {
+      // 双组同开的文件:关其中一组不丢数据(另一组仍持有),无需脏确认
+      const otherHolds = (gi === 1 ? tabs : tabs2).some((tb) => tb.path === path)
+      if (dirtyPaths.has(path) && !otherHolds) setClosingDirty({ path, gi })
+      else closeTabIn(gi, path)
+    },
+    [dirtyPaths, closeTabIn, tabs, tabs2]
+  )
+
+  // 脏状态订阅:模型层已上收 modelRegistry(分屏两组共享模型),App 级 dirtyPaths
+  // 从注册表订阅(路径为首次打开的原始路径;两组同文件天然同一脏状态)
+  useEffect(() => {
+    return modelRegistry.onDirty((path, dirty) => {
+      setDirtyPaths((prev) => {
+        if (prev.has(path) === dirty) return prev
+        const next = new Set(prev)
+        if (dirty) next.add(path)
+        else next.delete(path)
+        return next
+      })
     })
   }, [])
 
-  /** 文件被删除或重命名:关闭对应标签 */
+  /** 文件被删除或重命名:两组各自关闭对应标签 */
   const handleFileRemoved = useCallback(
     (path: string): void => {
       setTabs((prev) => {
-        if (!prev.some((tb) => tb.path === path)) return prev
-        closeTab(path)
+        if (prev.some((tb) => tb.path === path)) closeTabIn(0, path)
+        return prev
+      })
+      setTabs2((prev) => {
+        if (prev.some((tb) => tb.path === path)) closeTabIn(1, path)
         return prev
       })
     },
-    [closeTab]
+    [closeTabIn]
   )
 
-  // ---- Markdown 查看模式(编辑 / 分屏 / 预览,记忆每文件,默认分屏) ----
-  const isMdFile = activePath !== null && /\.(md|markdown)$/i.test(activePath)
-
-  // 切换活动文件时从记忆恢复该文件的模式
-  useEffect(() => {
-    if (activePath && /\.(md|markdown)$/i.test(activePath)) setMdModeState(getMdViewMode(activePath))
-  }, [activePath])
-
-  const changeMdMode = useCallback(
-    (mode: MdViewMode): void => {
-      if (!activePath) return
-      setMdModeState(mode)
-      setMdViewMode(activePath, mode)
-    },
-    [activePath]
-  )
+  // (Markdown 查看模式与 diff 页签渲染已随分屏下沉到 EditorGroupView:每组各自
+  //  按自己的激活页签判定,互不干扰)
 
   /**
    * 启动固件任务(阶段 3:🔨 构建 / ⋮ 打包 merged.bin / 烧录 / 清理;
@@ -801,7 +1313,9 @@ export default function App(): React.JSX.Element {
       } catch (err) {
         setFwTask(null)
         const msg = err instanceof Error ? err.message : String(err)
-        const code = /toolchain:(\w+)/.exec(msg)?.[1] ?? 'startFailed'
+        // Electron 把 handler 拒绝包装为 "Error invoking remote method 'toolchain:start': Error: toolchain:<code>",
+        // 首个匹配恒为通道名 → 取最后一个匹配才是真实错误码
+        const code = [...msg.matchAll(/toolchain:(\w+)/g)].pop()?.[1] ?? 'startFailed'
         showToast(t(`fw.errors.${code}`, { defaultValue: t('fw.errors.startFailed') }), 'error')
       }
     },
@@ -924,17 +1438,24 @@ export default function App(): React.JSX.Element {
    * 选中真机 → 直推;选中虚拟设备 → 先扫一轮 devd,推给首台发现的真机,无则提示
    */
   async function handlePushToDevice(): Promise<void> {
+    if (busy) return // 防重入:发现阶段(~3s)按钮无忙态时双击会并发两次推送
     if (!isSimDeviceKey(shellDeviceStore.get().selectedKey)) {
       await handlePush()
       return
     }
-    await refreshDevices() // 复用现有发现链路(结果写入 shellDeviceStore)
-    const found = shellDeviceStore.get().devices
-    if (found.length === 0) {
-      showToast(t('titlebar.pushNoDevice'), 'warn')
-      return
+    // 发现阶段也置忙:pushBusy 覆盖「扫描 + 推送」全程,📤 按钮同步禁用
+    setBusy('push')
+    try {
+      await refreshDevices() // 复用现有发现链路(结果写入 shellDeviceStore)
+      const found = shellDeviceStore.get().devices
+      if (found.length === 0) {
+        showToast(t('titlebar.pushNoDevice'), 'warn')
+        return
+      }
+      await handlePush(found[0])
+    } finally {
+      setBusy(null)
     }
-    await handlePush(found[0])
   }
 
   // ---- 工具窗轨道条目 ----
@@ -961,6 +1482,15 @@ export default function App(): React.JSX.Element {
       label: t('rail.devices'),
       active: leftTool === 'devices',
       onClick: () => setLeftTool((v) => (v === 'devices' ? null : 'devices'))
+    },
+    {
+      // Git 工具窗(徽标 = 变更文件数,git store 订阅)
+      key: 'git',
+      icon: <LuGitBranch />,
+      label: t('rail.git'),
+      active: leftTool === 'git',
+      badge: gitBadge,
+      onClick: () => setLeftTool((v) => (v === 'git' ? null : 'git'))
     }
   ]
 
@@ -1150,6 +1680,7 @@ export default function App(): React.JSX.Element {
                   dirtyPaths={dirtyPaths}
                   onFileRemoved={handleFileRemoved}
                   activePath={activePath}
+                  gitStatus={gitStatusMap}
                 />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
@@ -1169,6 +1700,19 @@ export default function App(): React.JSX.Element {
             )}
           </ToolWindow>
         )
+      case 'git':
+        // Git 工具窗(变更/历史两个子视图 + 提交/推拉;diff 页签经 handleOpenDiff 打开)
+        return (
+          <ToolWindow
+            title={t('rail.git')}
+            icon={<LuGitBranch />}
+            toolId="git"
+            onHeaderMouseDown={dragStart}
+            onHide={() => setLeftTool(null)}
+          >
+            <GitPanel workspaceRoot={workspaceRoot} onOpenDiff={handleOpenDiff} />
+          </ToolWindow>
+        )
       case 'structure':
         return (
           <ToolWindow
@@ -1179,9 +1723,9 @@ export default function App(): React.JSX.Element {
             onHide={() => setStructureOpen(false)}
           >
             <StructureView
-              path={activePath}
+              path={activeGroupIdxRef.current === 1 ? activePath2 : activePath}
               cursorLine={cursor?.line ?? null}
-              onNavigate={(line, column) => editorRef.current?.revealAt(line, column)}
+              onNavigate={(line, column) => activeEditor()?.revealAt(line, column)}
             />
           </ToolWindow>
         )
@@ -1214,7 +1758,7 @@ export default function App(): React.JSX.Element {
                 </div>
               }
             >
-              <HardwareDesignPanel workspaceRoot={workspaceRoot} />
+              <HardwareDesignPanel workspaceRoot={workspaceRoot} onOpenFile={handleOpenFile} />
             </Suspense>
           </ToolWindow>
         )
@@ -1321,69 +1865,59 @@ export default function App(): React.JSX.Element {
               </>
             )}
 
-            {/* 中:编辑器(EditorHost 常驻同一位置,保持 monaco 实例与模型) */}
-            <div className="flex min-w-0 flex-1 flex-col bg-ink-900">
-              {tabs.length > 0 && (
-                <EditorTabs
-                  tabs={tabs}
-                  activePath={activePath}
-                  dirtyPaths={dirtyPaths}
-                  onSelect={(p) => {
-                    setActivePath(p)
-                    editorRef.current?.setActive(p)
-                  }}
-                  onClose={handleCloseTab}
-                  trailing={
-                    // md 文件:编辑 / 分屏 / 预览 切换按钮组(记忆每文件模式)
-                    isMdFile ? (
-                      <div className="flex items-center gap-0.5 rounded border border-ink-700 p-0.5">
-                        {(
-                          [
-                            { mode: 'edit', icon: <LuPencil />, label: t('markdown.modeEdit') },
-                            { mode: 'split', icon: <LuColumns2 />, label: t('markdown.modeSplit') },
-                            { mode: 'preview', icon: <LuEye />, label: t('markdown.modePreview') }
-                          ] as Array<{ mode: MdViewMode; icon: React.ReactNode; label: string }>
-                        ).map((b) => (
-                          <button
-                            key={b.mode}
-                            title={b.label}
-                            onClick={() => changeMdMode(b.mode)}
-                            className={`flex h-5 w-6 items-center justify-center rounded text-[13px] ${
-                              mdMode === b.mode
-                                ? 'bg-jb-selection text-jb-text'
-                                : 'text-jb-muted hover:bg-ink-800 hover:text-jb-text'
-                            }`}
-                          >
-                            {b.icon}
-                          </button>
-                        ))}
-                      </div>
-                    ) : undefined
-                  }
-                />
-              )}
-              <div className="relative flex min-h-0 flex-1">
-                {/* 预览模式:编辑器隐藏但保持挂载(monaco 实例/模型不销毁) */}
-                <div className={`h-full min-w-0 ${isMdFile && mdMode === 'preview' ? 'hidden' : 'flex-1'}`}>
-                  <EditorHost
-                    ref={editorRef}
-                    onDirtyChange={handleDirtyChange}
-                    onCursorChange={(line, column) => setCursor({ line, column })}
+            {/* 中:编辑器(1-2 组;splitDir 决定并排方向;组 0 常驻保持模型) */}
+            <div className={`flex min-w-0 flex-1 ${splitDir === 'col' ? 'flex-col' : ''} bg-ink-900`}>
+              <EditorGroupView
+                editorRef={editorRef}
+                tabs={tabs}
+                activePath={activePath}
+                dirtyPaths={dirtyPaths}
+                workspaceRoot={workspaceRoot}
+                showWelcome={splitDir === null}
+                splitDir={splitDir}
+                onSelect={(p) => {
+                  setActiveGroupIdx(0)
+                  setActivePath(p)
+                  editorRef.current?.setActive(p)
+                }}
+                onClose={(p) => handleCloseTabIn(0, p)}
+                onCloseOthers={(p) => closeOthersIn(0, p)}
+                onCloseUnmodified={() => closeUnmodifiedIn(0)}
+                onSplit={splitOpen}
+                onFocused={() => setActiveGroupIdx(0)}
+                onCursorChange={(line, column) => {
+                  if (activeGroupIdxRef.current === 0) setCursor({ line, column })
+                }}
+                onViewStateChange={scheduleSessionSave}
+              />
+              {splitDir !== null && (
+                <>
+                  <div className={splitDir === 'row' ? 'w-px shrink-0 bg-ink-700' : 'h-px shrink-0 bg-ink-700'} />
+                  <EditorGroupView
+                    editorRef={editorRef2}
+                    tabs={tabs2}
+                    activePath={activePath2}
+                    dirtyPaths={dirtyPaths}
+                    workspaceRoot={workspaceRoot}
+                    showWelcome={false}
+                    splitDir={splitDir}
+                    onSelect={(p) => {
+                      setActiveGroupIdx(1)
+                      setActivePath2(p)
+                      editorRef2.current?.setActive(p)
+                    }}
+                    onClose={(p) => handleCloseTabIn(1, p)}
+                    onCloseOthers={(p) => closeOthersIn(1, p)}
+                    onCloseUnmodified={() => closeUnmodifiedIn(1)}
+                    onSplit={splitOpen}
+                    onFocused={() => setActiveGroupIdx(1)}
+                    onCursorChange={(line, column) => {
+                      if (activeGroupIdxRef.current === 1) setCursor({ line, column })
+                    }}
                     onViewStateChange={scheduleSessionSave}
                   />
-                </div>
-                {isMdFile && activePath && mdMode !== 'edit' && (
-                  <>
-                    {mdMode === 'split' && <div className="w-px shrink-0 bg-ink-700" />}
-                    <MarkdownPreview path={activePath} editorRef={editorRef} />
-                  </>
-                )}
-                {tabs.length === 0 && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-ink-900">
-                    <span className="text-[13px] text-ink-500">{t('editor.welcome')}</span>
-                  </div>
-                )}
-              </div>
+                </>
+              )}
             </div>
 
             {/* 右:「运行的设备」⇄「硬件设计」(rightView 仲裁;仅 dockPinned 占槽位) */}
@@ -1494,6 +2028,13 @@ export default function App(): React.JSX.Element {
       )}
 
       {/* Cmd+P 快速打开 */}
+      {/* 项目内容检索(⇧⌘F;常驻挂载保留查询词) */}
+      <SearchInFiles
+        visible={searchVisible}
+        onClose={() => setSearchVisible(false)}
+        onOpenAt={openFileAt}
+      />
+
       {quickOpenVisible && (
         <QuickOpen
           workspaceRoot={workspaceRoot}
@@ -1505,9 +2046,9 @@ export default function App(): React.JSX.Element {
       {/* 关闭未保存标签的确认 */}
       {closingDirty && (
         <ConfirmModal
-          message={t('editor.closeDirtyConfirm', { name: baseName(closingDirty) })}
+          message={t('editor.closeDirtyConfirm', { name: baseName(closingDirty.path) })}
           onConfirm={() => {
-            closeTab(closingDirty)
+            closeTabIn(closingDirty.gi, closingDirty.path)
             setClosingDirty(null)
           }}
           onCancel={() => setClosingDirty(null)}

@@ -1,13 +1,17 @@
 /**
  * 状态栏(高 26px,#2B2D30,顶边框 #393B40)
  * 左:工作区路径 › 当前文件面包屑 + 后台任务进度(构建/推送 spinner)
- * 右:行:列 | UTF-8 | 空格数 | git 分支 | 当前设备名
+ * 右:行:列 | UTF-8 | 空格数 | git 分支下拉(列分支/切换/新建)| 当前设备名
  */
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { LuGitBranch, LuSmartphone } from 'react-icons/lu'
+import { LuGitBranch, LuPlus, LuSmartphone } from 'react-icons/lu'
 import { VscLoading } from 'react-icons/vsc'
-import type { FirmwareTaskKind } from '../../../shared/ipc-types'
+import type { FirmwareTaskKind, GitBranchInfo } from '../../../shared/ipc-types'
 import { chipLabel, selectedDeviceName, useDeviceProfiles, useShellDevices } from './store'
+import { MenuButton, type DropdownItem } from './Dropdown'
+import { InputModal } from '../components/Modal'
+import { showToast } from '../components/toast'
 
 interface Props {
   workspaceRoot: string | null
@@ -37,6 +41,90 @@ function breadcrumb(root: string | null, file: string | null): string[] {
     parts.push(...file.slice(root.length + 1).split(/[/\\]/))
   }
   return parts
+}
+
+/** git 分支块:MenuButton 列分支(点击 checkout)+ 顶部「新建分支…」 */
+function GitBranchMenu({ root, branch }: { root: string; branch: string }): React.JSX.Element {
+  const { t } = useTranslation()
+  const [branches, setBranches] = useState<GitBranchInfo[]>([])
+  const [creating, setCreating] = useState(false)
+
+  // 分支列表刷新:分支名变化(checkout/commit 后 App 侧已刷新)+ git:changed 即时
+  useEffect(() => {
+    let alive = true
+    const refresh = (): void => {
+      void window.api
+        .gitBranches(root)
+        .then((list) => {
+          if (alive) setBranches(list)
+        })
+        .catch(() => undefined)
+    }
+    refresh()
+    const unsub = window.api.onGitChanged((ev) => {
+      if (ev.root === root) refresh()
+    })
+    return () => {
+      alive = false
+      unsub()
+    }
+  }, [root, branch])
+
+  const checkout = (name: string, create: boolean): void => {
+    void window.api
+      .gitCheckout(root, name, create)
+      .then(() => showToast(t('git.checkedOut', { name }), 'success'))
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        const code = [...msg.matchAll(/git:(\w+)/g)].pop()?.[1] ?? 'failed'
+        showToast(t(`git.errors.${code}`, { defaultValue: t('git.errors.failed') }), 'error')
+      })
+  }
+
+  const items: DropdownItem[] = [
+    {
+      key: 'new-branch',
+      label: t('git.newBranch'),
+      icon: <LuPlus />,
+      onSelect: () => setCreating(true)
+    },
+    ...branches.map(
+      (b): DropdownItem => ({
+        key: `br-${b.name}`,
+        label: b.name,
+        group: t('git.branches'),
+        checked: b.current,
+        onSelect: () => {
+          if (!b.current) checkout(b.name, false)
+        }
+      })
+    )
+  ]
+
+  return (
+    <>
+      <MenuButton
+        items={items}
+        title={t('git.switchBranch')}
+        align="right"
+        className="flex h-5 items-center gap-1 rounded px-1 text-xs text-jb-muted hover:bg-ink-800 hover:text-jb-text"
+      >
+        <LuGitBranch />
+        {branch}
+      </MenuButton>
+      {creating && (
+        <InputModal
+          title={t('git.newBranchTitle')}
+          placeholder={t('git.newBranchPlaceholder')}
+          onConfirm={(name) => {
+            setCreating(false)
+            checkout(name, true)
+          }}
+          onCancel={() => setCreating(false)}
+        />
+      )}
+    </>
+  )
 }
 
 export function StatusBar(props: Props): React.JSX.Element {
@@ -83,11 +171,8 @@ export function StatusBar(props: Props): React.JSX.Element {
         )}
         <span>UTF-8</span>
         <span>{t('statusbar.spaces', { count: 2 })}</span>
-        {props.gitBranch && (
-          <span className="flex items-center gap-1">
-            <LuGitBranch />
-            {props.gitBranch}
-          </span>
+        {props.gitBranch && props.workspaceRoot && (
+          <GitBranchMenu root={props.workspaceRoot} branch={props.gitBranch} />
         )}
         <span className="flex items-center gap-1">
           <LuSmartphone />

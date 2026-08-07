@@ -131,7 +131,14 @@ interface MoonrakerUploadResp {
 async function uploadGcode(path: string, startPrint: boolean): Promise<PrinterUploadResult> {
   const cfg = await loadConfig()
   const fileName = basename(path)
-  const blob = await openAsBlob(path)
+  // 文件系统错误(ENOENT/EACCES/EISDIR,如切片器重切后旧文件已删)统一映射
+  // printer:badFile,避免裸 Node 错误绕过 `printer:<code>` 约定直达 toast
+  let blob: Blob
+  try {
+    blob = await openAsBlob(path)
+  } catch {
+    throw new Error('printer:badFile')
+  }
   const form = new FormData()
   form.append('file', blob, fileName)
 

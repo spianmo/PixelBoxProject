@@ -7,6 +7,8 @@
 export type {
   BoardSpec,
   EnclosureParams,
+  EnclosureScadMeta,
+  EnclosureScadPayload,
   Hardware3D,
   ScreenPlacement,
   EnclosurePort,

@@ -117,6 +117,22 @@ export interface DeviceProfile {
 // 硬件设计 3D 契约(挂在 DeviceProfile 上,亦被 hardware 面板使用)
 // ---------------------------------------------------------------
 
+/**
+ * 元件类别(3D 形状工厂选型;buildBoardSpec 按 source_component 名前缀
+ * + 焊盘数推断:U 前缀或含 ESP32 且焊盘 ≥40 → module,USB→usb,SW→button,
+ * SD→sd,MIC→mic,LED→led,R/C→passive,J→connector,其余 chip)
+ */
+export type BoardComponentKind =
+  | 'module'
+  | 'usb'
+  | 'button'
+  | 'sd'
+  | 'mic'
+  | 'led'
+  | 'passive'
+  | 'connector'
+  | 'chip'
+
 /** 板上元件盒(简化 3D:挤出盒体) */
 export interface BoardComponentBox {
   id: string
@@ -130,6 +146,8 @@ export interface BoardComponentBox {
   /** 挤出高度,默认 2.5 */
   heightMM: number
   layer: 'top' | 'bottom'
+  /** 元件类别(可选新增字段:旧档案缺省时按 'chip' 渲染,向后兼容) */
+  kind?: BoardComponentKind
 }
 
 /** 板卡简化 3D 规格(从 Circuit JSON 提炼,自包含 —— 档案脱离工程也能渲染) */
@@ -187,12 +205,56 @@ export interface EnclosureParams {
   /** 顶盖开屏幕窗(需 screen 放置) */
   screenWindow: boolean
   ports: EnclosurePort[]
+  /** 外壳颜色 '#rrggbb'(base+lid 材质色;缺省用查看器内置灰色) */
+  colorHex?: string
+  /** 电池占位(底盒内腔可视化,w/h 足印 × t 厚,mm;仅 3D 展示,不参与 STL 打印导出) */
+  batteryMM?: { w: number; h: number; t: number }
+}
+
+/**
+ * OpenSCAD 外壳契约元数据(enclosure.scad 的 PB_META echo,IDE 从编译日志解析;
+ * 用户删掉 echo 行时为 null,查看器回退包围盒推导)
+ */
+export interface EnclosureScadMeta {
+  /** 板顶面 z(scad Z-up;three 场景即 y)—— 板卡抬高契约 */
+  boardTopZ: number
+  /** 屏幕贴图面 z(顶盖外表面 − 微沉) */
+  screenFaceZ: number | null
+  /** 壳体总高 */
+  lidTopZ: number | null
+  /** 底盒顶缘 z */
+  baseTopZ: number | null
+  outerW: number | null
+  outerD: number | null
+  screenWindow: boolean
+  /** 电池占位盒 [w, d, t](scad 侧已按内腔/支撑柱/板底钳制;null = 关闭) */
+  battery: [number, number, number] | null
+  /** 电池底面 z(底盒内腔地面 = 底板厚) */
+  batteryZ: number | null
+  /** 预览色(base 原色;lid 由查看器自动提亮) */
+  colorHex: string | null
+}
+
+/**
+ * OpenSCAD 编译产物(base64 STL:需 JSON 序列化进设备档案 devices.json,
+ * ArrayBuffer 会被 stringify 吞掉)
+ */
+export interface EnclosureScadPayload {
+  baseStlB64: string
+  lidStlB64: string
+  meta: EnclosureScadMeta | null
 }
 
 /** 设备档案携带的完整硬件外观 */
 export interface Hardware3D {
   board: BoardSpec
-  enclosure: EnclosureParams
+  /**
+   * 参数化外壳(旧档案兼容:scad 之前的档案仅有此字段,Sim 3D 走参数化渲染;
+   * 新档案已不写 —— enclosure.json 退役后工作区流程只产出 scad)
+   */
+  enclosure?: EnclosureParams
+  /** OpenSCAD 外壳(design/enclosure.scad 编译产物;存在时几何优先) */
+  scad?: EnclosureScadPayload
   screen?: ScreenPlacement
   /** 来源工程(仅提示用) */
   designRoot?: string
@@ -231,6 +293,33 @@ export interface HardwareExportFile {
 export interface HardwareExportResult {
   dir: string
   files: string[]
+}
+
+// ---------------------------------------------------------------
+// 项目内容检索(search:content,IDEA ⇧⌘F Find in Files)
+// ---------------------------------------------------------------
+
+export interface ContentSearchOptions {
+  caseSensitive: boolean
+  wholeWord: boolean
+  regex: boolean
+}
+
+/** 单处命中(行/列 1-based;lineText 超长已截断) */
+export interface ContentSearchMatch {
+  path: string
+  relPath: string
+  line: number
+  column: number
+  matchLen: number
+  lineText: string
+}
+
+export interface ContentSearchResult {
+  matches: ContentSearchMatch[]
+  /** 命中超上限(2000)或超时间预算:结果不完整,提示收窄查询 */
+  truncated: boolean
+  filesScanned: number
 }
 
 // ---------------------------------------------------------------
@@ -300,6 +389,140 @@ export interface ToolchainSettings {
   defaultTarget: string
   /** 烧录串口波特率 */
   baudRate: number
+  /** clangd 可执行文件路径覆盖(空串 = PATH 中的 clangd → /usr/bin/clangd) */
+  clangdPath: string
+}
+
+// ---------------------------------------------------------------
+// clangd LSP(固件工程 C/C++ 补全/悬停/诊断,main 进程 clangd.ts)
+// ---------------------------------------------------------------
+
+/**
+ * clangd 会话状态:
+ * - running:会话已就绪,可收发 LSP 请求/通知
+ * - noClangd:未找到 clangd 可执行文件(设置页可配置路径)
+ * - noCompileCommands:工作区缺 build/compile_commands.json(先构建一次固件)
+ * - failed:连续崩溃超过重启上限
+ * - stopped:已停止(clangd:stop / 工作区切换)
+ */
+export type ClangdState = 'running' | 'noClangd' | 'noCompileCommands' | 'failed' | 'stopped'
+
+/** clangd:start 返回值 / clangd:status 广播载荷 */
+export interface ClangdStatus {
+  state: ClangdState
+  /** 实际选用的 clangd 可执行文件(state=running 时给出) */
+  clangdPath?: string
+}
+
+/** clangd:event 广播载荷(白名单内的服务器通知,当前仅 publishDiagnostics) */
+export interface ClangdServerNotification {
+  method: string
+  params: unknown
+}
+
+// ---------------------------------------------------------------
+// ---- Git 集成 ----(main 进程 git.ts;JetBrains 式版本控制工具窗)
+// ---------------------------------------------------------------
+
+/** 文件变更徽标字母:M 修改 / A 新增 / D 删除 / R 重命名 / U 未跟踪 / C 冲突 / I 忽略(gitignore 命中) */
+export type GitFileStatus = 'M' | 'A' | 'D' | 'R' | 'U' | 'C' | 'I'
+
+/** 一个变更文件(git:status / git:commit-files) */
+export interface GitFileChange {
+  /** 绝对路径 */
+  path: string
+  /** 相对工作区根的路径('/' 分隔,列表展示用) */
+  relPath: string
+  status: GitFileStatus
+  /** 重命名前的相对路径(status=R;diff 左侧取该路径的旧版本) */
+  origRelPath?: string
+}
+
+/** git:status 结果(porcelain v2 解析;同一文件可同时出现在 staged 与 unstaged) */
+export interface GitStatusResult {
+  staged: GitFileChange[]
+  unstaged: GitFileChange[]
+  untracked: GitFileChange[]
+  conflicted: GitFileChange[]
+  /** gitignore 命中条目(--ignored=matching 的 '!' 记录;目录整条列出不展开) */
+  ignored: GitFileChange[]
+}
+
+/** 冲突解决策略(git:resolve):ours=采用我方 / theirs=采用对方 / mark=仅标记已解决(add) */
+export type GitResolveStrategy = 'ours' | 'theirs' | 'mark'
+
+/** 一个远程仓库(git:remotes;`git remote -v` 解析,fetch/push URL 可不同) */
+export interface GitRemoteInfo {
+  name: string
+  fetchUrl: string
+  pushUrl: string
+}
+
+/** 系统原生 Git 菜单动作(main menu.ts → menu:git-action 广播) */
+export type GitMenuAction =
+  | 'commit'
+  | 'push'
+  | 'pull'
+  | 'stageAll'
+  | 'newBranch'
+  | 'checkout'
+  | 'remotes'
+  | 'show'
+
+/** menu:git-action 广播载荷(checkout 时 arg = 目标分支名) */
+export interface GitMenuActionEvent {
+  action: GitMenuAction
+  arg?: string
+}
+
+/** 仓库概览(git:info) */
+export interface GitInfo {
+  /** root/.git 是否存在(false 时其余字段为默认值) */
+  isRepo: boolean
+  /** 当前分支名(detached HEAD → 短 hash;空仓库无提交 → 分支名仍给出) */
+  branch: string | null
+  /** upstream 分支名(如 origin/main;无 upstream → null) */
+  upstream: string | null
+  /** 相对 upstream 领先/落后提交数(无 upstream 恒 0) */
+  ahead: number
+  behind: number
+  /** 已找到 git 可执行文件(false → 提示设置 git.executablePath) */
+  gitFound: boolean
+}
+
+/** 一条提交记录(git:log;parents 供历史视图车道图布局) */
+export interface GitCommitInfo {
+  hash: string
+  shortHash: string
+  author: string
+  email: string
+  /** 作者时间(Unix 秒,%at) */
+  timestamp: number
+  subject: string
+  /** 父提交完整 hash(合并提交多个;根提交空) */
+  parents: string[]
+}
+
+/** 一个本地分支(git:branches) */
+export interface GitBranchInfo {
+  name: string
+  current: boolean
+}
+
+/** push/pull 流式输出行(git:op-output 广播) */
+export interface GitOpOutput {
+  /** 操作结束标记行(done 时 text 为空串,exitCode 有效) */
+  kind: 'line' | 'done'
+  op: 'push' | 'pull'
+  text: string
+  exitCode?: number | null
+}
+
+/** git 可执行检测结果(设置页 git:detect) */
+export interface GitDetectResult {
+  found: boolean
+  path: string
+  version: string | null
 }
 
 // ---------------------------------------------------------------
@@ -327,6 +550,8 @@ export interface AppSettings {
     language: UiLanguage
     /** 主题:深色 / 亮色 / 跟随系统(nativeTheme 解析,updated 事件全窗口推送) */
     theme: AppTheme
+    /** 3D 视图左下角坐标轴指示器(硬件 3D / 模拟器 3D,实时生效) */
+    show3dAxes: boolean
   }
   /** 外观与行为 › 系统设置 */
   system: {
@@ -364,6 +589,11 @@ export interface AppSettings {
     /** API Key(OctoPrint 必填;Moonraker 可选) */
     apiKey: string
   }
+  /** 工具 › Git(版本控制) */
+  git: {
+    /** git 可执行路径覆盖(空串 = 自动:PATH 中的 git → /usr/bin/git) */
+    executablePath: string
+  }
 }
 
 /** settings:changed 全窗口广播事件 */
@@ -386,16 +616,29 @@ export interface SessionTab {
 }
 
 /**
- * 按工作区持久化的编辑器会话(userData/pixelbox-sim/sessions/ws-<hash>.json)。
+ * 按工程持久化的编辑器会话(JetBrains .idea 式:<root>/.ide/session.json,
+ * 落盘时去掉 root 字段 —— 工程整体移动后仍可解析;旧版 userData
+ * sessions/ws-<hash>.json 首次读取时一次性迁移写穿)。
  * 脏文件内容不落盘(以最后保存到磁盘的内容为准),只记打开的标签与视图状态。
+ * 读取:session:startup(IDE 启动)与 session:for-root(切换工作区)。
  */
-export interface WorkspaceSession {
-  /** 工作区根(绝对路径) */
-  root: string
-  /** 打开的标签(有序) */
+/** 编辑器组会话(分屏;组 0 与旧字段 tabs/activePath 同值,旧版 IDE 兼容) */
+export interface SessionGroup {
   tabs: SessionTab[]
-  /** 激活标签路径(无则 null) */
   activePath: string | null
+}
+
+export interface WorkspaceSession {
+  /** 工作区根(绝对路径;IPC 往返携带,.ide/session.json 不落盘此字段) */
+  root: string
+  /** 打开的标签(有序;分屏时 = 组 0,完整分组见 groups) */
+  tabs: SessionTab[]
+  /** 激活标签路径(无则 null;分屏时 = 组 0) */
+  activePath: string | null
+  /** 分屏会话(1-2 组;缺省 = 单组,tabs/activePath 即全部) */
+  groups?: SessionGroup[]
+  /** 分屏方向(groups 长度 > 1 时有效) */
+  splitDir?: 'row' | 'col' | null
   /** 落盘时间(Unix 毫秒) */
   savedAt: number
 }

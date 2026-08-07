@@ -15,7 +15,8 @@ import type { AppSettings } from './ipc-types'
 export const SETTINGS_DEFAULTS: AppSettings = {
   appearance: {
     language: 'zh-CN',
-    theme: 'dark'
+    theme: 'dark',
+    show3dAxes: true
   },
   system: {
     restoreSession: true,
@@ -30,7 +31,8 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   toolchain: {
     idfPathOverride: '',
     defaultTarget: 'esp32s3',
-    baudRate: 460800
+    baudRate: 460800,
+    clangdPath: ''
   },
   terminal: {
     shellOverride: '',
@@ -40,6 +42,9 @@ export const SETTINGS_DEFAULTS: AppSettings = {
     type: 'octoprint',
     baseUrl: '',
     apiKey: ''
+  },
+  git: {
+    executablePath: ''
   }
 }
 
@@ -70,6 +75,7 @@ const SANITIZERS: Record<string, Sanitizer> = {
   'appearance.language': (v) => (v === 'zh-CN' || v === 'en' ? v : undefined),
   // 主题三值:dark / light / system(system 由 main 侧 nativeTheme 解析为有效主题)
   'appearance.theme': (v) => (v === 'dark' || v === 'light' || v === 'system' ? v : undefined),
+  'appearance.show3dAxes': bool,
   'system.restoreSession': bool,
   'system.quitOnMainWindowClose': bool,
   'editor.minimap': bool,
@@ -83,12 +89,16 @@ const SANITIZERS: Record<string, Sanitizer> = {
     typeof v === 'number' && Number.isFinite(v) && v >= 9600 && v <= 4000000
       ? Math.floor(v)
       : undefined,
+  // clangd 路径覆盖(空串 = 自动:PATH 中的 clangd → /usr/bin/clangd;见 main/clangd.ts)
+  'toolchain.clangdPath': trimmedString(1024),
   'terminal.shellOverride': trimmedString(1024),
   'terminal.fontSize': intRange(TERMINAL_FONT_SIZE_RANGE.min, TERMINAL_FONT_SIZE_RANGE.max),
   // 3D 打印机联机(printer.ts;baseUrl 空串 = 未配置,printer:* IPC 抛 printer:notConfigured)
   'printer.type': (v) => (v === 'octoprint' || v === 'moonraker' ? v : undefined),
   'printer.baseUrl': trimmedString(1024),
-  'printer.apiKey': trimmedString(256)
+  'printer.apiKey': trimmedString(256),
+  // git 可执行路径覆盖(空串 = 自动:PATH 中的 git → /usr/bin/git;见 main/git.ts)
+  'git.executablePath': trimmedString(1024)
 }
 
 /** 全部合法设置键(dot-path) */
