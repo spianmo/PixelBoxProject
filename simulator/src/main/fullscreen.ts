@@ -33,6 +33,11 @@ export function registerFullscreenIpc(): void {
     const win = BrowserWindow.fromWebContents(e.sender)
     return win ? win.isFullScreen() : false
   })
+  // 设置全屏(TitleBar 假红绿灯的绿键=退出全屏;仍是原生 setFullScreen 同一入口)
+  ipcMain.on('win:set-fullscreen', (e, flag: boolean) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (win && !win.isDestroyed()) win.setFullScreen(!!flag)
+  })
 }
 
 export interface WireFullscreenOptions {

@@ -26,6 +26,8 @@
     "maximize": "最大化",
     "restore": "还原",
     "close": "关闭",
+    "minimizeUnavailableFs": "全屏下最小化不可用",
+    "exitFullscreen": "退出全屏",
     "rescanDevices": "重新扫描设备",
     "simulatorDevice": "PixelBox 模拟器",
     "virtualDevices": "虚拟设备",
@@ -267,6 +269,8 @@
   },
   "newProject": {
     "title": "新建项目",
+    "kindsLabel": "项目类型",
+    "sectionOptions": "选项",
     "kinds": {
       "app": "ESP 应用工程",
       "appDesc": "TypeScript 像素应用,模拟器运行/推送到设备",
@@ -297,6 +301,7 @@
       "nameRequired": "请输入项目名称",
       "nameInvalid": "项目名称仅限字母 / 数字 / 下划线 / 连字符",
       "locationRequired": "请选择项目位置",
+      "locationInvalid": "位置必须是绝对路径",
       "appIdInvalid": "应用 ID 需为反域名格式(如 com.example.myapp)",
       "dirNotEmpty": "目标目录已存在且非空,请换个名称或位置",
       "kindInvalid": "无效的项目类型",
@@ -430,8 +435,16 @@
       "detected": "已检测到 ESP-IDF {{version}}:{{path}}",
       "defaultTarget": "默认目标芯片",
       "defaultTargetHint": "标题栏芯片下拉的初始值(手动切换后以手选为准)",
-      "baud": "烧录波特率"
+      "baud": "烧录波特率",
+      "clangdPath": "clangd 路径",
+      "clangdPathPlaceholder": "留空自动检测(PATH 中的 clangd 或 /usr/bin/clangd)",
+      "clangdPathHint": "C/C++ 代码补全/悬停/诊断引擎;打开固件工程的 .c/.h 文件时自动启动"
     }
+  },
+  "clangd": {
+    "notFound": "未找到 clangd:C/C++ 补全与诊断不可用。可在 设置 › 固件工具链 中指定 clangd 路径",
+    "needBuild": "先构建一次固件以生成 compile_commands.json,再打开 C 文件即可获得补全与诊断",
+    "failed": "clangd 多次崩溃已停用,C/C++ 补全与诊断暂不可用(重新打开工作区可重试)"
   },
   "push": {
     "noDevice": "请先在标题栏设备下拉中选择目标真机",
@@ -454,7 +467,7 @@
     "tabs": {
       "pcb": "PCB",
       "schematic": "原理图",
-      "view3d": "3D 视图",
+      "view3d": "3D",
       "enclosure": "外壳",
       "print": "打印"
     },
@@ -472,12 +485,20 @@
     "errors": {
       "evalTimeout": "评估超时(30 秒),电路引擎已重置,请重试",
       "noBoardEntry": "未找到入口文件 design/board.tsx",
+      "noBoard": "设计中未找到 <board> 元素(需默认导出返回 <board> 的组件)",
       "noWorkspace": "导出目录必须位于当前工作区内",
       "badFileName": "非法导出文件名"
     },
     "view3d": {
       "explode": "爆炸视图",
+      "editEnclosure": "编辑外壳",
+      "editHint": "拖动手柄调整外壳;拖动孔位手柄移动/缩放开孔",
       "hint": "拖动旋转 · 滚轮缩放"
+    },
+    "view": {
+      "zoomHint": "滚轮缩放 · 拖动平移 · 双击复位",
+      "loading": "正在生成视图…",
+      "error": "视图渲染失败"
     },
     "export": {
       "needEval": "请先成功运行设计",
@@ -494,9 +515,13 @@
       "standoffOuterR": "支撑柱外半径 (mm)",
       "standoffInnerR": "螺孔半径 (mm)",
       "cornerR": "外壳圆角 (mm)",
+      "color": "外壳颜色",
       "screenWindow": "顶盖屏幕窗",
       "screenWindowHint": "在顶盖为屏幕开窗(需检测到屏幕元件)",
       "noScreenHint": "未检测到屏幕元件:请把元件命名为 SCREEN/DISPLAY/LCD/OLED 开头",
+      "battery": "电池占位",
+      "batteryHint": "在底盒内腔展示电池占位(仅 3D 可视化,不参与打印)",
+      "batteryCols": "宽 × 高 × 厚 (mm)",
       "ports": "侧壁开孔",
       "noPorts": "尚无开孔;为 USB/按键添加缺口",
       "addPort": "添加开孔",
@@ -506,7 +531,9 @@
       "wall_south": "南(下)",
       "wall_east": "东(右)",
       "wall_west": "西(左)",
-      "portHint": "单位 mm:x/y 沿墙偏移,w/h 开孔尺寸,r 圆角"
+      "portHint": "单位 mm:x/y 沿墙偏移,w/h 开孔尺寸,r 圆角",
+      "undo": "撤销外壳修改",
+      "redo": "重做外壳修改"
     },
     "addDevice": {
       "title": "添加到模拟器",

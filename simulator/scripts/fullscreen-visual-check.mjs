@@ -16,8 +16,9 @@
  *       断言众数色 ≈ 主题标题栏色(dark #2B2D30 / light #F7F8FA,±12/通道)且占比
  *       ≥ 35%。系统菜单栏在全屏可见(系统设置控制)时可能叠占窗口顶部,故对
  *       「窗顶+20pt」与「窗顶+52pt(越过 ~33pt 菜单栏)」双候选行采样,任一命中即过;
- *    b) 红绿灯(如实记录,不判负):原生全屏下由 AppKit 管理,常驻态预期不可见
- *       (仅悬停屏幕顶部时随系统工具条显示,与 VS Code 一致)——记录三特征色命中数;
+ *    b) 假红绿灯(硬断言):原生全屏下真件被 AppKit 收走,TitleBar 原位自绘仿
+ *       macOS 红绿灯(红 #FF5F57 / 黄 #FEBC2E / 绿 #28C840,红=关/黄=禁/绿=退全屏)
+ *       ——三簇必须常驻可见且 x 序 红<黄<绿;
  *    c) 菜单栏行:如实记录可见性与众数色(受系统设置影响,不作硬断言);
  * 4. 写哨兵文件 → main 退出原生全屏 → 断言 `[fs-visual] exited` 的 native=false、
  *    simple=false 且 bounds 精确恢复;
@@ -120,8 +121,9 @@ s = p['scaleFactor']
 wa, b = p['workArea'], p['bounds']
 res = {'shot': [W, H]}
 
-# --- a) 红绿灯三簇(如实记录,不判负):原生全屏下 AppKit 收进悬停工具条,常驻态
-#     预期不可见;若截屏恰逢悬停显示也如实记录
+# --- a) 假红绿灯三簇(硬断言):原生全屏下真件被 AppKit 收走,TitleBar 在原位
+#     自绘仿 macOS 红绿灯(FakeTrafficLights,名义色同真件)——必须常驻可见,
+#     三簇 x 序 红<黄<绿
 targets = {'red': (255, 95, 87), 'yellow': (254, 188, 46), 'green': (40, 200, 64)}
 def near(c, t, tol=30):
     return all(abs(a - v) <= tol for a, v in zip(c, t))
@@ -130,8 +132,15 @@ bx1, by1 = min(W, x0 + int(100 * s)), min(H, y0 + int(40 * s))
 found = {}
 for k, t in targets.items():
     pts = [(x, y) for y in range(y0, by1) for x in range(x0, bx1) if near(im.getpixel((x, y)), t)]
-    found[k] = {'count': len(pts)}
+    found[k] = {
+        'count': len(pts),
+        'cx': (sum(q[0] for q in pts) / len(pts) / s - b['x']) if pts else None,
+    }
 res['lights'] = found
+ok_lights = all(found[k]['count'] >= 20 for k in targets) and (
+    found['red']['cx'] < found['yellow']['cx'] < found['green']['cx']
+)
+res['ok_lights'] = bool(ok_lights)
 
 # --- b) 无灰条(硬断言):标题栏横带众数 ≈ 主题标题栏色。
 #     系统菜单栏在全屏可见(系统设置)时可能叠占窗口顶部 ~33pt,
@@ -162,7 +171,7 @@ if menu_visible:
 res['menubar'] = {'visible_above_window': bool(menu_visible), 'mode': menu_mode, 'window_top_pt': b['y']}
 
 print(json.dumps(res))
-sys.exit(0 if ok_band else 3)
+sys.exit(0 if (ok_lights and ok_band) else 3)
 `
   try {
     const out = execFileSync('python3', ['-c', py, JSON.stringify(payload)], {
@@ -255,7 +264,7 @@ void (async () => {
     if (!how) break // 权限问题不重试,走降级分支
     const r = pixelAssert(entered)
     res = r.res
-    if (res && res.ok_band) break
+    if (res && res.ok_lights && res.ok_band) break
     if (attempt < 3) {
       console.log(`[fs-visual] 第 ${attempt} 次截屏断言未过(可能撞上瞬态)→ 2.5s 后重试`)
       await sleep(2500)
@@ -275,9 +284,11 @@ void (async () => {
       failed++
     } else {
       const L = res.lights
-      console.log(
-        `[fs-visual] 红绿灯(如实记录,原生全屏常驻态预期不可见,悬停才显示):` +
-          `red=${L.red.count}px yellow=${L.yellow.count}px green=${L.green.count}px`
+      assert(
+        '假红绿灯三簇常驻可见且 x 序 红<黄<绿(TitleBar 自绘)',
+        res.ok_lights,
+        `red=${L.red.count}px@x${L.red.cx?.toFixed(0)} yellow=${L.yellow.count}px@x${L.yellow.cx?.toFixed(0)} ` +
+          `green=${L.green.count}px@x${L.green.cx?.toFixed(0)}(窗口内逻辑坐标)`
       )
       const bandDetail = res.band
         .map((b2) => `dy=${b2.dy_pt}pt mode=rgb(${b2.mode}) 占比 ${(b2.frac * 100).toFixed(0)}%${b2.hit ? '✓' : ''}`)

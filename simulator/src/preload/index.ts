@@ -7,6 +7,8 @@ import type {
   AppSettings,
   BuildLogLine,
   BuildResult,
+  ClangdServerNotification,
+  ClangdStatus,
   DevdDevice,
   DeviceProfile,
   EffectiveTheme,
@@ -34,7 +36,8 @@ import type {
   TerminalExitEvent,
   TerminalSessionInfo,
   ToolWindowClosedEvent,
-  ToolchainInfo
+  ToolchainInfo,
+  WorkspaceSession
 } from '../shared/ipc-types'
 import { simApi } from './simApi'
 
@@ -56,9 +59,11 @@ const api = {
     subscribe('win:maximized', cb),
   /** 查询当前窗口全屏态(macOS/Win/Linux 均为原生 isFullScreen) */
   windowIsFullScreen: (): Promise<boolean> => ipcRenderer.invoke('win:is-fullscreen'),
-  /** 全屏态变化订阅(TitleBar 原生全屏下取消 macOS 红绿灯 80px 预留区) */
+  /** 全屏态变化订阅(TitleBar 原生全屏下切换 假红绿灯/80px 预留区) */
   onWindowFullScreen: (cb: (fullscreen: boolean) => void): (() => void) =>
     subscribe('win:fullscreen', cb),
+  /** 设置窗口全屏(假红绿灯绿键=退出全屏;走原生 setFullScreen) */
+  windowSetFullScreen: (flag: boolean): void => ipcRenderer.send('win:set-fullscreen', flag),
   /** 读取工作区 git 分支(非 git 仓库返回 null) */
   gitBranch: (root: string): Promise<string | null> => ipcRenderer.invoke('shell:git-branch', root),
   /** 截图 PNG 字节落盘到 ~/Downloads,返回完整路径 */
@@ -143,6 +148,9 @@ const api = {
   // ---- 会话恢复(阶段 2:窗口状态 / 上次工作区 / 编辑器标签) ----
   /** 启动恢复信息(restore 开关位 + 上次工作区 + 编辑器会话;App 挂载时查询一次) */
   sessionStartup: (): Promise<SessionStartupInfo> => ipcRenderer.invoke('session:startup'),
+  /** 指定工作区的编辑器会话(<root>/.ide/session.json,含旧 userData 会话迁移兜底;无则 null) */
+  sessionForRoot: (root: string): Promise<WorkspaceSession | null> =>
+    ipcRenderer.invoke('session:for-root', root),
   /** 会话状态去抖推送(fire-and-forget;main 内存即时 + 去抖落盘 + 退出双保险) */
   sessionUpdate: (payload: SessionUpdatePayload): void =>
     ipcRenderer.send('session:update', payload),
@@ -180,6 +188,25 @@ const api = {
   /** 固件任务结束事件 */
   onFirmwareDone: (cb: (result: FirmwareTaskResult) => void): (() => void) =>
     subscribe('toolchain:done', cb),
+
+  // ---- clangd LSP(固件工程 C/C++ 补全/悬停/诊断) ----
+  /** 惰性启动 clangd 会话(root 缺省 = main 侧当前工作区);返回状态供 renderer 提示 */
+  clangdStart: (root?: string): Promise<ClangdStatus> =>
+    ipcRenderer.invoke('clangd:start', root === undefined ? undefined : { root }),
+  /** 停止会话(杀 clangd 进程) */
+  clangdStop: (): Promise<void> => ipcRenderer.invoke('clangd:stop'),
+  /** LSP 请求转发(白名单:completion/hover/signatureHelp/definition) */
+  clangdRequest: (method: string, params: unknown): Promise<unknown> =>
+    ipcRenderer.invoke('clangd:request', { method, params }),
+  /** 文档同步通知(didOpen/didChange/didClose/didSave;fire-and-forget) */
+  clangdNotify: (method: string, params: unknown): void =>
+    ipcRenderer.send('clangd:notify', { method, params }),
+  /** 服务器通知(白名单内,当前仅 textDocument/publishDiagnostics) */
+  onClangdEvent: (cb: (ev: ClangdServerNotification) => void): (() => void) =>
+    subscribe('clangd:event', cb),
+  /** 异步状态变化(崩溃重启成功 running / 到达上限 failed / stopped) */
+  onClangdStatus: (cb: (status: ClangdStatus) => void): (() => void) =>
+    subscribe('clangd:status', cb),
 
   // ---- 虚拟设备档案(设备管理器) ----
   /** 列出全部档案(内置档案恒在首位) */

@@ -6,8 +6,9 @@
  *   macOS 预留 80px 红绿灯位(main 进程 titleBarStyle: hiddenInset)
  * - 中右区(运行工具组):设备下拉(虚拟 + mDNS 真机分组)| 目标芯片下拉 |
  *   ▶ 运行 | ⏹ 停止 | 🔨 构建固件 | 📤 推送 | ⋮ 更多
- *   (IDE v3 按工程类型门控:app=▶/⏹/📤,firmware=🔨 与 ⋮ 固件项,芯片下拉全类型保留;
- *    隐藏而非禁用,fwBusy 时取消入口恒可达)
+ *   (IDE v3 按工程类型门控:app=▶/⏹/📤,firmware=🔨 与 ⋮ 固件项 + 芯片下拉;
+ *    芯片下拉只服务 idf.py 目标选择,app 模拟用设备档案的芯片、hardware 只在创建时记 manifest.chip,
+ *    故仅 firmware 显示;隐藏而非禁用,fwBusy 时取消入口恒可达)
  * - 右区:🔍 搜索(Cmd+P)| ⚙ 设置(语言快捷切换 + IDE 设置独立窗口)| 🔔 通知 | Win/Linux 窗口控制
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
@@ -143,6 +144,53 @@ function IconButton(props: {
     >
       {props.children}
     </button>
+  )
+}
+
+/**
+ * 假红绿灯(仅 macOS 原生全屏时渲染):
+ * 原生全屏下 AppKit 把真红绿灯收进顶部悬停工具条(常驻不可见,Electron 公开 API
+ * 无法钉住,见 electron#21604),这里在自绘标题栏原位画一组仿 macOS 的窗控按钮:
+ * - 红 = 关闭窗口;黄 = 全屏下最小化不可用(与 macOS 语义一致,保留原色仅禁用);
+ *   绿 = 退出全屏(走原生 setFullScreen(false) 同一入口)
+ * - 组悬停时按钮内显示符号(macOS 行为:悬停任一枚,三枚同时出符号)
+ * - 鼠标移到屏幕顶部呼出系统工具条时,真红绿灯会短暂与本组同屏(系统行为,无害)
+ * 视觉规格对齐真件:12px 圆、8px 间距、描边加深一档;像素断言脚本按名义色检测本组。
+ */
+function FakeTrafficLights(): React.JSX.Element {
+  const { t } = useTranslation()
+  const glyph = 'opacity-0 transition-opacity duration-75 group-hover/ftl:opacity-100'
+  return (
+    <div className="group/ftl app-no-drag mr-1 flex shrink-0 items-center gap-2 pl-1">
+      {/* 红:关闭 */}
+      <button
+        title={t('titlebar.close')}
+        onClick={() => window.api.windowClose()}
+        className="flex h-3 w-3 items-center justify-center rounded-full border border-black/20"
+        style={{ backgroundColor: '#FF5F57' }}
+      >
+        <svg viewBox="0 0 8 8" className={`h-2 w-2 ${glyph}`} stroke="rgba(77,0,0,0.75)" strokeWidth="1.2">
+          <path d="M1.5 1.5 L6.5 6.5 M6.5 1.5 L1.5 6.5" fill="none" strokeLinecap="round" />
+        </svg>
+      </button>
+      {/* 黄:全屏下最小化不可用(macOS 同语义,保留原色、点击 no-op) */}
+      <button
+        title={t('titlebar.minimizeUnavailableFs')}
+        className="flex h-3 w-3 cursor-default items-center justify-center rounded-full border border-black/20"
+        style={{ backgroundColor: '#FEBC2E' }}
+      />
+      {/* 绿:退出全屏(macOS 全屏态绿键符号 = 两枚相向三角) */}
+      <button
+        title={t('titlebar.exitFullscreen')}
+        onClick={() => window.api.windowSetFullScreen(false)}
+        className="flex h-3 w-3 items-center justify-center rounded-full border border-black/20"
+        style={{ backgroundColor: '#28C840' }}
+      >
+        <svg viewBox="0 0 8 8" className={`h-2 w-2 ${glyph}`} fill="rgba(0,64,0,0.8)">
+          <path d="M1 4.6 L4.6 4.6 L4.6 8 Z M7 3.4 L3.4 3.4 L3.4 0 Z" transform="rotate(45 4 4)" />
+        </svg>
+      </button>
+    </div>
   )
 }
 
@@ -324,7 +372,7 @@ export function TitleBar(props: Props): React.JSX.Element {
 
   const selectedDeviceLabel = selectedDeviceName(dev, t('titlebar.simulatorDevice'))
 
-  // ---- 芯片下拉(阶段 3 接真:🔨/打包/烧录 均按此目标传参 idf.py) ----
+  // ---- 芯片下拉(阶段 3 接真:🔨/打包/烧录 均按此目标传参 idf.py;仅 firmware 工程渲染) ----
   const chipItems: DropdownItem[] = CHIP_TARGETS.map((c) => ({
     key: c,
     label: chipLabel(c),
@@ -427,9 +475,9 @@ export function TitleBar(props: Props): React.JSX.Element {
 
   return (
     <div
-      // macOS 原生全屏:红绿灯被 AppKit 收进顶部悬停工具条(常驻不可见)→ 取消
-      // 80px 红绿灯预留区(内容左移避免空缺),退出全屏恢复;拖拽区保留
-      // (原生全屏 Space 下拖拽为系统级 no-op,无副作用)
+      // macOS 原生全屏:真红绿灯被 AppKit 收进顶部悬停工具条(常驻不可见)→ 取消
+      // 80px 预留区,改在原位渲染假红绿灯(FakeTrafficLights,红=关/黄=禁/绿=退全屏);
+      // 退出全屏恢复预留区与真件;拖拽区保留(原生全屏 Space 下拖拽为系统级 no-op)
       className="app-drag flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0"
       style={{ paddingLeft: isMac && !fullscreen ? 80 : 8 }}
       onDoubleClick={(e) => {
@@ -437,6 +485,9 @@ export function TitleBar(props: Props): React.JSX.Element {
         if (!isMac && e.target === e.currentTarget) window.api.windowToggleMaximize()
       }}
     >
+      {/* macOS 全屏:自绘假红绿灯(原生按钮被 AppKit 收走,见组件注释) */}
+      {isMac && fullscreen && <FakeTrafficLights />}
+
       {/* 应用图标(像素夜空,build/icon.png 同源) */}
       <img
         src={appIconUrl}
@@ -474,11 +525,15 @@ export function TitleBar(props: Props): React.JSX.Element {
           <LuChevronDown className="text-xs" />
         </MenuButton>
 
-        <MenuButton items={chipItems} title={t('titlebar.chip')}>
-          <LuCpu className="text-jb-muted" />
-          <span>{chipLabel(dev.chip)}</span>
-          <LuChevronDown className="text-xs" />
-        </MenuButton>
+        {/* 目标芯片下拉:只决定 idf.py 的编译目标,app 模拟走设备档案芯片,
+            hardware 只在创建时记录 manifest.chip → 仅固件工程显示(§5) */}
+        {showFw && (
+          <MenuButton items={chipItems} title={t('titlebar.chip')}>
+            <LuCpu className="text-jb-muted" />
+            <span>{chipLabel(dev.chip)}</span>
+            <LuChevronDown className="text-xs" />
+          </MenuButton>
+        )}
 
         <div className="mx-1 h-5 w-px bg-ink-700" />
 
