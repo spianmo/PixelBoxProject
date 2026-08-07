@@ -148,46 +148,78 @@ function IconButton(props: {
 }
 
 /**
- * 假红绿灯(仅 macOS 原生全屏时渲染):
+ * 假红绿灯(仅 macOS 原生全屏时渲染)—— 与真件一比一(测量驱动,check:lights 验收):
  * 原生全屏下 AppKit 把真红绿灯收进顶部悬停工具条(常驻不可见,Electron 公开 API
- * 无法钉住,见 electron#21604),这里在自绘标题栏原位画一组仿 macOS 的窗控按钮:
- * - 红 = 关闭窗口;黄 = 全屏下最小化不可用(与 macOS 语义一致,保留原色仅禁用);
- *   绿 = 退出全屏(走原生 setFullScreen(false) 同一入口)
- * - 组悬停时按钮内显示符号(macOS 行为:悬停任一枚,三枚同时出符号)
- * - 鼠标移到屏幕顶部呼出系统工具条时,真红绿灯会短暂与本组同屏(系统行为,无害)
- * 视觉规格对齐真件:12px 圆、8px 间距、描边加深一档;像素断言脚本按名义色检测本组。
+ * 无法钉住,见 electron#21604),这里在自绘标题栏「真件原位」画一组窗控按钮:
+ * - 红 = 关闭窗口;黄 = 全屏下最小化不可用(保留原色、点击 no-op,悬停仍显 − 符号,
+ *   与窗口态真件视觉一致);绿 = 退出全屏(走原生 setFullScreen(false) 同一入口)
+ * - 组悬停时三枚同时出符号(macOS 行为);鼠标移到屏幕顶部呼出系统工具条时,
+ *   真红绿灯会短暂与本组同屏(系统行为,无害)
+ *
+ * 几何与配色全部来自真件截屏基准 crop 的实测(scripts/traffic-lights-diff-check.mjs
+ * 同一管线采集,ICC→sRGB 后测量;macOS 26 @2x):
+ * - 三枚 12pt 圆、圆心距精确 20pt;真件圆心实测在窗口内 (18.75,17.75) 起——即
+ *   trafficLightPosition {x:12,y:10} 名义位再内缩 (0.75,1.75)pt(Tahoe 实测),
+ *   故容器绝对定位 left:12.75 top:11.75(绝对定位不再挤动标题栏内容,titlebar
+ *   全屏保持 paddingLeft:80 与窗口态版式完全一致);
+ * - 圆面名义色 #FF5F57/#FEBC2E/#28C840(实测一致),外缘 0.5pt 饱和深色 rim
+ *   (实测混合值反推:红 (249,59,48)/黄 (249,169,3)/绿 (7,181,22));
+ * - ×:纯色 (115,0,0),臂宽 1.15pt 圆帽,端点 ±2.2pt(含帽 bbox ±2.75pt,与
+ *   窗口态及全屏工具条真件双源实测一致);
+ * - −:纯色 (152,86,1),7.5×1.5pt 圆帽横杠(真件窗口态悬停实测);
+ * - 全屏绿键 = 相向双三角(全屏工具条真件实测):两枚直角三角形直角顶点在圆心
+ *   两侧沿反对角线错开 ~0.5pt、斜边朝外(11pt 工具条钮按 12/11 换算),色 (0,98,0)。
  */
 function FakeTrafficLights(): React.JSX.Element {
   const { t } = useTranslation()
   const glyph = 'opacity-0 transition-opacity duration-75 group-hover/ftl:opacity-100'
+  const btnCls = 'block h-3 w-3 p-0'
   return (
-    <div className="group/ftl app-no-drag mr-1 flex shrink-0 items-center gap-2 pl-1">
-      {/* 红:关闭 */}
-      <button
-        title={t('titlebar.close')}
-        onClick={() => window.api.windowClose()}
-        className="flex h-3 w-3 items-center justify-center rounded-full border border-black/20"
-        style={{ backgroundColor: '#FF5F57' }}
-      >
-        <svg viewBox="0 0 8 8" className={`h-2 w-2 ${glyph}`} stroke="rgba(77,0,0,0.75)" strokeWidth="1.2">
-          <path d="M1.5 1.5 L6.5 6.5 M6.5 1.5 L1.5 6.5" fill="none" strokeLinecap="round" />
+    <div
+      className="group/ftl app-no-drag absolute flex"
+      style={{ left: 12.75, top: 11.75, gap: 8 }}
+    >
+      {/* 红:关闭(悬停 ×) */}
+      <button title={t('titlebar.close')} onClick={() => window.api.windowClose()} className={btnCls}>
+        <svg viewBox="0 0 12 12" className="h-3 w-3">
+          <circle cx="6" cy="6" r="5.75" fill="#FF5F57" stroke="rgb(249,59,48)" strokeWidth="0.5" />
+          <path
+            d="M3.8 3.8 L8.2 8.2 M8.2 3.8 L3.8 8.2"
+            stroke="rgb(115,0,0)"
+            strokeWidth="1.15"
+            strokeLinecap="round"
+            fill="none"
+            className={glyph}
+          />
         </svg>
       </button>
-      {/* 黄:全屏下最小化不可用(macOS 同语义,保留原色、点击 no-op) */}
-      <button
-        title={t('titlebar.minimizeUnavailableFs')}
-        className="flex h-3 w-3 cursor-default items-center justify-center rounded-full border border-black/20"
-        style={{ backgroundColor: '#FEBC2E' }}
-      />
-      {/* 绿:退出全屏(macOS 全屏态绿键符号 = 两枚相向三角) */}
+      {/* 黄:全屏下最小化不可用(macOS 同语义:点击 no-op;悬停仍显 −,同窗口态真件) */}
+      <button title={t('titlebar.minimizeUnavailableFs')} className={`${btnCls} cursor-default`}>
+        <svg viewBox="0 0 12 12" className="h-3 w-3">
+          <circle cx="6" cy="6" r="5.75" fill="#FEBC2E" stroke="rgb(249,169,3)" strokeWidth="0.5" />
+          <path
+            d="M3 6 L9 6"
+            stroke="rgb(152,86,1)"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            fill="none"
+            className={glyph}
+          />
+        </svg>
+      </button>
+      {/* 绿:退出全屏(全屏态真件符号 = 相向双三角,直角顶点圆心相接、斜边朝外) */}
       <button
         title={t('titlebar.exitFullscreen')}
         onClick={() => window.api.windowSetFullScreen(false)}
-        className="flex h-3 w-3 items-center justify-center rounded-full border border-black/20"
-        style={{ backgroundColor: '#28C840' }}
+        className={btnCls}
       >
-        <svg viewBox="0 0 8 8" className={`h-2 w-2 ${glyph}`} fill="rgba(0,64,0,0.8)">
-          <path d="M1 4.6 L4.6 4.6 L4.6 8 Z M7 3.4 L3.4 3.4 L3.4 0 Z" transform="rotate(45 4 4)" />
+        <svg viewBox="0 0 12 12" className="h-3 w-3">
+          <circle cx="6" cy="6" r="5.75" fill="#28C840" stroke="rgb(7,181,22)" strokeWidth="0.5" />
+          <path
+            d="M6.3 1.6 L6.3 5.8 L1.6 5.8 Z M5.7 6.2 L10.4 6.2 L5.7 10.4 Z"
+            fill="rgb(0,98,0)"
+            className={glyph}
+          />
         </svg>
       </button>
     </div>
@@ -475,11 +507,12 @@ export function TitleBar(props: Props): React.JSX.Element {
 
   return (
     <div
-      // macOS 原生全屏:真红绿灯被 AppKit 收进顶部悬停工具条(常驻不可见)→ 取消
-      // 80px 预留区,改在原位渲染假红绿灯(FakeTrafficLights,红=关/黄=禁/绿=退全屏);
-      // 退出全屏恢复预留区与真件;拖拽区保留(原生全屏 Space 下拖拽为系统级 no-op)
-      className="app-drag flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0"
-      style={{ paddingLeft: isMac && !fullscreen ? 80 : 8 }}
+      // macOS 原生全屏:真红绿灯被 AppKit 收进顶部悬停工具条(常驻不可见)→ 在真件
+      // 原位绝对定位渲染假红绿灯(FakeTrafficLights,红=关/黄=禁/绿=退全屏,几何与
+      // 真件实测一比一);80px 预留区窗口态/全屏态恒定,内容不因假件挤动,版式完全
+      // 一致;退出全屏恢复真件;拖拽区保留(原生全屏 Space 下拖拽为系统级 no-op)
+      className="app-drag relative flex h-10 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 pr-0"
+      style={{ paddingLeft: isMac ? 80 : 8 }}
       onDoubleClick={(e) => {
         // Windows/Linux:双击空白区最大化/还原(macOS 由系统处理)
         if (!isMac && e.target === e.currentTarget) window.api.windowToggleMaximize()

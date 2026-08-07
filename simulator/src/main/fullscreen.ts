@@ -199,6 +199,85 @@ export function runFullscreenSmoke(win: BrowserWindow): void {
  * 3. 轮询哨兵文件(PIXELBOX_SMOKE_FS_EXIT_FILE)出现 → setFullScreen(false) 退出 →
  *    打印 [fs-visual] exited <json>(含 bounds 精确恢复断言结果)→ app.quit()。
  */
+/**
+ * dev 红绿灯一比一对齐冒烟(PIXELBOX_SMOKE_TL_DIFF=1,配套 scripts/traffic-lights-diff-check.mjs):
+ * 与外部脚本经 stdout 标记行 + 哨兵文件协作,依次提供两个稳态供其截屏采样:
+ * 1. 归一起点 → 挪到主显示器已知矩形(窗口态,真红绿灯位于 trafficLightPosition
+ *    {x:12,y:10},三枚 12pt 圆心 = 窗口内 (18,16)/(38,16)/(58,16))→ 打印
+ *    [tl-diff] windowed <json>(bounds/scaleFactor),外部脚本据此裁真件基准 crop
+ *    (常态 + Quartz 合成悬停);窗口态保焦——真件仅活动窗口才是彩色(非活动为灰);
+ * 2. 进全屏哨兵出现 → setFullScreen(true) 进原生全屏 Space → 稳态后打印
+ *    [tl-diff] fullscreen <json>,外部脚本裁 TitleBar 假件 crop(常态 + 悬停)与
+ *    基准逐像素 diff;期间保焦 + 意外退全屏自愈(与 runFullscreenVisualSmoke 同策略);
+ * 3. 退出哨兵出现 → setFullScreen(false) → 打印 [tl-diff] exited → app.quit()。
+ */
+export function runTrafficLightsDiffSmoke(win: BrowserWindow): void {
+  if (process.platform !== 'darwin') {
+    console.log('[tl-diff] SKIP(仅 macOS)')
+    setTimeout(() => app.quit(), 1000)
+    return
+  }
+  const enterFile = process.env.PIXELBOX_SMOKE_TL_ENTER_FILE || '/tmp/pb-tl-enter-fs'
+  const exitFile = process.env.PIXELBOX_SMOKE_TL_EXIT_FILE || '/tmp/pb-tl-exit'
+  void (async () => {
+    const { existsSync } = await import('node:fs')
+    await delay(1500)
+    await smokeNormalize(win)
+    // 挪到主显示器工作区内已知矩形(外部截屏固定截主显示器,按本 bounds 裁真件)
+    const primary = screen.getPrimaryDisplay()
+    win.setBounds({
+      x: primary.workArea.x + 60,
+      y: primary.workArea.y + 60,
+      width: 1200,
+      height: 800
+    })
+    await delay(600)
+    app.focus({ steal: true })
+    win.focus()
+    await delay(400)
+    const info = (): object => ({
+      bounds: win.getBounds(),
+      scaleFactor: primary.scaleFactor,
+      native: win.isFullScreen(),
+      simple: win.isSimpleFullScreen()
+    })
+    console.log(`[tl-diff] windowed ${JSON.stringify(info())}`)
+    // 窗口态保焦:外部脚本此间做「常态截屏 → 悬停真件红键 → 悬停截屏」
+    let keep = setInterval(() => {
+      if (!win.isDestroyed()) app.focus({ steal: true })
+    }, 600)
+    await waitFor(() => existsSync(enterFile), 180000)
+    clearInterval(keep)
+    if (!existsSync(enterFile)) {
+      console.error('[tl-diff] 等进全屏哨兵超时 → 退出')
+      app.quit()
+      return
+    }
+    win.setFullScreen(true)
+    await waitFor(() => win.isFullScreen(), 12000)
+    await delay(2000) // 全屏 Space 过渡动画余量
+    app.focus({ steal: true })
+    console.log(`[tl-diff] fullscreen ${JSON.stringify(info())}`)
+    // 保焦 + 自愈(外部动作可能短暂夺焦/意外退全屏)
+    keep = setInterval(() => {
+      if (win.isDestroyed()) return
+      if (!win.isFullScreen()) {
+        console.log('[tl-diff] 检测到全屏被外部动作退出 → 自愈重进')
+        win.setFullScreen(true)
+        return
+      }
+      app.focus({ steal: true })
+    }, 600)
+    await waitFor(() => existsSync(exitFile), 180000)
+    clearInterval(keep)
+    win.setFullScreen(false)
+    await waitFor(() => !win.isFullScreen(), 12000)
+    await delay(800)
+    console.log(`[tl-diff] exited ${JSON.stringify(info())}`)
+    app.quit()
+  })()
+}
+
 export function runFullscreenVisualSmoke(win: BrowserWindow): void {
   if (process.platform !== 'darwin') {
     console.log('[fs-visual] SKIP(仅 macOS)')
