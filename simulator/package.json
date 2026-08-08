@@ -28,9 +28,11 @@
     "check:hardware": "node scripts/hardware-eval-check.mjs"
   },
   "dependencies": {
+    "basic-ftp": "^6.2.0",
     "bonjour-service": "^1.3.0",
     "chokidar": "^3.6.0",
     "esbuild": "^0.24.2",
+    "mqtt": "^5.15.2",
     "openscad-wasm-prebuilt": "^1.2.0",
     "ws": "^8.18.0"
   },

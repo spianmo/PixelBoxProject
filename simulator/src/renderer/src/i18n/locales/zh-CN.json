@@ -286,6 +286,12 @@
       "baseUrlHint": "OctoPrint 如 http://octopi.local;Moonraker 如 http://host:7125",
       "apiKey": "API Key",
       "apiKeyHint": "OctoPrint 必填(设置 › API);Moonraker 未启用鉴权时可留空",
+      "bambuLabel": "拓竹 Bambu Lab(LAN 模式)",
+      "bambuHostHint": "打印机局域网 IP(打印机屏幕 网络设置 可查);须开启 LAN 模式",
+      "bambuSerial": "机身序列号",
+      "bambuSerialHint": "设备信息页可查(如 01S00A000000000);用于 MQTT 通信路径",
+      "bambuAccessCode": "LAN 访问码",
+      "bambuAccessCodeHint": "打印机屏幕 网络设置 页的访问码;作为 MQTT/FTPS 密码",
       "test": "测试连接",
       "testing": "正在连接打印机…",
       "testOk": "连接成功:{{info}}",
@@ -332,7 +338,8 @@
       "kindInvalid": "无效的项目类型",
       "chipInvalid": "无效的目标芯片",
       "createFailed": "创建项目失败"
-    }
+    },
+    "chipHintHardware": "每颗芯片对应一块微雪参考板卡的 1:1 复刻模板(PCB + 模组封装 + 外壳);同时写入 pixelbox.json,可稍后更改"
   },
   "structure": {
     "noFile": "打开文件后显示其结构",
@@ -594,7 +601,7 @@
       "configureHint": "在 设置 › 工具 › 3D 打印机 中配置 OctoPrint / Moonraker 地址与 API Key",
       "test": "测试连接",
       "testOk": "打印机连接正常:{{info}}",
-      "sliceHint": "打印机只接受 G-code:请先用切片软件(Cura / PrusaSlicer / OrcaSlicer)对导出的 STL 切片",
+      "sliceHint": "请先用切片软件对导出的 STL 切片:OctoPrint/Moonraker 上传 .gcode;拓竹用 Bambu Studio / OrcaSlicer 导出 .gcode.3mf(新固件不接受裸 gcode)",
       "pickGcode": "选择 .gcode 文件…",
       "noFile": "未选择文件",
       "startPrint": "上传后立即打印",

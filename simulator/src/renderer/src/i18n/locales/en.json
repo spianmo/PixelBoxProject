@@ -286,6 +286,12 @@
       "baseUrlHint": "OctoPrint e.g. http://octopi.local; Moonraker e.g. http://host:7125",
       "apiKey": "API Key",
       "apiKeyHint": "Required for OctoPrint (Settings › API); optional for Moonraker without auth",
+      "bambuLabel": "Bambu Lab (LAN mode)",
+      "bambuHostHint": "Printer LAN IP (see printer screen › Network); LAN mode must be enabled",
+      "bambuSerial": "Serial number",
+      "bambuSerialHint": "See device info page (e.g. 01S00A000000000); used in the MQTT topic path",
+      "bambuAccessCode": "LAN access code",
+      "bambuAccessCodeHint": "Access code on the printer screen › Network page; used as the MQTT/FTPS password",
       "test": "Test Connection",
       "testing": "Connecting to printer…",
       "testOk": "Connected: {{info}}",
@@ -332,7 +338,8 @@
       "kindInvalid": "Invalid project kind",
       "chipInvalid": "Invalid target chip",
       "createFailed": "Failed to create the project"
-    }
+    },
+    "chipHintHardware": "Each chip maps to a 1:1 replica template of a Waveshare reference board (PCB + module footprint + enclosure); also written to pixelbox.json, changeable later"
   },
   "structure": {
     "noFile": "Open a file to see its structure",
@@ -594,7 +601,7 @@
       "configureHint": "Configure the OctoPrint / Moonraker URL and API key in Settings › Tools › 3D Printer",
       "test": "Test connection",
       "testOk": "Printer connected: {{info}}",
-      "sliceHint": "Printers only accept G-code — slice the exported STL with Cura / PrusaSlicer / OrcaSlicer first",
+      "sliceHint": "Slice the exported STL first: upload .gcode for OctoPrint/Moonraker; for Bambu export .gcode.3mf from Bambu Studio / OrcaSlicer (recent firmware rejects bare gcode)",
       "pickGcode": "Choose .gcode file…",
       "noFile": "No file selected",
       "startPrint": "Start printing after upload",

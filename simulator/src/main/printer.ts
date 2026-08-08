@@ -23,6 +23,20 @@ import { openAsBlob } from 'node:fs'
 import { basename } from 'node:path'
 import type { PrinterJobStatus, PrinterType, PrinterUploadResult } from '../shared/ipc-types'
 import { getSettings } from './settings'
+import { bambuTest, bambuUpload, bambuJob, disposeBambu, type BambuConfig } from './bambu'
+
+/** 拓竹配置装配:baseUrl 当纯主机名用(剥协议/端口),序列号与访问码必填 */
+async function loadBambuConfig(): Promise<BambuConfig> {
+  const { baseUrl, bambuSerial, bambuAccessCode } = (await getSettings()).printer
+  const host = baseUrl
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/[:/].*$/, '')
+  if (host.length === 0 || bambuSerial.trim().length === 0 || bambuAccessCode.trim().length === 0) {
+    throw new Error('printer:notConfigured')
+  }
+  return { host, serial: bambuSerial.trim(), accessCode: bambuAccessCode.trim() }
+}
 
 /** 生效的打印机配置(baseUrl 已归一化:补协议、去尾斜杠) */
 interface PrinterConfig {
@@ -95,6 +109,7 @@ interface MoonrakerInfoResp {
 }
 
 async function testConnection(): Promise<string> {
+  if ((await getSettings()).printer.type === 'bambu') return bambuTest(await loadBambuConfig())
   const cfg = await loadConfig()
   if (cfg.type === 'octoprint') {
     const json = await request<OctoVersionResp>(
@@ -129,6 +144,10 @@ interface MoonrakerUploadResp {
 }
 
 async function uploadGcode(path: string, startPrint: boolean): Promise<PrinterUploadResult> {
+  if ((await getSettings()).printer.type === 'bambu') {
+    // 拓竹不走 HTTP:FTPS 传 SD + MQTT 开打(bambu.ts)
+    return bambuUpload(await loadBambuConfig(), path, startPrint)
+  }
   const cfg = await loadConfig()
   const fileName = basename(path)
   // 文件系统错误(ENOENT/EACCES/EISDIR,如切片器重切后旧文件已删)统一映射
@@ -196,6 +215,7 @@ function clamp01(v: number): number {
 }
 
 async function queryJob(): Promise<PrinterJobStatus> {
+  if ((await getSettings()).printer.type === 'bambu') return bambuJob(await loadBambuConfig())
   const cfg = await loadConfig()
   if (cfg.type === 'octoprint') {
     const json = await request<OctoJobResp>(
@@ -244,7 +264,8 @@ export function registerPrinterIpc(): void {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     const options = {
       properties: ['openFile'] as Array<'openFile'>,
-      filters: [{ name: 'G-code', extensions: ['gcode', 'gco', 'g'] }]
+      // 3mf:拓竹只吃 .3mf/.gcode.3mf(Bambu Studio/OrcaSlicer「导出切片文件」产物)
+      filters: [{ name: 'G-code / 3MF', extensions: ['gcode', 'gco', 'g', '3mf'] }]
     }
     const ret = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
     if (ret.canceled || ret.filePaths.length === 0) return null
@@ -266,8 +287,9 @@ export function registerPrinterIpc(): void {
   ipcMain.handle('printer:job', async (): Promise<PrinterJobStatus> => queryJob())
 }
 
-/** 退出前兜底:中止全部在飞请求(长上传不阻塞退出) */
+/** 退出前兜底:中止全部在飞请求(长上传不阻塞退出)+ 断开拓竹 MQTT 缓存连接 */
 export function disposePrinter(): void {
   for (const ac of inflight) ac.abort()
   inflight.clear()
+  disposeBambu()
 }

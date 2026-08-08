@@ -380,7 +380,10 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
                         ))}
                       </select>
                     </div>
-                    <div className={HINT_CLASS}>{t('newProject.chipHint')}</div>
+                    {/* hardware 的芯片选择决定生成哪块微雪参考板卡模板(templates/boards 注册表) */}
+                    <div className={HINT_CLASS}>
+                      {t(kind === 'hardware' ? 'newProject.chipHintHardware' : 'newProject.chipHint')}
+                    </div>
                   </div>
                 )}
               </Section>

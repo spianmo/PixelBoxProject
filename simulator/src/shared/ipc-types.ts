@@ -264,7 +264,7 @@ export interface Hardware3D {
 // 打印机(OctoPrint / Moonraker,main 进程 printer.ts)
 // ---------------------------------------------------------------
 
-export type PrinterType = 'octoprint' | 'moonraker'
+export type PrinterType = 'octoprint' | 'moonraker' | 'bambu'
 
 /** 归一化打印任务状态(printer:job) */
 export interface PrinterJobStatus {
@@ -580,14 +580,18 @@ export interface AppSettings {
     /** 终端字号(对已打开会话即时生效) */
     fontSize: number
   }
-  /** 工具 › 3D 打印机(OctoPrint / Moonraker 联机) */
+  /** 工具 › 3D 打印机(OctoPrint / Moonraker / 拓竹 Bambu LAN 联机) */
   printer: {
     /** 驱动类型 */
     type: PrinterType
-    /** 服务地址(如 http://octopi.local;空串 = 未配置) */
+    /** 服务地址(OctoPrint/Moonraker 为 http URL;拓竹为打印机 IP;空串 = 未配置) */
     baseUrl: string
-    /** API Key(OctoPrint 必填;Moonraker 可选) */
+    /** API Key(OctoPrint 必填;Moonraker 可选;拓竹不用) */
     apiKey: string
+    /** 拓竹机身序列号(MQTT 主题路径;设备信息页可查) */
+    bambuSerial: string
+    /** 拓竹 LAN 访问码(打印机屏幕 网络设置 页) */
+    bambuAccessCode: string
   }
   /** 工具 › Git(版本控制) */
   git: {

@@ -238,8 +238,8 @@ export function installHardwareSmoke(): void {
 
         // OpenSCAD 外壳链路(几何唯一真源):脚手架 design/enclosure.scad →
         // wasm worker 编译(base+lid 预览质量)→ PB_META 契约解析。
-        // 模板参数基准(微雪 46×46×22.5):boardTopZ = wall2 + standoff4 = 6;
-        // 电池占位经 scad 侧钳制为 28×28×2.2 @ z=2(与旧参数化渲染同规则)
+        // 模板参数基准(微雪 46×46×22.5):boardTopZ = wall2 + standoff9.5 = 11.5
+        // (柱高 9.5 让 5mm 电池以真实厚度放进板下);电池钳制后 28×28×5 @ z=2
         const scadT0 = Date.now()
         await compileEnclosureScad(root)
         const scadSt = hardwareStore.get()
@@ -251,10 +251,10 @@ export function installHardwareSmoke(): void {
         const meta = scadSt.scad?.meta ?? null
         const scadMetaOk =
           meta !== null &&
-          meta.boardTopZ === 6 &&
+          meta.boardTopZ === 11.5 &&
           meta.battery !== null &&
           Math.abs(meta.battery[0] - 28) < 0.05 &&
-          Math.abs(meta.battery[2] - 2.2) < 0.05
+          Math.abs(meta.battery[2] - 5) < 0.05
         const scadMs = Date.now() - scadT0
         if (!scadOk || !scadSt.scad) {
           return {

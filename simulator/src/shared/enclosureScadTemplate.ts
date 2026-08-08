@@ -100,10 +100,13 @@ ${portsLit}
 ];
 
 /* [电池占位(非打印,仅 3D 展示)] */
-// 3.7V 锂电池的可视化占位:IDE 从 PB_META 读取,不进 STL;任一值 ≤0 即关闭
+// 3.7V 锂电池的可视化占位:IDE 从 PB_META 读取,不进 STL;任一值 ≤0 即关闭。
+// 厚度按板下真实净空钳制:可用高度 = standoff_h − board_t − board_under_clearance,
+// 电池装不下时先加高 standoff_h(板抬高,壳外形不变)
 battery_w = ${n(params.batteryMM?.w ?? 0)};
 battery_d = ${n(params.batteryMM?.h ?? 0)};
 battery_t = ${n(params.batteryMM?.t ?? 0)};
+board_under_clearance = 2.7;  // 板下元件高(≈2.5)+ 间隙
 
 /* [外观] */
 color_hex = "${colorHex}";  // 预览着色(仅显示;STL 无颜色,IDE 顶盖自动提亮)
@@ -125,7 +128,7 @@ bat_sx = max(board_w / 2 - bat_so, bat_so);
 bat_sy = max(board_d / 2 - bat_so, bat_so);
 bat_hw = min(battery_w / 2, inner_w / 2 - 0.5, max(2, bat_sx - bat_so));
 bat_hd = min(battery_d / 2, inner_d / 2 - 0.5, max(2, bat_sy - bat_so));
-bat_tc = min(battery_t, max(1, board_top - board_t - wall - 0.2));
+bat_tc = min(battery_t, max(1, standoff_h - board_t - board_under_clearance));
 bat_on = battery_w > 0 && battery_d > 0 && battery_t > 0;
 
 /* ---------------- 基础形体 ---------------- */

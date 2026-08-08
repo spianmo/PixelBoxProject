@@ -75,6 +75,9 @@ function TestStatus({ state }: { state: TestState }): React.JSX.Element | null {
 function PrinterPage(): React.JSX.Element {
   const { t } = useTranslation()
   const [test, setTest] = useState<TestState>({ status: 'idle' })
+  // 按草稿类型条件显示字段:拓竹要序列号+访问码(LAN 模式),HTTP 系要 API Key
+  const [draftType] = useDraftValue<string>('printer.type')
+  const isBambu = draftType === 'bambu'
 
   /** 测试连接:成功回显服务器版本/状态串,失败按 printer:<code> 映射 i18n */
   const runTest = async (): Promise<void> => {
@@ -99,21 +102,42 @@ function PrinterPage(): React.JSX.Element {
           label={t('settings.printer.type')}
           options={[
             { value: 'octoprint', label: 'OctoPrint' },
-            { value: 'moonraker', label: 'Moonraker' }
+            { value: 'moonraker', label: 'Moonraker' },
+            { value: 'bambu', label: t('settings.printer.bambuLabel') }
           ]}
         />
         <TextField
           path="printer.baseUrl"
           label={t('settings.printer.baseUrl')}
-          placeholder={t('settings.printer.baseUrlPlaceholder')}
+          placeholder={
+            isBambu ? '192.168.1.100' : t('settings.printer.baseUrlPlaceholder')
+          }
           mono
-          hint={t('settings.printer.baseUrlHint')}
+          hint={isBambu ? t('settings.printer.bambuHostHint') : t('settings.printer.baseUrlHint')}
         />
-        <PasswordField
-          path="printer.apiKey"
-          label={t('settings.printer.apiKey')}
-          hint={t('settings.printer.apiKeyHint')}
-        />
+        {!isBambu && (
+          <PasswordField
+            path="printer.apiKey"
+            label={t('settings.printer.apiKey')}
+            hint={t('settings.printer.apiKeyHint')}
+          />
+        )}
+        {isBambu && (
+          <>
+            <TextField
+              path="printer.bambuSerial"
+              label={t('settings.printer.bambuSerial')}
+              placeholder="01S00A000000000"
+              mono
+              hint={t('settings.printer.bambuSerialHint')}
+            />
+            <PasswordField
+              path="printer.bambuAccessCode"
+              label={t('settings.printer.bambuAccessCode')}
+              hint={t('settings.printer.bambuAccessCodeHint')}
+            />
+          </>
+        )}
         {/* 测试连接(printer:test 读已落盘设置,修改后先点「应用」) */}
         <div>
           <div className="flex items-center gap-3">
@@ -153,7 +177,10 @@ export const page: SettingsPage = {
     '3d print',
     'octoprint',
     'moonraker',
+    'bambu',
+    '拓竹',
     'gcode',
+    '3mf',
     'api key'
   ],
   order: 20,

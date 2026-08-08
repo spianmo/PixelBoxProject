@@ -41,7 +41,9 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   printer: {
     type: 'octoprint',
     baseUrl: '',
-    apiKey: ''
+    apiKey: '',
+    bambuSerial: '',
+    bambuAccessCode: ''
   },
   git: {
     executablePath: ''
@@ -94,9 +96,12 @@ const SANITIZERS: Record<string, Sanitizer> = {
   'terminal.shellOverride': trimmedString(1024),
   'terminal.fontSize': intRange(TERMINAL_FONT_SIZE_RANGE.min, TERMINAL_FONT_SIZE_RANGE.max),
   // 3D 打印机联机(printer.ts;baseUrl 空串 = 未配置,printer:* IPC 抛 printer:notConfigured)
-  'printer.type': (v) => (v === 'octoprint' || v === 'moonraker' ? v : undefined),
+  'printer.type': (v) => (v === 'octoprint' || v === 'moonraker' || v === 'bambu' ? v : undefined),
   'printer.baseUrl': trimmedString(1024),
   'printer.apiKey': trimmedString(256),
+  // 拓竹 LAN 模式凭据(bambu.ts:序列号进 MQTT 主题,访问码为 MQTT/FTPS 密码)
+  'printer.bambuSerial': trimmedString(64),
+  'printer.bambuAccessCode': trimmedString(64),
   // git 可执行路径覆盖(空串 = 自动:PATH 中的 git → /usr/bin/git;见 main/git.ts)
   'git.executablePath': trimmedString(1024)
 }
