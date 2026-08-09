@@ -8,14 +8,22 @@
  * 主题:深浅两套 ANSI 16 色成对定义(dark = JetBrains Dark 近似,背景对齐编辑器
  * #1E1F22;light = IntelliJ Light 近似,背景纯白),subscribeTheme 对全部已开
  * 会话热切 options.theme(含滚回缓冲即时重绘,无需重开会话);
- * 字号走 IDE 设置(工具 › 终端;settings:changed 对全部已开会话即时生效),
- * JetBrains Mono 优先的等宽回退链(与 tailwind fontFamily.mono 一致)。
+ * 字体族/字号/行高走 IDE 设置(工具 › 终端;settings:changed 对全部已开会话
+ * 即时生效):设置的字体排回退链首位,缺字时按 JetBrains Mono 优先的等宽链
+ * 兜底(与 tailwind fontFamily.mono 一致)。
+ *
+ * 渲染器:WebGL + customGlyphs(对齐 JetBrains 终端的自绘策略)——制表符
+ * U+2500-257F / 方块与渐变 U+2580-259F / Powerline 三角 U+E0B0-E0B7 按单元格
+ * 几何自绘,框线连续、半块无缝、p10k 箭头无需 Nerd Font;DOM 渲染器把这些
+ * 字符当字形交给字体,会出现框线断裂/方块横纹/箭头缺字。WebGL 不可用或
+ * 上下文丢失(远程桌面/驱动黑名单/超上下文数上限)时回退 DOM 渲染器。
  */
 import { Terminal } from '@xterm/xterm'
 import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalSessionInfo } from '../../../shared/ipc-types'
 import { getAppSettings, subscribeSettings } from '../settings/store'
@@ -76,7 +84,14 @@ function xtermTheme(): ITheme {
   return getEffectiveTheme() === 'light' ? INTELLIJ_LIGHT_THEME : JETBRAINS_DARK_THEME
 }
 
-const FONT_FAMILY = '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace'
+const FONT_FALLBACK = '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace'
+
+/** 设置的字体族排链首(空串/默认值时即纯回退链) */
+function terminalFontFamily(): string {
+  const family = getAppSettings().terminal.fontFamily.trim()
+  if (family.length === 0 || family === 'JetBrains Mono') return FONT_FALLBACK
+  return `"${family.replace(/"/g, '')}", ${FONT_FALLBACK}`
+}
 
 /**
  * JetBrains Mono(@fontsource woff2)异步加载:若实例在字体就绪前创建,
@@ -91,7 +106,7 @@ function remeasureAfterFontLoad(id: string, fontSize: number): void {
         const inst = registry.get(id)
         if (!inst) return
         inst.term.options.fontFamily = 'monospace'
-        inst.term.options.fontFamily = FONT_FAMILY
+        inst.term.options.fontFamily = terminalFontFamily()
         fitTerm(id)
       })
       .catch(() => undefined)
@@ -113,13 +128,19 @@ export interface TermInstance {
 
 const registry = new Map<string, TermInstance>()
 
-// 终端字号即时生效:设置镜像变化 → 全部实例 options.fontSize + 重排(fit)
-let appliedFontSize: number | null = null
+// 终端字体族/字号/行高即时生效:设置镜像变化 → 全部实例 options + 重排(fit)
+let appliedFontKey: string | null = null
 subscribeSettings(() => {
-  const size = getAppSettings().terminal.fontSize
-  if (size === appliedFontSize) return
-  appliedFontSize = size
-  for (const inst of registry.values()) inst.term.options.fontSize = size
+  const { fontSize, lineHeight } = getAppSettings().terminal
+  const fontFamily = terminalFontFamily()
+  const key = `${fontSize}|${lineHeight}|${fontFamily}`
+  if (key === appliedFontKey) return
+  appliedFontKey = key
+  for (const inst of registry.values()) {
+    inst.term.options.fontSize = fontSize
+    inst.term.options.fontFamily = fontFamily
+    inst.term.options.lineHeight = lineHeight
+  }
   fitAllTerms()
 })
 
@@ -147,8 +168,10 @@ export function createTermInstance(info: TerminalSessionInfo): TermInstance {
 
   const term = new Terminal({
     fontSize: getAppSettings().terminal.fontSize,
-    fontFamily: FONT_FAMILY,
+    fontFamily: terminalFontFamily(),
+    lineHeight: getAppSettings().terminal.lineHeight,
     theme: xtermTheme(), // 深浅色板随当前有效主题(后续切换经 subscribeTheme 热切)
+    customGlyphs: true, // 制表/方块/Powerline 自绘(WebGL 渲染器下生效)
     cursorBlink: true,
     scrollback: 8000,
     // pipe 兜底模式输出是裸 \n(无 pty 不做 ONLCR 翻译),xterm 侧补 CR
@@ -194,6 +217,18 @@ export function getTermInstance(id: string): TermInstance | undefined {
   return registry.get(id)
 }
 
+/** WebGL 渲染器(须在 term.open 之后加载;失败/丢上下文回退 DOM 渲染器) */
+function loadWebglRenderer(inst: TermInstance): void {
+  try {
+    const webgl = new WebglAddon()
+    // 上下文丢失(GPU 重置/超出浏览器 WebGL 上下文数上限):销毁即回退 DOM 渲染
+    webgl.onContextLoss(() => webgl.dispose())
+    inst.term.loadAddon(webgl)
+  } catch {
+    // WebGL 不可用(远程桌面/驱动黑名单等):DOM 渲染器兜底
+  }
+}
+
 /** 把常驻 holder 接入 React 挂载点(首次接入时才真正 term.open) */
 export function attachTerm(id: string, host: HTMLElement): void {
   const inst = registry.get(id)
@@ -202,6 +237,7 @@ export function attachTerm(id: string, host: HTMLElement): void {
   if (!inst.opened) {
     inst.opened = true
     inst.term.open(inst.holder)
+    loadWebglRenderer(inst)
   }
 }
 

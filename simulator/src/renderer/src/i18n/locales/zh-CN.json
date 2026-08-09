@@ -142,7 +142,8 @@
   "editor": {
     "welcome": "打开工作区后,双击左侧文件开始编辑(⌘P 快速打开)",
     "unsaved": "未保存",
-    "closeDirtyConfirm": "{{name}} 有未保存的修改,确定关闭吗?"
+    "closeDirtyConfirm": "{{name}} 有未保存的修改,确定关闭吗?",
+    "externalOpenFailed": "无法打开 {{name}}(不在工作区或工具链目录内)"
   },
   "editorTabs": {
     "close": "关闭",
@@ -258,11 +259,16 @@
       "fontFamilyHint": "默认 JetBrains Mono;自定义字体文件将在阶段 2 引入后本地生效"
     },
     "terminal": {
+      "sectionFont": "字体设置",
+      "sectionApp": "应用程序设置",
+      "fontFamily": "字体",
+      "fontFamilyHint": "候选为本机检测到的等宽字体,也可手动输入其它字体名;不可用时回退 JetBrains Mono → SF Mono → Menlo → Consolas",
+      "fontSize": "字号",
+      "fontSizeHint": "对全部已打开会话即时生效",
+      "lineHeight": "行高",
       "shellOverride": "Shell 路径",
       "shellOverridePlaceholder": "留空使用系统默认($SHELL)",
-      "shellOverrideHint": "仅对新建会话生效;路径不存在时回退系统默认",
-      "fontSize": "终端字号",
-      "fontSizeHint": "对全部已打开会话即时生效"
+      "shellOverrideHint": "仅对新建会话生效;路径不存在时回退系统默认"
     },
     "keymap": {
       "readonlyHint": "键位表当前为只读(自定义快捷键规划中)",
@@ -731,6 +737,11 @@
     }
   },
   "menu": {
+    "file": {
+      "title": "文件",
+      "closeTab": "关闭标签页",
+      "closeWindow": "关闭窗口"
+    },
     "git": {
       "title": "Git",
       "commit": "提交…",

@@ -14,11 +14,12 @@
  */
 import { ipcMain, BrowserWindow } from 'electron'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, realpathSync, watch, promises as fsp, type FSWatcher } from 'node:fs'
+import { join, resolve, dirname, basename, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { getSettingsSync } from './settings'
 import { getWatchedRoot } from './workspace'
+import { detectToolchain } from './toolchain'
 import type { ClangdStatus, ClangdServerNotification } from '../shared/ipc-types'
 
 /** 请求超时(clangd 首次解析 ESP-IDF 头文件可达数秒,给足余量) */
@@ -31,7 +32,8 @@ const REQUEST_WHITELIST = new Set([
   'textDocument/completion',
   'textDocument/hover',
   'textDocument/signatureHelp',
-  'textDocument/definition'
+  'textDocument/definition',
+  'textDocument/declaration'
 ])
 
 /** renderer → clangd 的通知方法白名单(文档同步) */
@@ -44,6 +46,11 @@ const NOTIFY_WHITELIST = new Set([
 
 /** clangd → renderer 的服务器通知白名单(诊断) */
 const SERVER_NOTIFY_WHITELIST = new Set(['textDocument/publishDiagnostics'])
+
+/** clangd:read-source 可读扩展名(C/C++ 头与源码;标准库无扩展名头另行放行) */
+const SOURCE_EXT_RE = /\.(h|hpp|hh|hxx|c|cc|cpp|cxx|inc|inl|ipp|tcc|def|modulemap)$/i
+/** clangd:read-source 单文件体积上限 */
+const READ_SOURCE_MAX_BYTES = 4 * 1024 * 1024
 
 /**
  * 解析 clangd 可执行文件:设置覆盖(非空且存在)→ PATH → /usr/bin/clangd。
@@ -120,9 +127,18 @@ class ClangdSession {
       capabilities: {
         textDocument: {
           synchronization: { didSave: true },
-          // 全文同步(didChange 发整篇),桥两端都最简单;snippet 关闭 → 纯文本插入
-          completion: { completionItem: { snippetSupport: false } },
+          // 全文同步(didChange 发整篇),桥两端都最简单;snippet 关闭 → 纯文本插入;
+          // documentationFormat 声明 markdown → 联想条目的函数 doc 按富文本渲染
+          completion: {
+            completionItem: {
+              snippetSupport: false,
+              documentationFormat: ['markdown', 'plaintext']
+            }
+          },
           hover: { contentFormat: ['markdown', 'plaintext'] },
+          // linkSupport 不声明(默认 false)→ definition/declaration 返回纯 Location[]
+          definition: {},
+          declaration: {},
           publishDiagnostics: {}
         }
       }
@@ -266,6 +282,59 @@ class ClangdSession {
 let session: ClangdSession | null = null
 /** start 并发去重(多个 C 文件同时打开时只拉起一次) */
 let starting: Promise<ClangdStatus> | null = null
+/**
+ * 定义跳转可读根目录(会话建立时计算):工作区 + ESP-IDF + ~/.espressif 工具链 +
+ * clangd 安装前缀(内建头文件 lib/clang/<N>/include)。clangd:read-source 与
+ * 文档通知牢笼共用 —— 跳进 IDF 头文件后还能继续悬停/跳转
+ */
+let allowedReadRoots: string[] = []
+/**
+ * .clangd 配置文件监听:clangd 只在 TU 重新解析时应用新配置,用户改完 .clangd
+ * 后若不敲键盘,陈旧诊断会一直挂着 → 检测到变更直接重启会话,renderer 收到
+ * running 状态后重发全部 didOpen,诊断立即按新配置刷新。
+ * (工作区 chokidar watcher 刻意忽略点文件,故这里单独 fs.watch 工作区根)
+ */
+let configWatcher: FSWatcher | null = null
+let configDebounce: NodeJS.Timeout | null = null
+
+function unwatchClangdConfig(): void {
+  if (configDebounce) {
+    clearTimeout(configDebounce)
+    configDebounce = null
+  }
+  configWatcher?.close()
+  configWatcher = null
+}
+
+function watchClangdConfig(root: string): void {
+  unwatchClangdConfig()
+  try {
+    // 监听根目录(非递归)而非 .clangd 文件本身:文件可能尚不存在/被整体替换
+    configWatcher = watch(root, (_event, filename) => {
+      if (filename !== '.clangd') return
+      if (configDebounce) clearTimeout(configDebounce)
+      configDebounce = setTimeout(() => {
+        configDebounce = null
+        void restartForConfigChange(root)
+      }, 500)
+    })
+  } catch {
+    // 目录不可监听(已删等):放弃,下次会话重建时再试
+  }
+}
+
+async function restartForConfigChange(root: string): Promise<void> {
+  // 会话已切换到其它工作区 / 正在启动中:不动(变更会被新会话自然读到)
+  if (starting || !session || session.root !== resolve(root)) return
+  session.dispose()
+  session = null
+  starting = startSession(undefined).finally(() => {
+    starting = null
+  })
+  const status = await starting
+  console.log(`[clangd] .clangd 变更,会话已重启(${status.state})`)
+  broadcast('clangd:status', status)
+}
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -273,12 +342,43 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-/** 校验 uri 位于会话工作区内(didOpen 等文档通知的路径牢笼) */
-function uriInsideRoot(uri: unknown, root: string): boolean {
-  if (typeof uri !== 'string' || !uri.startsWith('file://')) return false
-  const p = decodeURIComponent(uri.slice('file://'.length))
-  const abs = resolve(p)
-  return abs === root || abs.startsWith(root + '/')
+function pathInsideRoots(abs: string, roots: string[]): boolean {
+  return roots.some((r) => abs === r || abs.startsWith(r + sep))
+}
+
+/** file:// URI → 绝对路径(非 file 协议返回 null) */
+function fileUriToPath(uri: unknown): string | null {
+  if (typeof uri !== 'string' || !uri.startsWith('file://')) return null
+  try {
+    return resolve(decodeURIComponent(uri.slice('file://'.length)))
+  } catch {
+    return null
+  }
+}
+
+/** 会话可读根目录集合(工作区 → IDF → 工具链 → clangd 前缀) */
+async function computeAllowedReadRoots(root: string, clangdPath: string): Promise<string[]> {
+  const spelled = [root]
+  try {
+    const info = await detectToolchain()
+    if (info.idfPath) spelled.push(resolve(info.idfPath))
+  } catch {
+    // IDF 未装:仅剩工作区与工具链目录,跳转到 IDF 头文件自然失败
+  }
+  spelled.push(resolve(process.env.IDF_TOOLS_PATH ?? join(homedir(), '.espressif')))
+  spelled.push(dirname(dirname(resolve(clangdPath))))
+  // clangd 返回 realpath 规范化的 URI(macOS /tmp → /private/tmp;符号链接 IDF →
+  // 真实目录),牢笼比较两侧都可能出现拼写路径或真实路径 → 两种形态都收进根集合
+  const roots = new Set<string>()
+  for (const r of spelled) {
+    roots.add(r)
+    try {
+      roots.add(await fsp.realpath(r))
+    } catch {
+      // 目录不存在(如 IDF_TOOLS_PATH 未装):保留拼写形态即可
+    }
+  }
+  return [...roots]
 }
 
 async function startSession(requestedRoot: string | undefined): Promise<ClangdStatus> {
@@ -298,8 +398,10 @@ async function startSession(requestedRoot: string | undefined): Promise<ClangdSt
   }
   // 工作区已切换:旧会话停掉
   if (session) {
+    unwatchClangdConfig()
     session.dispose()
     session = null
+    allowedReadRoots = []
   }
 
   if (!existsSync(join(root, 'build', 'compile_commands.json'))) {
@@ -322,6 +424,8 @@ async function startSession(requestedRoot: string | undefined): Promise<ClangdSt
     return { state: 'failed' }
   }
   session = s
+  allowedReadRoots = await computeAllowedReadRoots(root, clangdPath)
+  watchClangdConfig(root) // .clangd 变更 → 自动重启会话(诊断按新配置刷新)
   return { state: 'running', clangdPath }
 }
 
@@ -339,9 +443,35 @@ export function registerClangdIpc(): void {
   )
 
   ipcMain.handle('clangd:stop', async (): Promise<void> => {
+    unwatchClangdConfig()
     session?.dispose()
     session = null
+    allowedReadRoots = []
     broadcast('clangd:status', { state: 'stopped' } satisfies ClangdStatus)
+  })
+
+  // 定义跳转目标的只读读取(工作区外的 IDF / 工具链头文件;失败一律返回 null):
+  // 路径牢笼 = 会话可读根目录;扩展名白名单 + C++ 标准库无扩展名头放行;体积上限防误读大文件
+  ipcMain.handle('clangd:read-source', async (_e, p: string): Promise<string | null> => {
+    if (typeof p !== 'string' || !session || session.failed) return null
+    // realpath 后再比对:与根集合的真实路径形态对齐,同时把「牢笼内符号链接
+    // 指向牢笼外」的目标按真实位置拦下;目标不存在则直接失败
+    let abs: string
+    try {
+      abs = await fsp.realpath(resolve(p))
+    } catch {
+      return null
+    }
+    if (!pathInsideRoots(abs, allowedReadRoots)) return null
+    const base = basename(abs)
+    if (!SOURCE_EXT_RE.test(base) && base.includes('.')) return null
+    try {
+      const st = await fsp.stat(abs)
+      if (!st.isFile() || st.size > READ_SOURCE_MAX_BYTES) return null
+      return await fsp.readFile(abs, 'utf8')
+    } catch {
+      return null
+    }
   })
 
   // LSP 请求转发(方法白名单)
@@ -357,15 +487,26 @@ export function registerClangdIpc(): void {
   // 文档同步通知(fire-and-forget;会话未就绪时静默丢弃)
   ipcMain.on('clangd:notify', (_e, opts: { method: string; params: unknown }) => {
     if (!opts || !NOTIFY_WHITELIST.has(opts.method) || !session || session.failed) return
-    // 路径牢笼:文档通知的 uri 必须位于会话工作区内
+    // 路径牢笼:文档通知的 uri 须位于会话可读根目录内(工作区 + IDF/工具链头文件,
+    // 后者是定义跳转打开的只读页签,didOpen 后才能在其中继续悬停/跳转)
     const doc = (opts.params as { textDocument?: { uri?: unknown } } | null)?.textDocument
-    if (!doc || !uriInsideRoot(doc.uri, session.root)) return
+    let abs = doc ? fileUriToPath(doc.uri) : null
+    if (abs) {
+      try {
+        abs = realpathSync(abs) // 根集合含真实路径形态;同步保序(didOpen/didChange 不可乱序)
+      } catch {
+        // didClose 的目标可能已被删除:按拼写形态比对(根集合同样含拼写形态)
+      }
+    }
+    if (!abs || !pathInsideRoots(abs, allowedReadRoots)) return
     session.notify(opts.method, opts.params)
   })
 }
 
 /** 退出前清理(main/index.ts before-quit) */
 export function disposeClangd(): void {
+  unwatchClangdConfig()
   session?.dispose()
   session = null
+  allowedReadRoots = []
 }

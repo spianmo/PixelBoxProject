@@ -10,7 +10,8 @@ import { promises as fsp } from 'node:fs'
 import { existsSync, type Dirent } from 'node:fs'
 import { join, dirname, resolve, sep } from 'node:path'
 import chokidar, { type FSWatcher } from 'chokidar'
-import type { FsEntry, FsWatchEvent } from '../shared/ipc-types'
+import type { FsEntry, FsWatchEvent, RecentWorkspace } from '../shared/ipc-types'
+import { readProjectInfo } from './projectScaffold'
 
 let watcher: FSWatcher | null = null
 let watchedRoot: string | null = null
@@ -134,9 +135,15 @@ export function registerWorkspaceIpc(): void {
     return abs
   })
 
-  // 最近工作区(过滤掉已不存在的目录)
-  ipcMain.handle('workspace:recents', async (): Promise<string[]> => {
-    return (await loadRecents()).filter((p) => existsSync(p))
+  // 最近工作区(过滤掉已不存在的目录;附带项目类型供下拉按类型显示图标)
+  ipcMain.handle('workspace:recents', async (): Promise<RecentWorkspace[]> => {
+    const paths = (await loadRecents()).filter((p) => existsSync(p))
+    return Promise.all(
+      paths.map(async (p): Promise<RecentWorkspace> => ({
+        path: p,
+        kind: (await readProjectInfo(p)).kind
+      }))
+    )
   })
 
   // 快速打开:工作区文件全量列举(未打开工作区时返回空)
@@ -214,6 +221,17 @@ export function registerWorkspaceIpc(): void {
     watcher.on('unlinkDir', emit('unlinkDir'))
   })
 
+  // 工作区根的真实路径(符号链接解析;clangd 返回 realpath 规范化 URI,
+  // renderer 用它把定义跳转目标映射回工作区拼写,保证工程内文件走常规可编辑页签)
+  ipcMain.handle('workspace:real-root', async (): Promise<string | null> => {
+    if (!watchedRoot) return null
+    try {
+      return await fsp.realpath(watchedRoot)
+    } catch {
+      return resolve(watchedRoot)
+    }
+  })
+
   ipcMain.handle('workspace:unwatch', async (): Promise<void> => {
     await watcher?.close()
     watcher = null
@@ -230,4 +248,17 @@ export async function disposeWorkspace(): Promise<void> {
 /** 当前工作区根目录(供 simbridge 做路径防护;未打开工作区时为 null) */
 export function getWatchedRoot(): string | null {
   return watchedRoot
+}
+
+/**
+ * 合成 fs 事件:chokidar 刻意忽略 build* 与 dist 等产物目录(海量写入会打满 IPC),
+ * 但「清理构建 / 构建完成」这类主进程自己造成的目录级变化仍需让文件树感知。
+ * 路径在当前工作区内才广播,与真实 watcher 事件同通道,renderer 无需区分来源。
+ */
+export function emitFsEventIfWatched(type: FsWatchEvent['type'], path: string): void {
+  if (!watchedRoot) return
+  const abs = resolve(path)
+  const root = resolve(watchedRoot)
+  if (abs !== root && !abs.startsWith(root + sep)) return
+  broadcast('workspace:fs-event', { type, path: abs } satisfies FsWatchEvent)
 }

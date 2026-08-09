@@ -12,7 +12,7 @@ import { registerSimBridgeIpc, disposeSimBridge } from './simbridge'
 import { registerShellIpc, wireShellWindowEvents } from './shell'
 import { registerGitIpc, disposeGit } from './git'
 import { registerSearchIpc } from './search'
-import { initAppMenu } from './menu'
+import { initAppMenu, registerMainWindowForMenu } from './menu'
 import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProfiles'
 import { registerToolchainIpc, disposeToolchain } from './toolchain'
 import { registerClangdIpc, disposeClangd } from './clangd'
@@ -106,6 +106,7 @@ function createWindow(): BrowserWindow {
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  registerMainWindowForMenu(win) // ⌘W 语义分流:主窗关页签,其余窗口关窗
   return win
 }
 

@@ -17,12 +17,15 @@ import appIconUrl from '../assets/app-icon.png'
 import {
   LuBell,
   LuChevronDown,
+  LuCircuitBoard,
   LuCpu,
   LuEllipsisVertical,
+  LuFolder,
   LuFolderOpen,
   LuGitBranch,
   LuHammer,
   LuLanguages,
+  LuLayoutTemplate,
   LuMinus,
   LuPackage,
   LuPlay,
@@ -39,7 +42,7 @@ import {
   LuX
 } from 'react-icons/lu'
 import { VscChromeMaximize, VscChromeRestore, VscLoading } from 'react-icons/vsc'
-import type { FirmwareTaskKind, ProjectKind } from '../../../shared/ipc-types'
+import type { FirmwareTaskKind, ProjectKind, RecentWorkspace } from '../../../shared/ipc-types'
 import i18n from '../i18n'
 import {
   CHIP_TARGETS,
@@ -99,6 +102,20 @@ interface Props {
 function baseName(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
   return i >= 0 ? p.slice(i + 1) : p
+}
+
+/** 项目类型 → 图标(与新建项目向导同一套语义:app=模板 / firmware=芯片 / hardware=电路板) */
+function projectKindIcon(kind: ProjectKind | null): React.JSX.Element {
+  switch (kind) {
+    case 'app':
+      return <LuLayoutTemplate />
+    case 'firmware':
+      return <LuCpu />
+    case 'hardware':
+      return <LuCircuitBoard />
+    default:
+      return <LuFolder />
+  }
 }
 
 /**
@@ -316,7 +333,7 @@ export function TitleBar(props: Props): React.JSX.Element {
   const dev = useShellDevices()
   const { profiles } = useDeviceProfiles()
   const notif = useSyncExternalStore(notificationStore.subscribe, notificationStore.get)
-  const [recents, setRecents] = useState<string[]>([])
+  const [recents, setRecents] = useState<RecentWorkspace[]>([])
   // 全屏态(macOS 原生全屏 / Win-Linux F11):挂载对账一次 + 订阅变化
   const [fullscreen, setFullscreen] = useState(false)
   const isMac = window.api.platform === 'darwin'
@@ -340,14 +357,15 @@ export function TitleBar(props: Props): React.JSX.Element {
       onSelect: props.onNewProject
     },
     ...recents
-      .filter((p) => p !== props.workspaceRoot)
-      .map((p) => ({
-        key: p,
-        label: baseName(p),
-        hint: middleEllipsisPath(p), // 中间省略防横向溢出
-        title: p, // 悬停可见完整路径
+      .filter((r) => r.path !== props.workspaceRoot)
+      .map((r) => ({
+        key: r.path,
+        label: baseName(r.path),
+        icon: projectKindIcon(r.kind), // 项目类型图标(app/firmware/hardware/普通目录)
+        hint: middleEllipsisPath(r.path), // 中间省略防横向溢出
+        title: r.path, // 悬停可见完整路径
         group: t('titlebar.recentWorkspaces'),
-        onSelect: () => props.onOpenWorkspacePath(p)
+        onSelect: () => props.onOpenWorkspacePath(r.path)
       })),
     {
       key: '__open__',

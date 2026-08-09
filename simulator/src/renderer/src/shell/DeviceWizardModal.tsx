@@ -163,7 +163,10 @@ function WizardForm({ initial }: { initial: DeviceProfile | null }): React.JSX.E
         if (e.target === e.currentTarget) closeWizard()
       }}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') closeWizard()
+        if (e.key === 'Escape') {
+          e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+          closeWizard()
+        }
       }}
     >
       <div className="w-[440px] rounded-lg border border-ink-600 bg-ink-800 shadow-2xl">

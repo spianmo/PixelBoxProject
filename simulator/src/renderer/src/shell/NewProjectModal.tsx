@@ -205,7 +205,10 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
         if (e.target === e.currentTarget) onClose()
       }}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') onClose()
+        if (e.key === 'Escape') {
+          e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+          onClose()
+        }
       }}
     >
       <div className="flex h-[500px] w-[720px] flex-col overflow-hidden rounded-lg border border-ink-600 bg-ink-900 text-jb-text shadow-2xl">

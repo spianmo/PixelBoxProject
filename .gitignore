@@ -14,3 +14,6 @@ firmware/build_*/
 
 # Claude Code 本地会话产物
 .claude/
+
+# 模拟器 IDE 本机会话状态(页签/光标,含绝对路径)
+.ide/

@@ -37,6 +37,7 @@ import type {
   ProjectCreateResult,
   ProjectInfo,
   PushProgress,
+  RecentWorkspace,
   SerialPortInfo,
   SessionStartupInfo,
   SessionUpdatePayload,
@@ -152,6 +153,8 @@ const api = {
     subscribe('menu:git-action', cb),
   /** 请求重建原生应用菜单(语言切换后菜单文案即时跟随) */
   menuRefresh: (): Promise<void> => ipcRenderer.invoke('menu:refresh'),
+  /** File 菜单 ⌘W → 关闭当前编辑器页签(仅主窗收到) */
+  onMenuCloseTab: (cb: () => void): (() => void) => subscribe('menu:close-tab', cb),
 
   // ---- 新建项目向导 ----
   /** 默认项目位置(~/PixelBoxProjects) */
@@ -170,8 +173,8 @@ const api = {
   /** 按路径直接打开工作区(最近列表);目录不存在返回 null */
   openWorkspacePath: (root: string): Promise<string | null> =>
     ipcRenderer.invoke('workspace:open-path', root),
-  /** 最近打开过的工作区(仍存在的目录) */
-  recentWorkspaces: (): Promise<string[]> => ipcRenderer.invoke('workspace:recents'),
+  /** 最近打开过的工作区(仍存在的目录;含项目类型供下拉显示图标) */
+  recentWorkspaces: (): Promise<RecentWorkspace[]> => ipcRenderer.invoke('workspace:recents'),
   /** 工作区文件全量列举(相对路径,Cmd+P 快速打开) */
   listWorkspaceFiles: (): Promise<string[]> => ipcRenderer.invoke('workspace:list-files'),
   /** 项目内容检索(IDEA ⇧⌘F Find in Files;遍历规则同 ⌘P,命中上限/超时见 main/search.ts) */
@@ -190,6 +193,8 @@ const api = {
     ipcRenderer.invoke('fs:rename', oldPath, newPath),
   remove: (p: string): Promise<void> => ipcRenderer.invoke('fs:delete', p),
   watchWorkspace: (root: string): Promise<void> => ipcRenderer.invoke('workspace:watch', root),
+  /** 工作区根的真实路径(符号链接解析;未打开工作区返回 null) */
+  workspaceRealRoot: (): Promise<string | null> => ipcRenderer.invoke('workspace:real-root'),
   unwatchWorkspace: (): Promise<void> => ipcRenderer.invoke('workspace:unwatch'),
   onFsEvent: (cb: (ev: FsWatchEvent) => void): (() => void) =>
     subscribe('workspace:fs-event', cb),
@@ -285,6 +290,9 @@ const api = {
   /** 文档同步通知(didOpen/didChange/didClose/didSave;fire-and-forget) */
   clangdNotify: (method: string, params: unknown): void =>
     ipcRenderer.send('clangd:notify', { method, params }),
+  /** 定义跳转目标的只读读取(工作区外 IDF/工具链头文件;越界/不可读返回 null) */
+  clangdReadSource: (path: string): Promise<string | null> =>
+    ipcRenderer.invoke('clangd:read-source', path),
   /** 服务器通知(白名单内,当前仅 textDocument/publishDiagnostics) */
   onClangdEvent: (cb: (ev: ClangdServerNotification) => void): (() => void) =>
     subscribe('clangd:event', cb),

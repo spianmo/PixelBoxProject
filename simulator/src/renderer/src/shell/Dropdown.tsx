@@ -37,7 +37,10 @@ function usePopover(): {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key === 'Escape') {
+        e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+        setOpen(false)
+      }
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)

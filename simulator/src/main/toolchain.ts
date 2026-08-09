@@ -34,6 +34,7 @@ import type {
   ToolchainSettings
 } from '../shared/ipc-types'
 import { getSettings } from './settings'
+import { emitFsEventIfWatched } from './workspace'
 
 /** 工具链设置(SettingsService 的 toolchain 段) */
 async function loadSettings(): Promise<ToolchainSettings> {
@@ -284,6 +285,9 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
     emitLines([line('info', `[toolchain] 清理构建目录 ${abs} …`)])
     try {
       await fsp.rm(abs, { recursive: true, force: true })
+      // 构建目录被 watcher 刻意忽略(workspace.ts ignored),删除不会产生真实
+      // fs 事件 → 合成一条让文件树刷新父目录,移除已消失的 build*/
+      emitFsEventIfWatched('unlinkDir', abs)
       emitLines([line('info', `[toolchain] 清理完成(${target} 下次构建将全量重新配置)`)])
       emitDone({
         kind: 'clean',
@@ -413,6 +417,12 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
     const success = code === 0 && !task.cancelled
     void (async (): Promise<void> => {
       const artifacts = success ? await collectArtifacts(task.kind, fw, buildDir, mergedPath) : []
+      if (success) {
+        // build*/dist 被 watcher 忽略,首次构建产生的目录不会有真实 fs 事件 →
+        // 合成 addDir 让文件树刷新父目录,显示新出现的构建产物目录
+        emitFsEventIfWatched('addDir', join(fw, buildDir))
+        if (task.kind === 'merge') emitFsEventIfWatched('addDir', join(fw, 'dist'))
+      }
       const secs = (durationMs / 1000).toFixed(1)
       if (success) {
         const detail = artifacts

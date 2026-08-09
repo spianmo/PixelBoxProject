@@ -32,6 +32,45 @@ function menuLabels(): typeof zhCN.menu.git {
   return (getSettingsSync().appearance.language === 'en' ? en : zhCN).menu.git
 }
 
+// ---------------------------------------------------------------
+// File 菜单(⌘W 语义重绑:关闭编辑器页签而非窗口)
+// ---------------------------------------------------------------
+
+/** 主 IDE 窗口 id(createWindow 登记;⌘W 仅对主窗发 close-tab,其余窗口照常关窗) */
+let mainWindowId: number | null = null
+
+/** main/index.ts createWindow 调用:登记主窗(activate 重建窗口时会再次登记) */
+export function registerMainWindowForMenu(win: BrowserWindow): void {
+  mainWindowId = win.id
+}
+
+/**
+ * 自定义 File 菜单:默认 role:'close' 把 ⌘W 绑成关窗,IDE 语义应是关闭当前
+ * 编辑器页签(JetBrains 惯例)→ ⌘W 对主窗发 menu:close-tab(renderer 走带
+ * 脏确认的关闭流),对设置窗/独立工具窗保持关窗;关窗改绑 ⇧⌘W
+ */
+function fileMenuTemplate(): MenuItemConstructorOptions {
+  const L = (getSettingsSync().appearance.language === 'en' ? en : zhCN).menu.file
+  return {
+    label: L.title,
+    submenu: [
+      {
+        label: L.closeTab,
+        accelerator: 'CmdOrCtrl+W',
+        click: (_item, win): void => {
+          if (!win || !(win instanceof BrowserWindow)) return
+          if (win.id === mainWindowId) win.webContents.send('menu:close-tab')
+          else win.close()
+        }
+      },
+      { label: L.closeWindow, role: 'close', accelerator: 'Shift+CmdOrCtrl+W' },
+      ...(process.platform !== 'darwin'
+        ? [{ type: 'separator' } satisfies MenuItemConstructorOptions, { role: 'quit' } satisfies MenuItemConstructorOptions]
+        : [])
+    ]
+  }
+}
+
 /** Git 菜单动作 → 广播给所有窗口(renderer menuBridge 消费) */
 function sendGitAction(action: GitMenuAction, arg?: string): void {
   const payload: GitMenuActionEvent = { action, ...(arg !== undefined ? { arg } : {}) }
@@ -91,7 +130,7 @@ export async function buildAppMenu(): Promise<void> {
   }
   const template: MenuItemConstructorOptions[] = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' } satisfies MenuItemConstructorOptions] : []),
-    { role: 'fileMenu' },
+    fileMenuTemplate(),
     { role: 'editMenu' },
     { role: 'viewMenu' },
     gitMenuTemplate(isRepo, branches),

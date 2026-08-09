@@ -77,7 +77,10 @@ export function FlashDialog(props: Props): React.JSX.Element {
         if (e.target === e.currentTarget) props.onClose()
       }}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') props.onClose()
+        if (e.key === 'Escape') {
+          e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+          props.onClose()
+        }
       }}
     >
       <div className="w-[460px] rounded-lg border border-ink-600 bg-ink-800 shadow-2xl">

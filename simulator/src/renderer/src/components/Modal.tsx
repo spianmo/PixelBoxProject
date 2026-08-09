@@ -44,7 +44,10 @@ export function InputModal({
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') submit()
-          if (e.key === 'Escape') onCancel()
+          if (e.key === 'Escape') {
+            e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+            onCancel()
+          }
         }}
         className="mb-4 w-full rounded border border-ink-500 bg-ink-900 px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
       />

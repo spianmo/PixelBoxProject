@@ -11,6 +11,9 @@
  *      (AST 构建完成的信号;过早请求会落入 identifier fallback 模式)
  *      → textDocument/completion
  *   4. 断言补全列表非空,且含以 'esp_' 开头的条目(ESP-IDF 头文件被真实解析)
+ *   5. 断言 hover 返回 esp_ 函数的 doc(悬停查看文档链路),以及
+ *      textDocument/definition 从「esp_ 函数调用处 / #include 行」解析到
+ *      工作区之外的真实存在的 IDF 头文件(⌘+点击跳头文件链路的 LSP 腿)
  *
  * 用法:cd simulator && pnpm run check:clangd
  * 前置:/tmp/pb-fw-smoke/smoke 已构建(缺失打印 SKIP 退出 0,CI 机器友好)
@@ -68,7 +71,11 @@ proc.stderr.on('data', () => undefined)
 let buffer = Buffer.alloc(0)
 let nextId = 1
 const pending = new Map()
-/** 首次 publishDiagnostics(didOpen 后 AST 构建完成的信号) */
+/**
+ * main.c 的首次 publishDiagnostics(didOpen 后 AST 构建完成的信号)。
+ * 必须按 uri 过滤:工程存在 .clangd 时,clangd 会先为配置文件本身发布一条
+ * (空)诊断,误当就绪信号会让补全撞上未就绪的 AST(识别符回退,仅 2 项)
+ */
 let resolveFirstDiagnostics
 const firstDiagnostics = new Promise((res) => {
   resolveFirstDiagnostics = res
@@ -103,7 +110,10 @@ proc.stdout.on('data', (chunk) => {
         if (msg.error) p.reject(new Error(msg.error.message ?? 'lsp error'))
         else p.resolve(msg.result)
       }
-    } else if (msg.method === 'textDocument/publishDiagnostics') {
+    } else if (
+      msg.method === 'textDocument/publishDiagnostics' &&
+      msg.params?.uri === 'file://' + MAIN_C
+    ) {
       resolveFirstDiagnostics(msg.params)
     } else if (typeof msg.method === 'string' && msg.id !== undefined) {
       send({ jsonrpc: '2.0', id: msg.id, result: null }) // 服务器请求统一回空
@@ -150,8 +160,15 @@ try {
     capabilities: {
       textDocument: {
         synchronization: { didSave: true },
-        completion: { completionItem: { snippetSupport: false } },
+        completion: {
+          completionItem: {
+            snippetSupport: false,
+            documentationFormat: ['markdown', 'plaintext']
+          }
+        },
         hover: { contentFormat: ['markdown', 'plaintext'] },
+        definition: {},
+        declaration: {},
         publishDiagnostics: {}
       }
     }
@@ -198,6 +215,63 @@ try {
       `(如:${items.slice(0, 5).map((it) => it.label.trim()).join('、')})`
   )
   if (espItems.length === 0) fail("补全列表不含 'esp_' 前缀条目(ESP-IDF 头文件未被解析)")
+  const documented = items.filter((it) => it.documentation).length
+  console.log(`[clangd-check] ✓ 补全条目含 documentation:${documented} 项(联想查看函数 doc)`)
+
+  // ---- 5. hover doc + 定义跳转(⌘+点击跳头文件链路的 LSP 腿) ----
+  const textLines = text.split('\n')
+
+  /** 在原文中定位一个 esp_ 函数调用(模板 main.c 恒有,如 esp_get_free_heap_size()) */
+  const callRe = /\b(esp_\w+)\s*\(/
+  const callLineIdx = textLines.findIndex((l) => callRe.test(l))
+  if (callLineIdx < 0) fail('main.c 中未找到 esp_ 函数调用(冒烟工程模板变更?)')
+  const callName = callRe.exec(textLines[callLineIdx])[1]
+  const callChar = textLines[callLineIdx].indexOf(callName) + 2 // 名字中间,避开词边界歧义
+
+  const hover = await request('textDocument/hover', {
+    textDocument: { uri },
+    position: { line: callLineIdx, character: callChar }
+  })
+  const hoverText =
+    typeof hover?.contents === 'string' ? hover.contents : (hover?.contents?.value ?? '')
+  if (!hoverText || hoverText.trim().length === 0) fail(`hover(${callName})返回空 contents`)
+  console.log(
+    `[clangd-check] ✓ hover(${callName})返回 doc(${hoverText.length} 字符,` +
+      `首行:${hoverText.split('\n').find((l) => l.trim())?.trim().slice(0, 60)})`
+  )
+
+  /** definition 结果归一化(Location | Location[] | LocationLink[])→ 路径列表 */
+  const defPaths = (defs) => {
+    const arr = Array.isArray(defs) ? defs : defs ? [defs] : []
+    return arr
+      .map((d) => d.uri ?? d.targetUri)
+      .filter((u) => typeof u === 'string' && u.startsWith('file://'))
+      .map((u) => decodeURIComponent(u.slice('file://'.length)))
+  }
+
+  const defAtCall = defPaths(
+    await request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line: callLineIdx, character: callChar }
+    })
+  )
+  if (defAtCall.length === 0) fail(`definition(${callName})无结果`)
+  const external = defAtCall.find((p) => !p.startsWith(SMOKE_ROOT + '/') && existsSync(p))
+  if (!external) fail(`definition(${callName})未解析到工作区外的真实文件:${defAtCall.join(', ')}`)
+  console.log(`[clangd-check] ✓ definition(${callName})→ ${external}(工作区外,文件存在)`)
+
+  // #include 行上的 definition:⌘+点击 include 打开对应头文件
+  const incLineIdx = textLines.findIndex((l) => /^\s*#\s*include\s*[<"]/.test(l))
+  if (incLineIdx < 0) fail('main.c 中未找到 #include 行')
+  const defAtInclude = defPaths(
+    await request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line: incLineIdx, character: textLines[incLineIdx].indexOf('#') + 12 }
+    })
+  )
+  const incTarget = defAtInclude.find((p) => existsSync(p))
+  if (!incTarget) fail(`definition(#include 行)未解析到存在的头文件:${defAtInclude.join(', ')}`)
+  console.log(`[clangd-check] ✓ definition(#include 行)→ ${incTarget}`)
 
   clearTimeout(overallTimer)
   console.log('[clangd-check] PASS')

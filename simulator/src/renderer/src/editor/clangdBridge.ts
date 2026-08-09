@@ -4,8 +4,9 @@
  * - attachClangdModel():EditorHost 建 C/C++ model 时调用,惰性启动 clangd
  *   (main 侧按当前工作区拉起)并接入文档同步:didOpen / didChange(250ms 去抖,
  *   全文)/ didClose(model 销毁时)
- * - Monaco 语言提供方注册一次('c' + 'cpp'):补全 / 悬停 / 签名帮助
- *   (定义跳转刻意不做 —— 补全+悬停+诊断是本轮验收线)
+ * - Monaco 语言提供方注册一次('c' + 'cpp'):补全 / 悬停 / 签名帮助 /
+ *   定义与声明跳转(⌘+点击 / F12;跨文件目标经 registerEditorOpener 转 App:
+ *   工作区内走常规页签,工作区外的 IDF/工具链头文件走 clangd:read-source 只读页签)
  * - 诊断:clangd:event 的 publishDiagnostics → setModelMarkers(owner 'clangd')
  * - 状态 UX:noClangd / noCompileCommands 各弹一次性 toast;
  *   崩溃自动重启成功(clangd:status running)后重发全部 didOpen
@@ -65,6 +66,16 @@ interface LspDiagnostic {
   source?: string
   code?: string | number
 }
+interface LspLocation {
+  uri: string
+  range: LspRange
+}
+/** LocationLink 形态(客户端未声明 linkSupport 时 clangd 不会发,防御性兼容) */
+interface LspLocationLink {
+  targetUri: string
+  targetRange: LspRange
+  targetSelectionRange?: LspRange
+}
 
 // ---------------------------------------------------------------
 // 文档登记表
@@ -90,7 +101,12 @@ const toastShown = new Set<string>()
 
 /** 按扩展名判定 clangd 语言(.h 在固件工程语境按 C 处理) */
 export function clangdLanguageIdForPath(path: string): 'c' | 'cpp' | null {
-  const ext = path.toLowerCase().slice(path.lastIndexOf('.') + 1)
+  const norm = path.toLowerCase().replace(/\\/g, '/')
+  const base = norm.slice(norm.lastIndexOf('/') + 1)
+  // 无扩展名:libstdc++ 布局(<vector> 等标准库头位于 include/c++/<ver>/)按 C++;
+  // 其余无点文件(Makefile/LICENSE…)不接 clangd
+  if (!base.includes('.')) return norm.includes('/include/c++/') ? 'cpp' : null
+  const ext = base.slice(base.lastIndexOf('.') + 1)
   if (ext === 'c' || ext === 'h') return 'c'
   if (['cpp', 'cc', 'cxx', 'hpp', 'hh', 'hxx'].includes(ext)) return 'cpp'
   return null
@@ -349,6 +365,50 @@ function registerProviders(): void {
         if (contents.length === 0) return null
         return { contents, range: hover.range ? toMonacoRange(hover.range) : undefined }
       }
+    })
+
+    // 定义/声明跳转(⌘+点击 / F12):LSP Location(s) → Monaco Definition。
+    // 目标 uri ≠ 当前 model 时 Monaco 走 registerEditorOpener(monacoSetup)开页签
+    const provideLocations = async (
+      method: 'textDocument/definition' | 'textDocument/declaration',
+      model: monaco.editor.ITextModel,
+      position: monaco.Position
+    ): Promise<monaco.languages.Location[] | null> => {
+      const uri = preflight(model)
+      if (!uri) return null
+      let result: LspLocation | LspLocation[] | LspLocationLink[] | null
+      try {
+        result = (await window.api.clangdRequest(method, {
+          textDocument: { uri },
+          position: toLspPosition(position)
+        })) as LspLocation | LspLocation[] | LspLocationLink[] | null
+      } catch {
+        return null
+      }
+      if (!result) return null
+      const items = Array.isArray(result) ? result : [result]
+      const locations: monaco.languages.Location[] = []
+      for (const it of items) {
+        const target = 'uri' in it
+          ? { uri: it.uri, range: it.range }
+          : { uri: it.targetUri, range: it.targetSelectionRange ?? it.targetRange }
+        try {
+          locations.push({ uri: monaco.Uri.parse(target.uri), range: toMonacoRange(target.range) })
+        } catch {
+          // 单个坏 uri 不拖垮整批结果
+        }
+      }
+      return locations.length > 0 ? locations : null
+    }
+
+    monaco.languages.registerDefinitionProvider(lang, {
+      provideDefinition: (model, position) =>
+        provideLocations('textDocument/definition', model, position)
+    })
+
+    monaco.languages.registerDeclarationProvider(lang, {
+      provideDeclaration: (model, position) =>
+        provideLocations('textDocument/declaration', model, position)
     })
 
     monaco.languages.registerSignatureHelpProvider(lang, {

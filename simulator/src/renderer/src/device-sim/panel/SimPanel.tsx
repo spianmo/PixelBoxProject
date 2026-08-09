@@ -547,7 +547,10 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
       setOpenGroup(null)
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpenGroup(null)
+      if (e.key === 'Escape') {
+        e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+        setOpenGroup(null)
+      }
     }
     const onResize = (): void => setOpenGroup(null)
     window.addEventListener('mousedown', onDown)

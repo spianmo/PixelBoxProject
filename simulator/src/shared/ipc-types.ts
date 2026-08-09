@@ -20,6 +20,14 @@ export interface FsWatchEvent {
 /** 项目类型(app = TS 应用工程;firmware = ESP-IDF 固件工程;hardware = PCB+外壳硬件设计工程) */
 export type ProjectKind = 'app' | 'firmware' | 'hardware'
 
+/** 最近工作区条目(workspace:recents;kind 供标题栏下拉按项目类型显示图标) */
+export interface RecentWorkspace {
+  /** 绝对路径 */
+  path: string
+  /** null = 普通目录(非 pixelbox 工程) */
+  kind: ProjectKind | null
+}
+
 /** 应用 manifest(pixelbox.json,字段见 docs/architecture.md §6) */
 export interface PixelboxManifest {
   id: string
@@ -579,6 +587,10 @@ export interface AppSettings {
     shellOverride: string
     /** 终端字号(对已打开会话即时生效) */
     fontSize: number
+    /** 终端字体族(默认 JetBrains Mono;缺字回退链见 xtermRegistry;即时生效) */
+    fontFamily: string
+    /** 行高倍数 1.0-2.0,0.1 步进(xterm lineHeight;即时生效) */
+    lineHeight: number
   }
   /** 工具 › 3D 打印机(OctoPrint / Moonraker / 拓竹 Bambu LAN 联机) */
   printer: {

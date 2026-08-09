@@ -406,12 +406,12 @@ export function GitPanel({ workspaceRoot, onOpenDiff }: Props): React.JSX.Elemen
     <div className="flex h-full flex-col bg-ink-900">
       {/* 工具行:分段切换 + 操作按钮 */}
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-ink-700 bg-ink-850 px-2">
-        <div className="flex items-center gap-0.5 rounded border border-ink-700 p-0.5">
+        <div className="flex shrink-0 items-center gap-0.5 rounded border border-ink-700 p-0.5">
           {(['changes', 'history', 'branches'] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
-              className={`flex h-5 items-center rounded px-2 text-[11px] ${
+              className={`flex h-5 items-center whitespace-nowrap rounded px-2 text-[11px] ${
                 view === v
                   ? 'bg-jb-selection text-jb-text'
                   : 'text-jb-muted hover:bg-ink-800 hover:text-jb-text'
@@ -427,7 +427,7 @@ export function GitPanel({ workspaceRoot, onOpenDiff }: Props): React.JSX.Elemen
             </button>
           ))}
         </div>
-        <div className="ml-auto flex items-center gap-0.5">
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <ToolButton title={t('git.refresh')} onClick={doRefresh}>
             <LuRefreshCw />
           </ToolButton>

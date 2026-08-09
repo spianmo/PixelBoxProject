@@ -404,6 +404,9 @@ export function languageForPath(path: string): string {
   if (base === 'cmakelists.txt') return 'cmake'
   // sdkconfig / sdkconfig.defaults / sdkconfig.old / Kconfig / Kconfig.projbuild → ini 近似高亮
   if (base.startsWith('sdkconfig') || base.startsWith('kconfig')) return 'ini'
+  // 无扩展名的 C++ 标准库头(libstdc++ 布局 include/c++/<ver>/vector 等,
+  // 定义跳转的只读页签):按 C++ 高亮
+  if (!base.includes('.') && name.replace(/\\/g, '/').includes('/include/c++/')) return 'cpp'
 
   const ext = base.slice(base.lastIndexOf('.') + 1)
   switch (ext) {

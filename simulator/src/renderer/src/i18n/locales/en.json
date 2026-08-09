@@ -142,7 +142,8 @@
   "editor": {
     "welcome": "Open a workspace, then double-click a file on the left (⌘P quick open)",
     "unsaved": "Unsaved",
-    "closeDirtyConfirm": "{{name}} has unsaved changes. Close anyway?"
+    "closeDirtyConfirm": "{{name}} has unsaved changes. Close anyway?",
+    "externalOpenFailed": "Cannot open {{name}} (outside the workspace and toolchain directories)"
   },
   "editorTabs": {
     "close": "Close",
@@ -258,11 +259,16 @@
       "fontFamilyHint": "Defaults to JetBrains Mono; custom font files take local effect once bundled in phase 2"
     },
     "terminal": {
+      "sectionFont": "Font Settings",
+      "sectionApp": "Application Settings",
+      "fontFamily": "Font",
+      "fontFamilyHint": "Suggestions are monospace fonts detected on this machine; other font names can be typed in. Falls back to JetBrains Mono → SF Mono → Menlo → Consolas when unavailable",
+      "fontSize": "Size",
+      "fontSizeHint": "Applies immediately to all open sessions",
+      "lineHeight": "Line height",
       "shellOverride": "Shell path",
       "shellOverridePlaceholder": "Leave empty to use the system default ($SHELL)",
-      "shellOverrideHint": "Applies to new sessions only; falls back to the system default if the path does not exist",
-      "fontSize": "Terminal font size",
-      "fontSizeHint": "Applies immediately to all open sessions"
+      "shellOverrideHint": "Applies to new sessions only; falls back to the system default if the path does not exist"
     },
     "keymap": {
       "readonlyHint": "The keymap is read-only for now (custom shortcuts are planned)",
@@ -731,6 +737,11 @@
     }
   },
   "menu": {
+    "file": {
+      "title": "File",
+      "closeTab": "Close Tab",
+      "closeWindow": "Close Window"
+    },
     "git": {
       "title": "Git",
       "commit": "Commit…",

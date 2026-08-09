@@ -276,7 +276,12 @@ function createVirtualModel(path: string, content: string): monaco.editor.ITextM
   const uri = monaco.Uri.file(path)
   // 定义跳转链路(TS worker 的 LibFiles)可能已为该 uri 建过 model:直接收养,
   // 不 dispose 重建(会打断其 model 缓存);否则按传入内容新建
-  return monaco.editor.getModel(uri) ?? monaco.editor.createModel(content, languageForPath(path), uri)
+  const model =
+    monaco.editor.getModel(uri) ?? monaco.editor.createModel(content, languageForPath(path), uri)
+  // 工作区外的 C/C++ 只读页签(IDF/工具链头文件)同样接入 clangd:didOpen 后
+  // 才能在其中继续悬停/⌘+点击深跳(桥按扩展名过滤,TS 库声明页签不受影响)
+  attachClangdModel(path, model)
+  return model
 }
 
 /** 模块级注册表单例(分屏的两个 EditorHost 共享;App 级 dirtyPaths 经 onDirty 订阅) */

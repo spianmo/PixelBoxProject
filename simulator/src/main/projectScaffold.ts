@@ -313,6 +313,41 @@ async function createAppProject(root: string, name: string, opts: ProjectCreateO
   return entryFile
 }
 
+/** xtensa 家族芯片(其余为 riscv;esp32s2 未收录进 CHIP_IDS) */
+const XTENSA_CHIPS = new Set(['esp32', 'esp32s2', 'esp32s3'])
+
+/**
+ * 固件工程 .clangd 内容:
+ * - xtensa 芯片补 -D__XTENSA__:裸 clang 无 xtensa 后端不会定义该目标宏,
+ *   xtensa/config/core.h 会走 `#include "../hal.h"` 的非交叉编译分支
+ *   (仅存在于交叉工具链语境)而报 file not found;riscv 芯片不能加 ——
+ *   共享头按 __XTENSA__/__riscv 分流,误定义会把 xtensa 头拉进 riscv 包含路径
+ * - include-cleaner 关闭:ESP-IDF 惯例大量依赖传递包含(FreeRTOS.h 必须先于
+ *   task.h 等),unused/missing includes 在此语境全是误报噪音
+ */
+function clangdConfig(chip: string): string {
+  return [
+    'CompileFlags:',
+    ...(XTENSA_CHIPS.has(chip)
+      ? ['  Add:', '    - -D__XTENSA__ # 裸 clang 无 xtensa 后端,补目标宏走 <xtensa/hal.h> 分支']
+      : []),
+    '  Remove:',
+    '    - -mlongcalls',
+    '    - -mdisable-hardware-atomics',
+    '    - -fno-tree-switch-conversion',
+    '    - -fno-shrink-wrap',
+    '    - -fstrict-volatile-bitfields',
+    '    - -mtext-section-literals',
+    '    - -march=*',
+    '    - -mabi=*',
+    'Diagnostics:',
+    '  # ESP-IDF 依赖传递包含惯例(FreeRTOS.h 先于 task.h 等),include-cleaner 全是误报',
+    '  UnusedIncludes: None',
+    '  MissingIncludes: None',
+    ''
+  ].join('\n')
+}
+
 async function createFirmwareProject(root: string, name: string, chip: string): Promise<string> {
   const manifest: PixelboxManifest = {
     type: 'firmware',
@@ -334,22 +369,7 @@ async function createFirmwareProject(root: string, name: string, chip: string): 
     fsp.writeFile(join(root, '.gitignore'), 'build*/\nsdkconfig\nmanaged_components/\n.ide/\n', 'utf8'),
     // .clangd:IDE 内 C/C++ 智能提示走系统 clangd(见 main/clangd.ts),Apple/主线 clangd
     // 不认识 xtensa/riscv 交叉 gcc 的少数专有 flags,会报「Unknown argument」噪音诊断 —— 移除之
-    fsp.writeFile(
-      join(root, '.clangd'),
-      [
-        'CompileFlags:',
-        '  Remove:',
-        '    - -mlongcalls',
-        '    - -mdisable-hardware-atomics',
-        '    - -fno-tree-switch-conversion',
-        '    - -fno-shrink-wrap',
-        '    - -mtext-section-literals',
-        '    - -march=*',
-        '    - -mabi=*',
-        ''
-      ].join('\n'),
-      'utf8'
-    )
+    fsp.writeFile(join(root, '.clangd'), clangdConfig(chip), 'utf8')
   ])
   return entryFile
 }

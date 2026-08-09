@@ -36,7 +36,9 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   },
   terminal: {
     shellOverride: '',
-    fontSize: 12
+    fontSize: 12,
+    fontFamily: 'JetBrains Mono',
+    lineHeight: 1.0
   },
   printer: {
     type: 'octoprint',
@@ -54,6 +56,8 @@ export const SETTINGS_DEFAULTS: AppSettings = {
 export const EDITOR_FONT_SIZE_RANGE = { min: 12, max: 20 } as const
 /** 终端字号允许区间 */
 export const TERMINAL_FONT_SIZE_RANGE = { min: 8, max: 24 } as const
+/** 终端行高倍数允许区间(0.1 步进) */
+export const TERMINAL_LINE_HEIGHT_RANGE = { min: 1.0, max: 2.0 } as const
 
 /** 校验器:合法返回规范化后的值,非法返回 undefined(调用方丢弃该项) */
 type Sanitizer = (v: unknown) => unknown | undefined
@@ -95,6 +99,15 @@ const SANITIZERS: Record<string, Sanitizer> = {
   'toolchain.clangdPath': trimmedString(1024),
   'terminal.shellOverride': trimmedString(1024),
   'terminal.fontSize': intRange(TERMINAL_FONT_SIZE_RANGE.min, TERMINAL_FONT_SIZE_RANGE.max),
+  'terminal.fontFamily': trimmedString(128),
+  // 行高倍数规范化到 0.1 步进(xterm lineHeight 为浮点倍数)
+  'terminal.lineHeight': (v) =>
+    typeof v === 'number' &&
+    Number.isFinite(v) &&
+    v >= TERMINAL_LINE_HEIGHT_RANGE.min &&
+    v <= TERMINAL_LINE_HEIGHT_RANGE.max
+      ? Math.round(v * 10) / 10
+      : undefined,
   // 3D 打印机联机(printer.ts;baseUrl 空串 = 未配置,printer:* IPC 抛 printer:notConfigured)
   'printer.type': (v) => (v === 'octoprint' || v === 'moonraker' || v === 'bambu' ? v : undefined),
   'printer.baseUrl': trimmedString(1024),

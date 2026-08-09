@@ -124,7 +124,10 @@ function SessionTab(props: {
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit()
-            if (e.key === 'Escape') setRenaming(false)
+            if (e.key === 'Escape') {
+              e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+              setRenaming(false)
+            }
           }}
           onClick={(e) => e.stopPropagation()}
           className="h-5 w-24 rounded border border-accent bg-ink-900 px-1 text-xs text-jb-text outline-none"
@@ -329,7 +332,10 @@ function SearchBar({ sessionId }: { sessionId: string }): React.JSX.Element {
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') find(e.shiftKey ? 'prev' : 'next')
-          if (e.key === 'Escape') close()
+          if (e.key === 'Escape') {
+            e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+            close()
+          }
         }}
         placeholder={t('terminal.searchPlaceholder')}
         spellCheck={false}

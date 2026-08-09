@@ -109,8 +109,10 @@ export function QuickOpen({ workspaceRoot, onOpen, onClose }: Props): React.JSX.
             spellCheck={false}
             className="h-9 min-w-0 flex-1 bg-transparent text-[13px] text-jb-text outline-none placeholder:text-ink-500"
             onKeyDown={(e) => {
-              if (e.key === 'Escape') onClose()
-              else if (e.key === 'ArrowDown') {
+              if (e.key === 'Escape') {
+                e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+                onClose()
+              } else if (e.key === 'ArrowDown') {
                 e.preventDefault()
                 setSelected((s) => Math.min(results.length - 1, s + 1))
               } else if (e.key === 'ArrowUp') {

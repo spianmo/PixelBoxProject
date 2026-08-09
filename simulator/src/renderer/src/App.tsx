@@ -82,7 +82,7 @@ import {
   type ChipTarget
 } from './shell/store'
 import { getAppSettings, subscribeSettings } from './settings/store'
-import { loadMainLayout, saveMainLayout } from './shell/layoutState'
+import { GIT_LEFT_MIN_WIDTH, LEFT_MIN_WIDTH, loadMainLayout, saveMainLayout } from './shell/layoutState'
 import { GitPanel } from './git/GitPanel'
 import { DiffView, type DiffSpec } from './editor/DiffView'
 import { gitFileStatusMap, gitChangeCount, initGitStore, setGitRoot, useGitState } from './git/store'
@@ -346,6 +346,9 @@ export default function App(): React.JSX.Element {
   const [pushPercent, setPushPercent] = useState(-1)
   const workspaceRootRef = useRef<string | null>(null)
   workspaceRootRef.current = workspaceRoot
+  // 工作区根的真实路径(applyWorkspace 内 watch 后查询;clangd 定义跳转返回
+  // realpath 规范化路径,经它映射回工作区拼写 —— 符号链接工作区不至于全线失配)
+  const workspaceRealRootRef = useRef<string | null>(null)
 
   // ---- 工程类型(IDE v3:app/firmware/hardware 门控矩阵 §5 的数据源) ----
   const [projectKind, setProjectKind] = useState<ProjectKind | null>(null)
@@ -849,8 +852,12 @@ export default function App(): React.JSX.Element {
         setProjectKind(null) // 先复位门控,project:info 返回后按真实类型放开
         appliedManifestChipRef.current = null // 新工作区打开时 manifest.chip 必定重新应用
         setLeftTool('project')
+        workspaceRealRootRef.current = root // 先按拼写兜底,realpath 返回后覆盖
         await window.api.watchWorkspace(root)
         if (stale()) return
+        const realRoot = await window.api.workspaceRealRoot().catch(() => null)
+        if (stale()) return // 重入让位:晚到的 realpath 不得覆盖新工作区的值
+        workspaceRealRootRef.current = realRoot ?? root
         await refreshProjectInfo(root)
         if (stale()) return
         // 恢复该工程会话(main 侧优先级:内存待落盘 > .ide/session.json > 旧版迁移;
@@ -1090,13 +1097,49 @@ export default function App(): React.JSX.Element {
         })
         return
       }
+      // clangd 的跳转目标经 realpath 规范化(macOS /tmp → /private/tmp、符号链接
+      // 工作区解析为真实目录):先把真实路径形态映射回工作区拼写,保证工程内文件
+      // 仍走常规可编辑页签(fs:* 的路径牢笼按工作区拼写比较)
+      const root = workspaceRootRef.current
+      const realRoot = workspaceRealRootRef.current
+      let reqPath = req.path
+      if (root && realRoot && realRoot !== root) {
+        if (reqPath === realRoot) reqPath = root
+        else if (reqPath.startsWith(realRoot + '/')) reqPath = root + reqPath.slice(realRoot.length)
+      }
       // Uri 归一化匹配已开页签(活动组内):Windows 下 fsPath 盘符恒小写而页签路径
       // 来自原生对话框/文件树(常为大写盘符),字符串相等会漏判 → 重复页签
-      const wantedUri = monaco.Uri.file(req.path).toString()
+      const wantedUri = monaco.Uri.file(reqPath).toString()
+      // 工作区外的真实文件(clangd 定义跳转到 IDF/工具链头文件):fs:read-file 的
+      // 工作区牢笼会拒绝这类路径 → 走 main 侧 clangd:read-source 只读通道开只读页签
+      const rootUri = root ? monaco.Uri.file(root).toString() : null
+      const inWorkspace =
+        rootUri !== null && (wantedUri === rootUri || wantedUri.startsWith(rootUri + '/'))
+      if (!inWorkspace) {
+        void window.api
+          .clangdReadSource(reqPath)
+          .then((content) => {
+            if (content === null) {
+              showToast(t('editor.externalOpenFailed', { name: baseName(reqPath) }), 'warn')
+              return
+            }
+            g.setTabs((prev) =>
+              prev.some((tb) => tb.path === reqPath)
+                ? prev
+                : [...prev, { path: reqPath, name: baseName(reqPath), virtual: true }]
+            )
+            g.setActive(reqPath)
+            void g.ref.current?.openVirtual(reqPath, content).then(() => {
+              if (req.line) g.ref.current?.revealAt(req.line, req.column ?? 1)
+            })
+          })
+          .catch(() => undefined)
+        return
+      }
       const existing = g.tabsRef.current.find(
-        (tb) => tb.path === req.path || monaco.Uri.file(tb.path).toString() === wantedUri
+        (tb) => tb.path === reqPath || monaco.Uri.file(tb.path).toString() === wantedUri
       )
-      const targetPath = existing?.path ?? req.path
+      const targetPath = existing?.path ?? reqPath
       if (!existing) {
         g.setTabs((prev) =>
           prev.some((tb) => tb.path === targetPath)
@@ -1254,6 +1297,41 @@ export default function App(): React.JSX.Element {
     },
     [dirtyPaths, closeTabIn, tabs, tabs2]
   )
+
+  // 全屏下 Esc 退出全屏:setTimeout(0) 延迟到本轮同步派发结束后再看
+  // defaultPrevented —— 弹窗/下拉/Monaco 等消费方 preventDefault 即让位,
+  // 与注册顺序无关;终端(xterm)内 Esc 是真实输入(shell vim 等),不拦
+  const fullscreenRef = useRef(false)
+  useEffect(() => {
+    void window.api.windowIsFullScreen().then((v) => {
+      fullscreenRef.current = v
+    })
+    const unsub = window.api.onWindowFullScreen((v) => {
+      fullscreenRef.current = v
+    })
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || !fullscreenRef.current) return
+      if (e.target instanceof Element && e.target.closest('.xterm')) return
+      window.setTimeout(() => {
+        if (!e.defaultPrevented) window.api.windowSetFullScreen(false)
+      }, 0)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      unsub()
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [])
+
+  // ⌘W(File 菜单 menu:close-tab):关闭活动组当前页签,走与页签 ✕ 相同的
+  // 脏确认流;无打开页签时静默(不关窗 —— 关窗已改绑 ⇧⌘W)
+  useEffect(() => {
+    return window.api.onMenuCloseTab(() => {
+      const gi = activeGroupIdxRef.current
+      const path = gi === 1 ? activePath2ValRef.current : activePathValRef.current
+      if (path) handleCloseTabIn(gi, path)
+    })
+  }, [handleCloseTabIn])
 
   // 脏状态订阅:模型层已上收 modelRegistry(分屏两组共享模型),App 级 dirtyPaths
   // 从注册表订阅(路径为首次打开的原始路径;两组同文件天然同一脏状态)
@@ -1612,6 +1690,14 @@ export default function App(): React.JSX.Element {
   const structPinned = structureOpen && viewModes.structure === 'dockPinned'
   const structOverlay = structureOpen && isOverlayMode(viewModes.structure)
 
+  // 左栏宽度下限随停靠工具变化:Git 工具行(分段切换 + 操作按钮)不可压缩,下限更高;
+  // 切到 git 时若现宽低于下限立即抬高(float 模式不占左栏,由 FloatPanel MIN_W 自管)
+  const leftMinWidth =
+    leftPinnedTool === 'git' || leftOverlayTool === 'git' ? GIT_LEFT_MIN_WIDTH : LEFT_MIN_WIDTH
+  useEffect(() => {
+    setLeftWidth((w) => Math.max(w, leftMinWidth))
+  }, [leftMinWidth])
+
   // 右侧槽位(运行的设备 ⇄ 硬件设计,rightView 仲裁)
   const rightTool: ToolWindowId = rightView
   const rightPinned = rightOpen && viewModes[rightTool] === 'dockPinned'
@@ -1861,7 +1947,7 @@ export default function App(): React.JSX.Element {
                   )}
                   {structPinned && <div className="min-h-0 flex-1">{renderTool('structure')}</div>}
                 </div>
-                <DragHandle orientation="vertical" onDelta={(dx) => setLeftWidth((w) => clamp(w + dx, 180, 520))} />
+                <DragHandle orientation="vertical" onDelta={(dx) => setLeftWidth((w) => clamp(w + dx, leftMinWidth, 520))} />
               </>
             )}
 
@@ -1954,7 +2040,7 @@ export default function App(): React.JSX.Element {
               ref={leftOverlayRef}
               side="left"
               size={leftWidth}
-              onResizeDelta={(dx) => setLeftWidth((w) => clamp(w + dx, 180, 520))}
+              onResizeDelta={(dx) => setLeftWidth((w) => clamp(w + dx, leftMinWidth, 520))}
             >
               {leftOverlayTool && (
                 <div

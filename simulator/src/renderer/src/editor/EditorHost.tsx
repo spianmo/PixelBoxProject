@@ -92,7 +92,7 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
     editorRef.current?.setModel(entry.model)
     editorRef.current?.updateOptions(
       entry.virtual
-        ? { readOnly: true, readOnlyMessage: { value: '库声明文件(只读)' } }
+        ? { readOnly: true, readOnlyMessage: { value: '只读页签(库声明 / 外部头文件)' } }
         : { readOnly: false }
     )
     applyStoredViewState(path)

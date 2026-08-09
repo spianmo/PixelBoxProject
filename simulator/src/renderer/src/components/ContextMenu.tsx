@@ -30,15 +30,23 @@ export function ContextMenu({ x, y, items, onClose }: Props): React.JSX.Element 
 
   useEffect(() => {
     const close = (): void => onClose()
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+        onClose()
+      }
+    }
     // 延迟一帧注册,避免触发菜单的那次点击立即将其关闭
     const timer = window.setTimeout(() => {
       window.addEventListener('mousedown', close)
       window.addEventListener('blur', close)
+      window.addEventListener('keydown', onKey)
     }, 0)
     return () => {
       window.clearTimeout(timer)
       window.removeEventListener('mousedown', close)
       window.removeEventListener('blur', close)
+      window.removeEventListener('keydown', onKey)
     }
   }, [onClose])
 

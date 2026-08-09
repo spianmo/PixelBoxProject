@@ -45,6 +45,11 @@ export const DEFAULT_LAYOUT: MainLayoutState = {
   terminalOpened: false
 }
 
+/** 左栏停靠/覆盖宽度下限(App 内 DragHandle clamp 与此一致) */
+export const LEFT_MIN_WIDTH = 180
+/** Git 工具窗的左栏下限:工具行 = 分段切换(变更/历史/分支)+ 5 操作按钮,en 文案最宽约 340 */
+export const GIT_LEFT_MIN_WIDTH = 340
+
 const KEY = 'pixelbox-sim.main-layout'
 
 function clamp(v: unknown, min: number, max: number, fallback: number): number {
@@ -66,8 +71,8 @@ export function loadMainLayout(): MainLayoutState {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Record<string, unknown> | null
     if (!raw) return { ...d }
     return {
-      // 区间与 App 内 DragHandle 的 clamp 一致(左 180-520 / 右 280-680 / 底 120-480 / 结构 120-640)
-      leftWidth: clamp(raw.leftWidth, 180, 520, d.leftWidth),
+      // 区间与 App 内 DragHandle 的 clamp 一致(左 180-520,git 时 340 起 / 右 280-680 / 底 120-480 / 结构 120-640)
+      leftWidth: clamp(raw.leftWidth, raw.leftTool === 'git' ? GIT_LEFT_MIN_WIDTH : LEFT_MIN_WIDTH, 520, d.leftWidth),
       rightWidth: clamp(raw.rightWidth, 280, 680, d.rightWidth),
       bottomHeight: clamp(raw.bottomHeight, 120, 480, d.bottomHeight),
       structTopHeight: clamp(raw.structTopHeight, 120, 640, d.structTopHeight),

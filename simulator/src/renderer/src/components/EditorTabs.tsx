@@ -70,7 +70,10 @@ export function EditorTabs({
       if (!menuRef.current?.contains(e.target as Node)) setMenu(null)
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setMenu(null)
+      if (e.key === 'Escape') {
+        e.preventDefault() // 消费 Esc:全屏下的「Esc 退出全屏」让位
+        setMenu(null)
+      }
     }
     window.addEventListener('mousedown', onDown, true)
     window.addEventListener('keydown', onKey, true)

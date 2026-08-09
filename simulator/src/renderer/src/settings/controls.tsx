@@ -6,6 +6,7 @@
  *   全部经 useDraftValue 读写草稿(Apply 才落盘,见 draft.tsx)
  * - 只读展示(快捷键表等)由页面自行排版
  */
+import { useId } from 'react'
 import { useDraftValue } from './draft'
 
 /** 分节:标题 + 右侧延展横线(JetBrains 设置页分组样式) */
@@ -99,15 +100,18 @@ export function SelectField<T extends string | number>(props: {
   )
 }
 
-/** 文本项(标签在左;宽输入框) */
+/** 文本项(标签在左;宽输入框;suggestions 提供 datalist 候选,仍可自由输入) */
 export function TextField(props: {
   path: string
   label: string
   placeholder?: string
   hint?: React.ReactNode
   mono?: boolean
+  suggestions?: string[]
 }): React.JSX.Element {
   const [value, setValue] = useDraftValue<string>(props.path)
+  const listId = useId()
+  const hasList = (props.suggestions?.length ?? 0) > 0
   return (
     <div>
       <div className="flex items-center gap-3">
@@ -116,11 +120,19 @@ export function TextField(props: {
           value={value}
           placeholder={props.placeholder}
           spellCheck={false}
+          list={hasList ? listId : undefined}
           onChange={(e) => setValue(e.target.value)}
           className={`min-w-0 flex-1 rounded border border-ink-600 bg-ink-900 px-2 py-1 text-[13px] text-jb-text outline-none placeholder:text-ink-500 focus:border-accent ${
             props.mono ? 'font-mono' : ''
           }`}
         />
+        {hasList && (
+          <datalist id={listId}>
+            {props.suggestions!.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+        )}
       </div>
       {props.hint && <div className="ml-[140px]">{<FieldHint>{props.hint}</FieldHint>}</div>}
     </div>
