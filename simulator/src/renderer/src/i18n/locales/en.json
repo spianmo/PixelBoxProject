@@ -29,6 +29,7 @@
     "minimizeUnavailableFs": "Minimize unavailable in full screen",
     "exitFullscreen": "Exit Full Screen",
     "rescanDevices": "Rescan devices",
+    "deviceManager": "Device Manager",
     "simulatorDevice": "PixelBox Simulator",
     "virtualDevices": "Virtual devices",
     "realDevices": "Physical (mDNS)",
@@ -84,6 +85,10 @@
       "screen": "Resolution",
       "actions": "Actions"
     },
+    "launch": "Start",
+    "stop": "Stop",
+    "running": "Running",
+    "launchUnavailable": "Current project type cannot run apps (app projects and plain folders only)",
     "edit": "Edit",
     "copy": "Duplicate",
     "delete": "Delete",
@@ -759,6 +764,15 @@
     "cancel": "Cancel",
     "error": "Error",
     "yes": "Yes",
-    "no": "No"
+    "no": "No",
+    "copyPath": "Copy Path",
+    "copyRelativePath": "Copy Relative Path",
+    "copyRelativePathUnavailable": "This path is outside the current workspace",
+    "copyRelativePathIsRoot": "This path is the workspace root",
+    "pathUnavailableNoFile": "This tab has no on-disk file path",
+    "pathCopied": "Path copied",
+    "revealInFinder": "Reveal in Finder",
+    "revealInExplorer": "Reveal in File Explorer",
+    "revealInFiles": "Reveal in File Manager"
   }
 }

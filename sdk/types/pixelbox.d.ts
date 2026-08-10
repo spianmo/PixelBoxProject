@@ -462,7 +462,7 @@ interface PxWifiStatus {
 
 interface PxWifi {
   scan(): Promise<PxWifiAp[]>;
-  /** 连接并等待拿到 IP;凭据自动持久化,开机自动重连 */
+  /** 连接并等待拿到 IP;凭据在连接验证成功后持久化 (误输密码不覆盖已存凭据),开机自动重连 */
   connect(ssid: string, password?: string, opts?: { timeoutMs?: number; save?: boolean }): Promise<PxWifiStatus>;
   disconnect(): void;
   status(): PxWifiStatus;

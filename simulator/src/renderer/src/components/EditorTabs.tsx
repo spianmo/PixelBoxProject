@@ -1,7 +1,7 @@
 /**
  * 编辑器标签栏(JetBrains 风格:标签栏 #2B2D30,激活标签下缘 2px 蓝条)
  * - 多标签切换 / 关闭,未保存显示圆点,中键关闭
- * - 右键菜单(IDE v3.x):关闭 / 关闭其他 / 关闭未修改 / 左右拆分 / 上下拆分
+ * - 右键菜单(IDE v3.x):关闭 / 关闭其他 / 关闭未修改 / 复制路径 / 左右拆分 / 上下拆分
  *   (拆分 = 在另一编辑器组打开该文件;diff/虚拟页签无模型,不参与拆分)
  */
 import { useEffect, useRef, useState } from 'react'
@@ -9,6 +9,8 @@ import { useTranslation } from 'react-i18next'
 import { VscClose, VscCircleFilled, VscLock } from 'react-icons/vsc'
 import { LuGitCompare } from 'react-icons/lu'
 import { fileIconFor } from './fileIcons'
+import { revealMenuLabelKey } from './revealInFolder'
+import { copyPathToClipboard, relativeToRoot } from './copyPath'
 import type { DiffSpec } from '../editor/DiffView'
 
 export interface TabInfo {
@@ -16,6 +18,12 @@ export interface TabInfo {
   name: string
   /** 虚拟库页签(extraLib 声明,⌘+点击跳转打开):只读、不进会话 */
   virtual?: boolean
+  /**
+   * 合成路径页签:路径由 monacoSetup 拼出(extraLib 的 /node_modules/… 与 TS 标准库
+   * 的 /lib.*.d.ts),磁盘上没有对应文件 → 复制路径/定位一律禁用。
+   * 注意与 virtual 区分:clangd 跳转打开的工作区外只读页签也是 virtual,但路径真实。
+   */
+  synthetic?: boolean
   /** 页签类型:'diff' = Git diff 页签(EditorHost hidden + DiffView 兄弟节点) */
   kind?: 'diff'
   /** diff 页签参数(kind='diff' 时有效;path 为合成键 pbdiff://…) */
@@ -36,6 +44,8 @@ interface Props {
   onSplit?: (dir: 'row' | 'col', path: string) => void
   /** 当前分屏方向(null = 未分屏;非 null 时两个拆分项合并为「在另一分组打开」) */
   splitDir?: 'row' | 'col' | null
+  /** 工作区根(右键「复制相对路径」的基准;缺省或页签在工作区外时该项禁用) */
+  workspaceRoot?: string | null
   /** 标签栏右端附加控件(Markdown 编辑/分屏/预览切换等) */
   trailing?: React.ReactNode
 }
@@ -57,6 +67,7 @@ export function EditorTabs({
   onCloseUnmodified,
   onSplit,
   splitDir,
+  workspaceRoot,
   trailing
 }: Props): React.JSX.Element {
   const { t } = useTranslation()
@@ -86,11 +97,13 @@ export function EditorTabs({
   const menuItem = (
     label: string,
     onPick: () => void,
-    disabled = false
+    disabled = false,
+    title?: string
   ): React.JSX.Element => (
     <button
       key={label}
       disabled={disabled}
+      title={title}
       onClick={() => {
         setMenu(null)
         onPick()
@@ -102,6 +115,18 @@ export function EditorTabs({
       {label}
     </button>
   )
+
+  /**
+   * 页签在磁盘上没有真实路径:diff 页签(pbdiff:// 合成键)与合成路径页签
+   * (TabInfo.synthetic:extraLib 的 /node_modules/… 与 TS 标准库的 /lib.*.d.ts,
+   * 由 App 的 setEditorOpenHandler 统一打标)。定位与复制路径一并禁用;
+   * clangd 跳转打开的工作区外只读页签(virtual 但路径真实)保持可用。
+   */
+  const hasNoRealPath = (tab: TabInfo): boolean => tab.kind === 'diff' || tab.synthetic === true
+
+  // 当前右键页签的工作区相对路径(null = 无工作区/页签在工作区外 → 「复制相对路径」禁用)
+  const menuRelPath = menu ? relativeToRoot(workspaceRoot, menu.tab.path) : null
+  const menuNoFile = menu ? hasNoRealPath(menu.tab) : false
 
   return (
     <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-ink-700 bg-ink-850">
@@ -175,6 +200,32 @@ export function EditorTabs({
               tabs.length <= 1
             )}
           {onCloseUnmodified && menuItem(t('editorTabs.closeUnmodified'), () => onCloseUnmodified())}
+          <div className="my-1 h-px bg-ink-700" />
+          {/* 复制路径 / 复制相对路径 / 在系统文件管理器中定位(禁用条件见 hasNoRealPath) */}
+          {menuItem(
+            t('common.copyPath'),
+            () => copyPathToClipboard(menu.tab.path),
+            menuNoFile,
+            menuNoFile ? t('common.pathUnavailableNoFile') : undefined
+          )}
+          {menuItem(
+            t('common.copyRelativePath'),
+            () => {
+              if (menuRelPath !== null) copyPathToClipboard(menuRelPath)
+            },
+            menuNoFile || menuRelPath === null,
+            menuNoFile
+              ? t('common.pathUnavailableNoFile')
+              : menuRelPath === null
+                ? t('common.copyRelativePathUnavailable')
+                : undefined
+          )}
+          {menuItem(
+            t(revealMenuLabelKey()),
+            () => void window.api.revealInFolder(menu.tab.path),
+            menuNoFile,
+            menuNoFile ? t('common.pathUnavailableNoFile') : undefined
+          )}
           {onSplit && <div className="my-1 h-px bg-ink-700" />}
           {onSplit &&
             (splitDir == null ? (

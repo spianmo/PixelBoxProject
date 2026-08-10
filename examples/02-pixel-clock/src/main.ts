@@ -120,28 +120,40 @@ if (savedStyle !== null) {
 }
 
 // ------------------------------------------------------------
-// NTP 对时(失败自动重试)与天气拉取
+// NTP 对时(服务器轮换 + 永续重试)与天气拉取
 // ------------------------------------------------------------
+/** 国内网络下 pool.ntp.org 常超时,优先阿里云,轮换重试 */
+const NTP_SERVERS = ['ntp.aliyun.com', 'cn.pool.ntp.org', 'pool.ntp.org'];
+
 async function syncTime(): Promise<void> {
   px.system.setTimezone('CST-8');
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // 热重启/深睡唤醒后 RTC 往往已有有效时间,先亮钟面再后台校时
+  if (px.system.now() > Date.UTC(2024, 0, 1)) ntpOk = true;
+  for (let attempt = 0; ; attempt++) {
+    const server = NTP_SERVERS[attempt % NTP_SERVERS.length];
     try {
-      await px.system.ntpSync();
+      await px.system.ntpSync(server);
       ntpOk = true;
-      console.log('NTP 对时成功');
+      console.log('NTP 对时成功:', server);
       return;
     } catch (err) {
-      console.warn(`NTP 对时失败(第 ${attempt} 次):`, err);
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      console.warn(`NTP 对时失败(${server}):`, err);
+      // 永续重试:前几轮 5s,之后 30s 退避
+      await new Promise((resolve) => setTimeout(resolve, attempt < 3 ? 5000 : 30000));
     }
   }
 }
 
-/** 拉取天气:wttr.in 自定义纯文本格式 "%t|%C",配合 lang=zh 返回中文天气 */
-async function fetchWeather(): Promise<void> {
-  if (!px.wifi.status().connected) return;
+/**
+ * 拉取天气:wttr.in 自定义纯文本格式 "%t|%C",配合 lang=zh 返回中文天气。
+ * 走明文 http —— wttr.in 的 https 在部分网络环境被阻断(真机实测
+ * ESP_ERR_HTTP_CONNECT),天气数据无敏感性,明文可接受。
+ * @returns 是否成功拿到天气
+ */
+async function fetchWeather(): Promise<boolean> {
+  if (!px.wifi.status().connected) return false;
   try {
-    const url = 'https://wttr.in/?format=' + encodeURIComponent('%t|%C') + '&lang=zh';
+    const url = 'http://wttr.in/?format=' + encodeURIComponent('%t|%C') + '&lang=zh';
     const res = await fetch(url, { timeoutMs: 10000 });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const text = (await res.text()).trim();
@@ -151,15 +163,23 @@ async function fetchWeather(): Promise<void> {
       weather = parts[0].replace('°', '') + ' ' + parts[1];
       weatherUpdatedAt = px.system.now();
       console.log('天气更新:', weather);
+      return true;
     }
+    return false;
   } catch (err) {
     console.warn('天气获取失败:', err);
+    return false;
   }
 }
 
-void syncTime().then(() => fetchWeather());
-// 每 30 分钟刷新一次天气
-setInterval(() => { void fetchWeather(); }, 30 * 60 * 1000);
+// 对时与天气并行推进;天气首次成功前每 60s 重试,成功后转 30 分钟周期
+void syncTime();
+void (async () => {
+  while (!(await fetchWeather())) {
+    await new Promise((resolve) => setTimeout(resolve, 60 * 1000));
+  }
+  setInterval(() => { void fetchWeather(); }, 30 * 60 * 1000);
+})();
 
 // 触摸切换表盘并持久化
 px.input.onTouch((ev) => {

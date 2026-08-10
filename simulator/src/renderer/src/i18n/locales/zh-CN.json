@@ -29,6 +29,7 @@
     "minimizeUnavailableFs": "全屏下最小化不可用",
     "exitFullscreen": "退出全屏",
     "rescanDevices": "重新扫描设备",
+    "deviceManager": "设备管理器",
     "simulatorDevice": "PixelBox 模拟器",
     "virtualDevices": "虚拟设备",
     "realDevices": "真机(mDNS)",
@@ -84,6 +85,10 @@
       "screen": "分辨率",
       "actions": "操作"
     },
+    "launch": "启动",
+    "stop": "停止",
+    "running": "运行中",
+    "launchUnavailable": "当前工程类型不可运行应用(仅应用工程与普通文件夹)",
     "edit": "编辑",
     "copy": "复制",
     "delete": "删除",
@@ -759,6 +764,15 @@
     "cancel": "取消",
     "error": "出错了",
     "yes": "是",
-    "no": "否"
+    "no": "否",
+    "copyPath": "复制路径",
+    "copyRelativePath": "复制相对路径",
+    "copyRelativePathUnavailable": "该路径不在当前工作区内",
+    "copyRelativePathIsRoot": "该路径就是工作区根目录",
+    "pathUnavailableNoFile": "该标签页没有对应的磁盘文件路径",
+    "pathCopied": "已复制路径",
+    "revealInFinder": "在 Finder 中显示",
+    "revealInExplorer": "在资源管理器中显示",
+    "revealInFiles": "在文件管理器中显示"
   }
 }

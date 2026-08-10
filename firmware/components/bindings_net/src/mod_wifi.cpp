@@ -84,7 +84,9 @@ static bool reason_is_fatal(int reason) {
 
 /** HAL 事件 → JS 线程分发(在 JS 线程执行) */
 static void dispatch_event_js(WifiEvent ev, WifiStatus st, int reason) {
-  JSContext* ctx = pxjs::g_ctx;
+  /* 用 jsvm::context() 而非 pxjs::g_ctx: 后者 teardown 不清空, VM 停机窗口
+   * (stop/crash 后) WiFi 断连/重连事件会拿悬垂 ctx 建 JSValue → 堆损坏 */
+  JSContext* ctx = jsvm::context();
   if (!ctx) return;
   JSValue stv = status_to_js(ctx, st);
 

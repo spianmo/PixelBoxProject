@@ -96,12 +96,18 @@ struct RecordJob {
     bool js_alive = true;
     std::string path;
     uint32_t rate = 16000;
-    int16_t* pcm = nullptr;   // PSRAM 整段录音缓冲
+    int16_t* pcm = nullptr;   // PSRAM 整段录音缓冲 (io_mtx 保护所有权)
     size_t cap = 0;           // 容量(样本)
     size_t len = 0;           // 已写样本
     hal_audio::LinearResampler rs;
     int sink_id = -1;
     std::atomic<bool> capture_done{false};
+    /* io_mtx 串行化 [采集写入 pcm] 与 [guard_finalizer 回收 pcm]:
+     * capture_task 在锁外快照派发 sink, unsubscribe 返回后仍可能有一次
+     * 在途回调, 仅凭 capture_done 入口检查存在写后释放竞态。
+     * writer_started = pcm 所有权已移交写盘任务, finalizer 不得再 free。 */
+    std::mutex io_mtx;
+    bool writer_started = false;
 };
 using RecordJobPtr = std::shared_ptr<RecordJob>;
 
@@ -251,7 +257,10 @@ JSValue js_handle_on_ended(JSContext* ctx, JSValueConst this_val, int argc, JSVa
         // 已结束:立即(异步)补一次回调
         JSValue fn = JS_DupValue(ctx, argv[0]);
         PlayCtxPtr blk = *p;
-        jsvm::post([blk, fn] {
+        const uint32_t gen = jsvm::vm_generation();
+        jsvm::post([blk, fn, gen] {
+            // VM 已热重启则整体放弃:fn 随旧 runtime 回收, 不可再 free (旧 ctx 已释放)
+            if (gen != jsvm::vm_generation() || !jsvm::context()) return;
             if (blk->alive) pxjs::call_js(blk->ctx, fn, 0, nullptr, TAG);
             JS_FreeValue(blk->ctx, fn);
         });
@@ -341,7 +350,10 @@ JSValue js_stream_on_ended(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     if ((*p)->ended.fired) {
         JSValue fn = JS_DupValue(ctx, argv[0]);
         StreamCtxPtr blk = *p;
-        jsvm::post([blk, fn] {
+        const uint32_t gen = jsvm::vm_generation();
+        jsvm::post([blk, fn, gen] {
+            // 同 js_handle_on_ended: VM 已热重启则整体放弃, 不可对旧 ctx free
+            if (gen != jsvm::vm_generation() || !jsvm::context()) return;
             if (blk->alive) pxjs::call_js(blk->ctx, fn, 0, nullptr, TAG);
             JS_FreeValue(blk->ctx, fn);
         });
@@ -591,11 +603,15 @@ void mic_on_capture(const int16_t* samples, size_t count) {
     }
 }
 
-void mic_stop_locked(JSContext* ctx) {
-    if (g_mic.sink_id >= 0) {
-        hal_audio::mic_unsubscribe(g_mic.sink_id);
-        g_mic.sink_id = -1;
-    }
+/**
+ * 停止 mic 订阅 (须持 g_mic.mtx 调用), 返回待摘除的 sink id (-1 = 无)。
+ * mic_unsubscribe 必须由调用方在锁外执行: 它在摘除最后一个 sink 时阻塞等
+ * 采集任务退出, 而采集任务的 mic_on_capture 正卡在 g_mic.mtx 上 —— 持锁
+ * 调用 = 互等到 hal 侧 1s 超时才解, 每次 mic 存活期间的 VM 热重启都白卡。
+ */
+int mic_stop_locked(JSContext* ctx) {
+    const int detached = g_mic.sink_id;
+    g_mic.sink_id = -1;
     if (g_mic.alive) {
         g_mic.alive = false;
         if (ctx) JS_FreeValue(ctx, g_mic.cb);
@@ -603,6 +619,7 @@ void mic_stop_locked(JSContext* ctx) {
         g_mic.ctx = nullptr;
     }
     free_mic_queue_locked();
+    return detached;
 }
 
 JSValue js_mic_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -625,8 +642,14 @@ JSValue js_mic_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
     if (frame_ms < 10) frame_ms = 10;
     if (frame_ms > 500) frame_ms = 500;
 
+    int old_sink = -1;
+    {
+        std::lock_guard<std::mutex> lk(g_mic.mtx);
+        old_sink = mic_stop_locked(ctx);  // 重复 start 视为重启
+    }
+    if (old_sink >= 0) hal_audio::mic_unsubscribe(old_sink);  // 锁外, 见 mic_stop_locked 注释
+
     std::lock_guard<std::mutex> lk(g_mic.mtx);
-    mic_stop_locked(ctx);  // 重复 start 视为重启
     g_mic.ctx = ctx;
     g_mic.cb = on_data;  // 转移引用
     g_mic.req_rate = static_cast<uint32_t>(rate);
@@ -637,17 +660,22 @@ JSValue js_mic_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
     g_mic.acc.reserve(g_mic.frame_samples * 2);
     g_mic.dropped = 0;
     g_mic.alive = true;
+    // subscribe 只注册 + 拉起采集任务, 不会阻塞等待, 持锁调用安全
     g_mic.sink_id = hal_audio::mic_subscribe(mic_on_capture);
     if (g_mic.sink_id < 0) {
-        mic_stop_locked(ctx);
+        mic_stop_locked(ctx);  // sink 未注册成功, 返回值必为 -1, 无需锁外摘除
         return pxjs::throw_error(ctx, "麦克风启动失败");
     }
     return JS_UNDEFINED;
 }
 
 JSValue js_mic_stop(JSContext* ctx, JSValueConst, int, JSValueConst*) {
-    std::lock_guard<std::mutex> lk(g_mic.mtx);
-    mic_stop_locked(ctx);
+    int old_sink = -1;
+    {
+        std::lock_guard<std::mutex> lk(g_mic.mtx);
+        old_sink = mic_stop_locked(ctx);
+    }
+    if (old_sink >= 0) hal_audio::mic_unsubscribe(old_sink);  // 锁外, 见 mic_stop_locked 注释
     return JS_UNDEFINED;
 }
 
@@ -720,29 +748,41 @@ void record_writer_task(void* arg) {
 
 /** 采集任务上下文:录音写入 PSRAM 缓冲,满时长后转写盘任务 */
 void record_on_capture(const RecordJobPtr& job, const int16_t* samples, size_t count) {
-    if (job->capture_done.load()) return;
-    size_t off = 0;
-    auto pull = [&](int16_t* b, size_t m) {
-        const size_t c = std::min(m, count - off);
-        memcpy(b, samples + off, c * 2);
-        off += c;
-        return c;
-    };
-    for (;;) {
-        const size_t space = job->cap - job->len;
-        if (space == 0) break;
-        const size_t got = job->rs.produce(job->pcm + job->len, std::min<size_t>(space, 512), pull);
-        if (got == 0) break;
-        job->len += got;
+    bool full = false;
+    {
+        std::lock_guard<std::mutex> lk(job->io_mtx);
+        if (job->capture_done.load() || !job->pcm) return;
+        size_t off = 0;
+        auto pull = [&](int16_t* b, size_t m) {
+            const size_t c = std::min(m, count - off);
+            memcpy(b, samples + off, c * 2);
+            off += c;
+            return c;
+        };
+        for (;;) {
+            const size_t space = job->cap - job->len;
+            if (space == 0) break;
+            const size_t got =
+                job->rs.produce(job->pcm + job->len, std::min<size_t>(space, 512), pull);
+            if (got == 0) break;
+            job->len += got;
+        }
+        /* exchange 保证与 guard_finalizer 只有一方执行 unsubscribe */
+        if (job->len >= job->cap) full = !job->capture_done.exchange(true);
     }
-    if (job->len >= job->cap) {
-        job->capture_done.store(true);
+    if (full) {
         hal_audio::mic_unsubscribe(job->sink_id);
+        std::lock_guard<std::mutex> lk(job->io_mtx);
+        if (!job->pcm) return;  // finalizer 已抢先回收 (VM 恰在此刻热重启)
         auto* holder = new RecordJobPtr(job);
         if (xTaskCreatePinnedToCore(record_writer_task, "px_rec_wr", 4096, holder, 5, nullptr,
-                                    CONFIG_PX_AUDIO_TASK_CORE) != pdPASS) {
+                                    CONFIG_PX_AUDIO_TASK_CORE) == pdPASS) {
+            job->writer_started = true;  // pcm 所有权移交写盘任务
+        } else {
             delete holder;
             ESP_LOGE(TAG, "录音写盘任务创建失败");
+            hal_audio::big_free(job->pcm);
+            job->pcm = nullptr;
         }
     }
 }
@@ -831,12 +871,11 @@ JSValue js_audio_get_volume(JSContext* ctx, JSValueConst, int, JSValueConst*) {
 // ============================================================
 
 void guard_finalizer(JSRuntime* rt, JSValueConst) {
+    int mic_sink = -1;
     {
         std::lock_guard<std::mutex> lk(g_mic.mtx);
-        if (g_mic.sink_id >= 0) {
-            hal_audio::mic_unsubscribe(g_mic.sink_id);
-            g_mic.sink_id = -1;
-        }
+        mic_sink = g_mic.sink_id;
+        g_mic.sink_id = -1;
         if (g_mic.alive) {
             g_mic.alive = false;
             JS_FreeValueRT(rt, g_mic.cb);
@@ -845,6 +884,9 @@ void guard_finalizer(JSRuntime* rt, JSValueConst) {
         }
         free_mic_queue_locked();
     }
+    // 锁外摘除, 见 mic_stop_locked 注释 (持锁调用会与采集任务互等 1s)
+    if (mic_sink >= 0) hal_audio::mic_unsubscribe(mic_sink);
+
     std::lock_guard<std::mutex> lk(g_reg.mtx);
     g_reg.alive = false;
     g_reg.ctx = nullptr;
@@ -863,14 +905,18 @@ void guard_finalizer(JSRuntime* rt, JSValueConst) {
             JS_FreeValueRT(rt, j->resolve);
             JS_FreeValueRT(rt, j->reject);
         }
-        if (!j->capture_done.load()) {
-            j->capture_done.store(true);
+        /* exchange 保证与采集侧只有一方 unsubscribe */
+        if (!j->capture_done.exchange(true)) {
             hal_audio::mic_unsubscribe(j->sink_id);
         }
-        // pcm 缓冲由写盘任务(若已启动)或此处释放
-        if (j->pcm) {
-            hal_audio::big_free(j->pcm);
-            j->pcm = nullptr;
+        /* pcm 回收须在 io_mtx 内: unsubscribe 返回后 capture 快照仍可能有
+         * 一次在飞写入; 写盘任务已接管 (writer_started) 则所有权归它 */
+        {
+            std::lock_guard<std::mutex> io(j->io_mtx);
+            if (!j->writer_started && j->pcm) {
+                hal_audio::big_free(j->pcm);
+                j->pcm = nullptr;
+            }
         }
     }
     g_reg.records.clear();

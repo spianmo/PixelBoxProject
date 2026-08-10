@@ -187,9 +187,20 @@ export class DevdClient {
     return res.result;
   }
 
-  /** logs.subscribe:订阅日志广播(日志经 onEvent 以 "log" 事件到达) */
-  async subscribeLogs(): Promise<void> {
-    await this.request('logs.subscribe', {}, 8000);
+  /**
+   * logs.subscribe:订阅日志广播(日志经 onEvent 以 "log" 事件到达)
+   * @param since 只回放 seq > since 的历史(断线重连增量续传;0 = 全量)
+   * @returns last_seq 设备当前最大日志 seq;boot 每次开机随机标识——
+   *          boot 变化(或兜底 last_seq 小于本地已见 seq)说明设备已重启,
+   *          应以 since=0 重新订阅;老固件无这两个字段。
+   *          回放与实时广播可能交叠送重复行,调用方按事件 data.seq 去重。
+   */
+  async subscribeLogs(since = 0): Promise<{ ok: boolean; last_seq?: number; boot?: number }> {
+    return await this.request<{ ok: boolean; last_seq?: number; boot?: number }>(
+      'logs.subscribe',
+      { since },
+      8000,
+    );
   }
 
   /** logs.unsubscribe:取消日志订阅 */

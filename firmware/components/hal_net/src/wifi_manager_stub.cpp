@@ -46,6 +46,11 @@ esp_err_t WifiManager::connect(const std::string&, const std::string&, bool)
 
 void WifiManager::disconnect() {}
 
+esp_err_t WifiManager::reconnect_saved()
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 esp_err_t WifiManager::scan(ScanDone)
 {
     return ESP_ERR_NOT_SUPPORTED;

@@ -173,6 +173,29 @@ export function stopAllSessions(): void {
   for (const s of simSessionsStore.get().sessions) s.engine.api.stop()
 }
 
+/** 停止单个会话(设备管理器行内 ⏹;保留 tab 供再次运行) */
+export function stopSession(key: string): void {
+  simSessionsStore.get().sessions.find((s) => s.key === key)?.engine.api.stop()
+}
+
+// 运行中 key 集合快照(内容不变时保持同一引用,useSyncExternalStore 要求)
+let runningKeysCache: ReadonlySet<string> = new Set()
+function runningKeysSnapshot(): ReadonlySet<string> {
+  const next = simSessionsStore
+    .get()
+    .sessions.filter((s) => s.engine.uiStore.get().running)
+    .map((s) => s.key)
+  if (next.length !== runningKeysCache.size || !next.every((k) => runningKeysCache.has(k))) {
+    runningKeysCache = new Set(next)
+  }
+  return runningKeysCache
+}
+
+/** React hook:运行中的会话 key 集合(设备管理器行内 ▶/⏹ 与运行指示) */
+export function useRunningSimKeys(): ReadonlySet<string> {
+  return useSyncExternalStore(subscribeAnyRunning, runningKeysSnapshot)
+}
+
 /** watch 重建成功:对所有运行中的会话热重载最新 bundle */
 export async function reloadRunningSessions(bundleCode: string, manifest: SimManifest): Promise<void> {
   const running = simSessionsStore.get().sessions.filter((s) => s.engine.uiStore.get().running)

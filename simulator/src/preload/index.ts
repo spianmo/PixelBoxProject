@@ -10,6 +10,7 @@ import type {
   ClangdServerNotification,
   ClangdStatus,
   DevdDevice,
+  DevdLogEvent,
   DeviceProfile,
   EffectiveTheme,
   FirmwareStatus,
@@ -84,6 +85,10 @@ const api = {
     ipcRenderer.invoke('shell:save-screenshot', png),
   /** 外部链接交给系统浏览器(仅 http(s)/mailto;Markdown 预览用) */
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
+  /** 在系统文件管理器中定位文件/目录(macOS=Finder,Windows=资源管理器,Linux=文件管理器) */
+  revealInFolder: (path: string): Promise<void> => ipcRenderer.invoke('shell:reveal-in-folder', path),
+  /** 复制文本到系统剪贴板(右键菜单「复制路径 / 复制相对路径」) */
+  copyText: (text: string): Promise<void> => ipcRenderer.invoke('shell:copy-text', text),
 
   // ---- Git 集成 ----
   /** 检测 git 可执行文件(设置页实时回显;可传草稿路径不落盘试探) */
@@ -377,6 +382,15 @@ const api = {
     subscribe('devd:devices', cb),
   onPushProgress: (cb: (p: PushProgress) => void): (() => void) =>
     subscribe('devd:push-progress', cb),
+  /** 订阅真机日志(main 建立常驻连接并断线重连;日志经 onDevdLog 批量到达) */
+  devdLogsSubscribe: (opts: { key: string; host: string; port: number }): Promise<void> =>
+    ipcRenderer.invoke('devd:logs-subscribe', opts),
+  devdLogsUnsubscribe: (key: string): Promise<void> =>
+    ipcRenderer.invoke('devd:logs-unsubscribe', { key }),
+  onDevdLog: (cb: (events: DevdLogEvent[]) => void): (() => void) => subscribe('devd:log', cb),
+  /** 全量回放前的清屏信号(老固件重连 / 设备重启),渲染端应清掉该设备旧行 */
+  onDevdLogReset: (cb: (p: { key: string }) => void): (() => void) =>
+    subscribe('devd:log-reset', cb),
 
   // ---- 设备模拟特权通道(device-sim,见 src/preload/simApi.ts) ----
   sim: simApi

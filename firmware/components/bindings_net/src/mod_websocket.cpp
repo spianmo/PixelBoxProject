@@ -28,6 +28,7 @@ static const char* TAG = "px_ws";
 struct WsClient {
   esp_websocket_client_handle_t handle = nullptr;
   JSContext* ctx = nullptr;
+  uint32_t gen = 0;             ///< 创建时的 jsvm::vm_generation(),VM 热重启失效判定用
   JSValue self = JS_UNDEFINED;  ///< 连接活动期间持有的 JS 对象引用
   std::atomic<int> state{0};    ///< 0 CONNECTING / 1 OPEN / 2 CLOSING / 3 CLOSED
   std::string url;
@@ -69,8 +70,10 @@ static void ws_schedule_destroy(const WsPtr& ws) {
 /** JS 线程:取 obj.<prop> 若为函数则以 ev 为参调用(消费 ev) */
 static void ws_call_handler(const WsPtr& ws, const char* prop, JSValue ev) {
   JSContext* ctx = ws->ctx;
-  if (ctx != pxjs::g_ctx || JS_IsUndefined(ws->self)) {
-    if (ctx == pxjs::g_ctx) JS_FreeValue(ctx, ev);
+  // VM 热重启后 ctx 地址可能被复用,不可比较指针;gen 失配即 self/ev 属旧 runtime,不可再触碰
+  if (pxjs::vm_stale(ws->gen)) return;
+  if (JS_IsUndefined(ws->self)) {
+    JS_FreeValue(ctx, ev);
     return;
   }
   JSValue fn = JS_GetPropertyStr(ctx, ws->self, prop);
@@ -95,7 +98,7 @@ static void ws_dispatch_terminal(const WsPtr& ws, int code, std::string reason) 
   ws->terminal_sent = true;
   ws->state.store(3);
   JSContext* ctx = ws->ctx;
-  if (ctx == pxjs::g_ctx && !JS_IsUndefined(ws->self)) {
+  if (!pxjs::vm_stale(ws->gen) && !JS_IsUndefined(ws->self)) {
     JSValue ev = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, ev, "type", JS_NewString(ctx, "close"));
     JS_SetPropertyStr(ctx, ev, "code", JS_NewInt32(ctx, code));
@@ -118,7 +121,7 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
     case WEBSOCKET_EVENT_CONNECTED: {
       ws->state.store(1);
       pxjs::run_on_js([ws]() {
-        if (ws->ctx != pxjs::g_ctx) return;
+        if (pxjs::vm_stale(ws->gen)) return;
         JSValue ev = JS_NewObject(ws->ctx);
         JS_SetPropertyStr(ws->ctx, ev, "type", JS_NewString(ws->ctx, "open"));
         ws_call_handler(ws, "onopen", ev);
@@ -150,7 +153,7 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
         auto payload = std::make_shared<std::vector<uint8_t>>(std::move(ws->frag));
         ws->frag = {};
         pxjs::run_on_js([ws, payload, is_text]() {
-          if (ws->ctx != pxjs::g_ctx) return;
+          if (pxjs::vm_stale(ws->gen)) return;
           JSContext* ctx = ws->ctx;
           JSValue dv;
           if (is_text) {
@@ -173,7 +176,7 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
     }
     case WEBSOCKET_EVENT_ERROR: {
       pxjs::run_on_js([ws]() {
-        if (ws->ctx != pxjs::g_ctx) return;
+        if (pxjs::vm_stale(ws->gen)) return;
         JSValue ev = JS_NewObject(ws->ctx);
         JS_SetPropertyStr(ws->ctx, ev, "type", JS_NewString(ws->ctx, "error"));
         JS_SetPropertyStr(ws->ctx, ev, "message", JS_NewString(ws->ctx, "WebSocket 传输错误"));
@@ -291,6 +294,7 @@ static JSValue js_ws_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSV
 
   auto ws = std::make_shared<WsClient>();
   ws->ctx = ctx;
+  ws->gen = jsvm::vm_generation();
   ws->url = url;
 
   esp_websocket_client_config_t cfg = {};

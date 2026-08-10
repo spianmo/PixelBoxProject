@@ -4,7 +4,7 @@
  * - 工作区 git 分支读取(纯文件解析 .git/HEAD,不依赖 git 可执行文件)
  * - 模拟器屏幕截图落盘(~/Downloads)
  */
-import { app, ipcMain, BrowserWindow, shell } from 'electron'
+import { app, ipcMain, BrowserWindow, clipboard, shell } from 'electron'
 import { promises as fsp } from 'node:fs'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 
@@ -66,6 +66,26 @@ export function registerShellIpc(): void {
     // 只放行 http(s) / mailto,阻断 file: 等本地协议
     if (!/^(https?:|mailto:)/i.test(url)) return
     await shell.openExternal(url)
+  })
+
+  // ---- 在系统文件管理器中定位(文件树/编辑器页签右键;macOS=Finder,Win=资源管理器) ----
+  ipcMain.handle('shell:reveal-in-folder', async (_e, p: string): Promise<void> => {
+    // 只接受存在的绝对路径:相对路径/已删除文件静默忽略,不弹空 Finder 窗口
+    if (typeof p !== 'string' || !isAbsolute(p)) return
+    try {
+      await fsp.access(p)
+    } catch {
+      return
+    }
+    shell.showItemInFolder(p)
+  })
+
+  // ---- 复制文本到系统剪贴板(文件树/编辑器页签右键「复制路径」) ----
+  // 走主进程 clipboard 而非 navigator.clipboard:后者在打包后的 file:// 页面上
+  // 受安全上下文/权限限制不可靠,主进程模块无此约束。
+  ipcMain.handle('shell:copy-text', (_e, text: string): void => {
+    if (typeof text !== 'string' || text.length === 0) return
+    clipboard.writeText(text)
   })
 
   // ---- 截图落盘:PNG 字节 → ~/Downloads,返回完整路径 ----

@@ -256,6 +256,7 @@ uint32_t collect_json(uint32_t since_seq, std::vector<std::string> &out)
         cJSON_AddStringToObject(data, "tag", e.tag);
         cJSON_AddStringToObject(data, "msg", e.msg);
         cJSON_AddNumberToObject(data, "ts", (double)e.ts_ms);
+        cJSON_AddNumberToObject(data, "seq", (double)e.seq);
         char *json = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
         if (json) {

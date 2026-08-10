@@ -11,6 +11,8 @@ import { VscChevronDown, VscChevronRight } from 'react-icons/vsc'
 import type { FsEntry } from '../../../shared/ipc-types'
 import { FolderIcon, fileIconFor } from './fileIcons'
 import { ContextMenu, type MenuItem } from './ContextMenu'
+import { revealMenuLabelKey } from './revealInFolder'
+import { copyPathToClipboard, isWorkspaceRoot, relativeToRoot } from './copyPath'
 import { InputModal, ConfirmModal } from './Modal'
 import { showToast } from './toast'
 import { GIT_STATUS_CLS, gitMarkFor, type GitTreeMark } from '../git/fileStatusColors'
@@ -129,6 +131,31 @@ export function FileTree({ root, onOpenFile, dirtyPaths, onFileRemoved, activePa
         { label: t('fileTree.delete'), danger: true, onClick: () => setModal({ kind: 'delete', entry }) }
       )
     }
+    // 复制路径 / 在系统文件管理器中定位(空白区/根行 = 作用于工作区根目录)
+    const targetPath = state.target?.path ?? root
+    const rel = relativeToRoot(root, targetPath)
+    items.push(
+      { label: t('common.copyPath'), group: '', onClick: () => copyPathToClipboard(targetPath) },
+      {
+        label: t('common.copyRelativePath'),
+        disabled: rel === null,
+        // 树内条目恒在工作区内,rel 为 null 只可能是「目标就是工作区根」
+        // (根行/空白区右键);沿用「工作区外」文案会与事实相反
+        title:
+          rel !== null
+            ? undefined
+            : isWorkspaceRoot(root, targetPath)
+              ? t('common.copyRelativePathIsRoot')
+              : t('common.copyRelativePathUnavailable'),
+        onClick: () => {
+          if (rel !== null) copyPathToClipboard(rel)
+        }
+      },
+      {
+        label: t(revealMenuLabelKey()),
+        onClick: () => void window.api.revealInFolder(targetPath)
+      }
+    )
     return items
   }
 

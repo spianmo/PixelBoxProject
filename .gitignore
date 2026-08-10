@@ -17,3 +17,6 @@ firmware/build_*/
 
 # 模拟器 IDE 本机会话状态(页签/光标,含绝对路径)
 .ide/
+
+# clangd 索引缓存(二进制, 每次编译重写, 含本机绝对路径)
+firmware/.cache/

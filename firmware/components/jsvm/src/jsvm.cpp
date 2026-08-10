@@ -305,6 +305,10 @@ void teardown_vm(bool notify_stopped)
         return;
     }
     ESP_LOGI(TAG, "停止 JS VM (generation %u)...", (unsigned)s_generation.load());
+    /* 立即递增 generation: VM 停机期间 (stop/crash 后不 boot) 事件循环仍在
+     * 消费队列, 旧 VM 在途任务的 gen 守卫必须即刻失效 —— 只在 boot 递增的话,
+     * 停机窗口里 vm_generation() 仍等于旧代, 守卫被击穿后照样触碰已释放 runtime */
+    s_generation++;
 
     /* 1. JS 收尾钩子 (app.onExit 等) */
     {

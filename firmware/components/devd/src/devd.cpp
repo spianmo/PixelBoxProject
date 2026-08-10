@@ -28,6 +28,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "mdns.h"
 #include "sdkconfig.h"
@@ -55,6 +56,7 @@ std::vector<int> s_log_subs; /* 日志订阅 fd */
 
 std::atomic<bool> s_flush_pending{false};
 uint32_t s_flushed_seq = 0; /* 仅 httpd 上下文访问 */
+uint32_t s_boot_id = 0;     /* 每次开机随机标识, 客户端比对识别重启 (seq 归零) */
 
 /* push 会话 (httpd 任务串行访问) */
 struct FileDecl {
@@ -195,10 +197,28 @@ void log_flush_work(void *arg)
     }
 }
 
-/** devd_log 新日志通知 (任意任务, 非阻塞) */
+/** flush 定时器回调 (esp_timer 任务上下文): 转投 httpd 任务 */
+void flush_timer_cb(void *)
+{
+    if (!s_server || httpd_queue_work(s_server, log_flush_work, nullptr) != ESP_OK) {
+        s_flush_pending.store(false); /* 失败复位, 后续日志重试 */
+    }
+}
+
+esp_timer_handle_t s_flush_timer = nullptr;
+
+/**
+ * devd_log 新日志通知 (任意任务上下文, 必须绝对非阻塞)。
+ *
+ * 严禁在此直接 httpd_queue_work: 它经 lwip 控制 socket 同步往返 tcpip 线程,
+ * 若本条日志恰是 tcpip 线程打出的 (如 SNTP 同步回调的 ESP_LOGI), tcpip 会
+ * 等待自己应答 → 整个网络栈永久死锁 (真机 coredump 实证: sntp_recv →
+ * esp_log → on_new_log → lwip_sendto → sys_arch_sem_wait 自等)。
+ * 经 0 延时 esp_timer 一跳解耦: queue_work 在 esp_timer 任务上下文执行。
+ */
 void on_new_log()
 {
-    if (!s_server) {
+    if (!s_server || !s_flush_timer) {
         return;
     }
     {
@@ -208,7 +228,7 @@ void on_new_log()
         }
     }
     if (!s_flush_pending.exchange(true)) {
-        if (httpd_queue_work(s_server, log_flush_work, nullptr) != ESP_OK) {
+        if (esp_timer_start_once(s_flush_timer, 0) != ESP_OK) {
             s_flush_pending.store(false);
         }
     }
@@ -503,7 +523,8 @@ void handle_js_eval(httpd_req_t *req, const cJSON *id, const cJSON *params)
     /* 响应异步返回, 此处不回包 */
 }
 
-void handle_logs_subscribe(httpd_req_t *req, const cJSON *id, bool subscribe)
+void handle_logs_subscribe(httpd_req_t *req, const cJSON *id, const cJSON *params,
+                           bool subscribe)
 {
     int fd = httpd_req_to_sockfd(req);
     {
@@ -513,19 +534,29 @@ void handle_logs_subscribe(httpd_req_t *req, const cJSON *id, bool subscribe)
             s_log_subs.push_back(fd);
         }
     }
+    /* since: 只回放 seq > since 的历史 (断线重连增量续传, 缺省全量) */
+    uint32_t since = 0;
+    const cJSON *s = params ? cJSON_GetObjectItem(params, "since") : nullptr;
+    if (cJSON_IsNumber(s) && s->valuedouble > 0) {
+        since = (uint32_t)s->valuedouble;
+    }
     cJSON *r = cJSON_CreateObject();
     cJSON_AddBoolToObject(r, "ok", true);
+    /* last_seq < 客户端已见 seq 或 boot 变化 ⇒ 设备已重启, 客户端应回退全量订阅 */
+    cJSON_AddNumberToObject(r, "last_seq", (double)devd_log::last_seq());
+    cJSON_AddNumberToObject(r, "boot", (double)s_boot_id);
     reply_result(req, id, r);
 
     if (subscribe) {
-        /* 回放环形缓冲中的历史日志 */
+        /* 回放环形缓冲中的历史日志 (慢/断客户端发送失败即停, 不拖死 httpd 任务)。
+         * 刻意不动 s_flushed_seq: 它属于广播路径, 在此抬升会让其他订阅者丢行;
+         * 代价是本订阅者可能经后续 flush 收到与回放重叠的行, 客户端按 seq 去重 */
         std::vector<std::string> lines;
-        uint32_t last = devd_log::collect_json(0, lines);
+        devd_log::collect_json(since, lines);
         for (auto &line : lines) {
-            send_text(req, line.c_str());
-        }
-        if (last > s_flushed_seq) {
-            s_flushed_seq = last;
+            if (send_text(req, line.c_str()) != ESP_OK) {
+                break;
+            }
         }
     }
 }
@@ -573,9 +604,9 @@ void handle_message(httpd_req_t *req, char *text)
     } else if (strcmp(m, "js.eval") == 0) {
         handle_js_eval(req, id, params);
     } else if (strcmp(m, "logs.subscribe") == 0) {
-        handle_logs_subscribe(req, id, true);
+        handle_logs_subscribe(req, id, params, true);
     } else if (strcmp(m, "logs.unsubscribe") == 0) {
-        handle_logs_subscribe(req, id, false);
+        handle_logs_subscribe(req, id, params, false);
     } else {
         reply_error(req, id, -32601, "未知 method");
     }
@@ -688,7 +719,16 @@ extern "C" esp_err_t devd_start(void)
         return ESP_OK;
     }
 
-    /* 日志管道 */
+    /* 日志管道 (flush 定时器先于 notify 注册, 见 on_new_log 死锁注释) */
+    s_boot_id = esp_random();
+    esp_timer_create_args_t targs = {};
+    targs.callback = flush_timer_cb;
+    targs.name = "devd_flush";
+    esp_err_t terr = esp_timer_create(&targs, &s_flush_timer);
+    if (terr != ESP_OK) {
+        ESP_LOGE(TAG, "flush 定时器创建失败: %s", esp_err_to_name(terr));
+        s_flush_timer = nullptr;
+    }
     devd_log::init();
     devd_log::set_notify(on_new_log);
     devd_log::install_vprintf_hook();

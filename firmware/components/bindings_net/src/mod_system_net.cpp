@@ -11,6 +11,7 @@
  * 模块 priority 20:在 fw-core 的 system 模块(priority 0/10)之后初始化,
  * 向既有 px.system 对象追加方法(不存在时创建,保证组件可独立测试)。
  */
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -83,7 +84,9 @@ static void arm_timeout(PromisePtr prom, int timeout_ms, const char* msg) {
 
 static std::mutex g_sntp_mtx;  // JS 线程与 lwip tcpip 线程(同步回调)共用
 static std::vector<PromisePtr>* g_sntp_waiters = nullptr;
-static std::string g_sntp_server;  // esp_sntp_setservername 持有其指针,必须常驻
+static std::string g_sntp_server;       // esp_sntp_setservername 持有其指针,必须常驻
+static std::string g_sntp_server_prev;  // 双缓冲:esp_sntp_stop 是异步投递 tcpip 线程,
+                                        // 旧串须保活到下一次调用(彼时 stop 必已执行)
 
 static void sntp_synced_cb(struct timeval*) {
   // lwip tcpip 线程上下文
@@ -110,15 +113,27 @@ static JSValue js_ntp_sync(JSContext* ctx, JSValueConst, int argc, JSValueConst*
   {
     std::lock_guard<std::mutex> lk(g_sntp_mtx);
     if (!g_sntp_waiters) g_sntp_waiters = new std::vector<PromisePtr>();
+    // 顺手清掉已 settle 的旧 waiter(15s 超时 reject 只 settle 不出队,
+    // 应用永续重试时向量会无界增长;settled 仅 JS 线程写,此处读安全)
+    g_sntp_waiters->erase(
+        std::remove_if(g_sntp_waiters->begin(), g_sntp_waiters->end(),
+                       [](const PromisePtr& p) { return p->settled; }),
+        g_sntp_waiters->end());
     g_sntp_waiters->push_back(prom);
-    // (重新)启动 SNTP:换服务器 / 重复调用都统一 stop → init
-    esp_sntp_stop();
-    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-    g_sntp_server = server;
-    esp_sntp_setservername(0, g_sntp_server.c_str());
-    sntp_set_time_sync_notification_cb(sntp_synced_cb);
-    esp_sntp_init();
   }
+
+  // esp_sntp_* 必须在 g_sntp_mtx 之外调用(真机死锁实证):它们要拿 lwip 核心锁,
+  // 而 sntp_synced_cb 在 tcpip 线程持核心锁抢 g_sntp_mtx —— 持锁调用即交叉死锁
+  // (重试 ntpSync 撞上在途响应时,JS 线程与 tcpip 线程双双卡死,WiFi 掉网)。
+  // 锁外顺序安全:早到的同步回调最多把新 waiter 一并 resolve(时间恰已同步,语义正确)。
+  // (重新)启动 SNTP:换服务器 / 重复调用都统一 stop → init
+  esp_sntp_stop();  // 注意:异步投递 tcpip 线程执行,返回时未必已停
+  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  g_sntp_server_prev = std::move(g_sntp_server);  // 旧串保活(在途重试定时器仍可能读)
+  g_sntp_server = server;
+  esp_sntp_setservername(0, g_sntp_server.c_str());
+  sntp_set_time_sync_notification_cb(sntp_synced_cb);
+  esp_sntp_init();
 
   arm_timeout(prom, 15000, "NTP 同步超时");
   return promv;
@@ -168,7 +183,7 @@ static JSValue js_ota_check(JSContext* ctx, JSValueConst, int argc, JSValueConst
       return;
     }
     pxjs::run_on_js([prom, result]() {
-      if (prom->settled || prom->ctx != pxjs::g_ctx) return;
+      if (prom->settled || pxjs::vm_stale(prom->gen)) return;
       JSContext* c = prom->ctx;
       std::string text(reinterpret_cast<const char*>(result->body), result->body_len);
       JSValue v = JS_ParseJSON(c, text.c_str(), text.size(), "<ota:manifest>");

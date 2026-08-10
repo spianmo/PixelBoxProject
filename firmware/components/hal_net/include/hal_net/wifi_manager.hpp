@@ -62,13 +62,22 @@ class WifiManager {
   esp_err_t ensure_init();
 
   /**
-   * 连接指定 AP。save=true 时凭据写入 NVS。
+   * 连接指定 AP。save=true 时凭据在**拿到 IP 后**才写入 NVS
+   * (连接未验证成功就落盘会让一次误输密码覆盖掉原本可用的凭据)。
    * 结果通过事件监听回报(GotIp = 成功;Disconnected + reason = 失败中间态)。
+   * 若有在途扫描会先以 ESP_ERR_INVALID_STATE 结算其回调再连接。
    */
   esp_err_t connect(const std::string& ssid, const std::string& password, bool save);
 
   /** 主动断开并停止自动重连(不清除 NVS 凭据) */
   void disconnect();
+
+  /**
+   * 重新加载 NVS 凭据并发起连接 —— disconnect() 之后恢复原连接用
+   * (配网失败退出时把设备放回进配网前的状态)。
+   * 无已保存凭据时返回 ESP_ERR_NOT_FOUND。
+   */
+  esp_err_t reconnect_saved();
 
   /** 异步扫描;同一时刻仅允许一个扫描,忙时返回 ESP_ERR_INVALID_STATE */
   esp_err_t scan(ScanDone done);
@@ -94,7 +103,8 @@ class WifiManager {
   void on_ip_event(int32_t event_id, void* data);
   void schedule_reconnect();
   void fire(WifiEvent ev, int reason);
-  void load_and_autoconnect();
+  /** 读 NVS 凭据并 connect(save=false); 无凭据返回 ESP_ERR_NOT_FOUND */
+  esp_err_t load_and_autoconnect();
 
   static void wifi_event_trampoline(void* arg, const char* base, int32_t id, void* data);
   static void ip_event_trampoline(void* arg, const char* base, int32_t id, void* data);
@@ -108,6 +118,9 @@ class WifiManager {
   bool ap_on_ = false;
   std::string cur_ssid_;
   std::string cur_ip_;
+  bool pending_save_ = false;        ///< 凭据待验证:GOT_IP 后才写 NVS
+  std::string pending_save_ssid_;
+  std::string pending_save_pass_;
   uint32_t backoff_ms_ = 1000;  ///< 指数退避:1s → 2s → … → 30s
   void* reconnect_timer_ = nullptr;  // esp_timer_handle_t
   ScanDone scan_done_;

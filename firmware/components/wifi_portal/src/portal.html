@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<!--
+  portal.html — 网页配网表单页 (EMBED_TXTFILES → _binary_portal_html_start)
+
+  完全自包含: 热点没有互联网出口, 任何外链 CSS/JS/字体都会加载失败。
+  只用 ES5 语法 + fetch, 覆盖 iOS Safari / Android Chrome 的 captive portal
+  内嵌浏览器 (部分老版本内嵌 WebView 不支持箭头函数与模板字符串)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PixelBox 配网</title>
+<style>
+:root{--bg:#0b0e14;--panel:#1c2433;--border:#33445c;--text:#e8eef6;--dim:#9db2c8;--accent:#3d9bff;--green:#39c26d;--red:#ff5a5a}
+*{box-sizing:border-box}
+body{margin:0;padding:22px 18px 40px;background:var(--bg);color:var(--text);
+     font:16px/1.5 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+     max-width:520px;margin-left:auto;margin-right:auto}
+h1{font-size:21px;margin:0 0 6px}
+p.sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+label{display:block;font-size:13px;color:var(--dim);margin:14px 0 6px}
+input{width:100%;padding:12px;font-size:16px;background:var(--panel);color:var(--text);
+      border:1px solid var(--border);border-radius:8px}
+input:focus{outline:0;border-color:var(--accent)}
+button{width:100%;padding:13px;font-size:16px;border-radius:8px;border:0;margin-top:18px;
+       background:var(--accent);color:#fff;font-weight:600}
+button.ghost{background:transparent;border:1px solid var(--border);color:var(--accent);
+             font-weight:400;margin-top:0}
+button:disabled{opacity:.45}
+#msg{margin-top:16px;padding:12px;border-radius:8px;background:var(--panel);
+     font-size:14px;display:none}
+#list div{padding:12px;border:1px solid var(--border);border-radius:8px;margin-top:8px;
+          display:flex;justify-content:space-between;align-items:center}
+#list span.n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#list span.r{color:var(--dim);font-size:12px;margin-left:10px;flex:none}
+hr{border:0;border-top:1px solid var(--border);margin:24px 0 18px}
+</style>
+</head>
+<body>
+<h1>PixelBox 配网</h1>
+<p class="sub">填入要连接的 WiFi，提交后请看设备屏幕。</p>
+
+<form id="f">
+  <label for="ssid">网络名称 (SSID)</label>
+  <input id="ssid" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="32" required>
+  <label for="pass">密码<span style="color:var(--dim)">（开放网络留空）</span></label>
+  <input id="pass" type="password" maxlength="64">
+  <button type="submit" id="go">连接</button>
+</form>
+
+<div id="msg"></div>
+
+<hr>
+<button class="ghost" id="scan">扫描附近网络</button>
+<div id="list"></div>
+
+<script>
+function $(i){return document.getElementById(i)}
+function show(t,c){var m=$('msg');m.textContent=t;m.style.display='block';m.style.color=c||'var(--text)'}
+
+$('f').addEventListener('submit',function(e){
+  e.preventDefault();
+  if(!$('ssid').value){show('请填写网络名称','var(--red)');return}
+  $('go').disabled=true;show('正在提交…');
+  var body='ssid='+encodeURIComponent($('ssid').value)+'&pass='+encodeURIComponent($('pass').value);
+  fetch('/connect',{method:'POST',
+                    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+                    body:body})
+    .then(function(r){return r.json()})
+    .then(function(j){
+      if(!j.ok){show(j.message||'提交失败','var(--red)');$('go').disabled=false;return}
+      show('已提交，设备正在连接…热点可能短暂断开，以设备屏幕显示的结果为准。');
+      setTimeout(poll,1200);
+    })
+    .catch(function(){show('提交失败，请重试','var(--red)');$('go').disabled=false});
+});
+
+/* 轮询设备状态。切信道时请求会失败, 不当作结果, 继续重试。 */
+function poll(){
+  fetch('/status').then(function(r){return r.json()}).then(function(s){
+    if(s.phase==='success'){show('连接成功  '+(s.ip||''),'var(--green)');return}
+    if(s.phase==='failed'){
+      show('连接失败：'+(s.message||''),'var(--red)');$('go').disabled=false;return}
+    setTimeout(poll,1500);
+  }).catch(function(){setTimeout(poll,2500)});
+}
+
+$('scan').addEventListener('click',function(){
+  var b=$('scan');
+  b.disabled=true;b.textContent='扫描中…';
+  fetch('/scan').then(function(r){return r.json()}).then(function(j){
+    var L=$('list');L.innerHTML='';
+    if(!j.ok){show(j.message||'扫描失败','var(--red)');return}
+    if(!j.aps||!j.aps.length){show('没扫到网络，可再试一次','var(--dim)');return}
+    j.aps.forEach(function(a){
+      var d=document.createElement('div');
+      var n=document.createElement('span');
+      n.className='n';n.textContent=(a.secure?'🔒 ':'')+a.ssid;
+      var r=document.createElement('span');
+      r.className='r';r.textContent=a.rssi+' dBm';
+      d.appendChild(n);d.appendChild(r);
+      d.addEventListener('click',function(){
+        $('ssid').value=a.ssid;$('pass').focus();window.scrollTo(0,0);
+      });
+      L.appendChild(d);
+    });
+  }).catch(function(){show('扫描失败，请重试','var(--red)')})
+    .then(function(){b.disabled=false;b.textContent='扫描附近网络'});
+});
+</script>
+</body>
+</html>

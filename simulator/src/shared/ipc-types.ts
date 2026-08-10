@@ -747,6 +747,17 @@ export interface DevdDevice {
   txt: Record<string, string>
 }
 
+/** 真机日志行(devd logs.subscribe 事件;main 常驻订阅后经 devd:log 批量广播) */
+export interface DevdLogEvent {
+  /** 来源设备 key(ip:port,与外壳 store 的 deviceKey 一致) */
+  deviceKey: string
+  level: 'debug' | 'info' | 'warn' | 'error'
+  tag: string
+  msg: string
+  /** 设备侧毫秒时间戳(未同步 NTP 时接近 1970,渲染端回退用接收时间) */
+  ts: number
+}
+
 /** 真机推送进度 */
 export interface PushProgress {
   phase: 'connect' | 'hello' | 'upload' | 'finalize' | 'done' | 'error'

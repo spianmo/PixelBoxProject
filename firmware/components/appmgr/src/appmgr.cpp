@@ -243,9 +243,25 @@ void vm_state_listener(jsvm::VmState st, const char *error)
     case jsvm::VmState::Running:
         set_state(APPMGR_STATE_RUNNING, nullptr);
         break;
-    case jsvm::VmState::Crashed:
+    case jsvm::VmState::Crashed: {
         set_state(APPMGR_STATE_CRASHED, error);
+        /* 设置页崩溃自恢复: 退出设置模式重启回应用/欢迎页, 避免 VM 停死黑屏。
+         * 仅对内置设置页兜底 —— 用户应用崩溃保持 crashed 等 devd 处置;
+         * 回退目标再崩时 s_settings_mode 已为 false, 不会形成重启循环。 */
+        bool fallback = false;
+        {
+            std::lock_guard<std::mutex> lk(s_mutex);
+            if (s_settings_mode) {
+                s_settings_mode = false;
+                fallback = true;
+            }
+        }
+        if (fallback) {
+            ESP_LOGW(TAG, "设置页崩溃, 回退应用/欢迎页");
+            jsvm::request_restart();
+        }
         break;
+    }
     case jsvm::VmState::Stopped:
     default:
         set_state(APPMGR_STATE_STOPPED, nullptr);
@@ -557,9 +573,10 @@ extern "C" void appmgr_open_settings(void)
 {
     {
         std::lock_guard<std::mutex> lk(s_mutex);
-        if (s_settings_mode) return;
         s_settings_mode = true;
     }
+    /* 刻意不做幂等短路: 已在设置模式再按键1 = 重载设置页,
+     * 设置页若曾黑屏/异常可用键1 自救 */
     jsvm::request_restart();
 }
 

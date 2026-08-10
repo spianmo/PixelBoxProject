@@ -79,6 +79,7 @@ import {
   refreshDeviceProfiles,
   setChip,
   shellDeviceStore,
+  simDeviceKey,
   type ChipTarget
 } from './shell/store'
 import { getAppSettings, subscribeSettings } from './settings/store'
@@ -175,6 +176,7 @@ function EditorGroupView(props: {
           onCloseUnmodified={props.onCloseUnmodified}
           onSplit={props.onSplit}
           splitDir={props.splitDir}
+          workspaceRoot={props.workspaceRoot}
           trailing={
             // md 文件:编辑 / 分屏 / 预览 切换按钮组(记忆每文件模式)
             isMdFile ? (
@@ -341,6 +343,8 @@ export default function App(): React.JSX.Element {
   // 阶段 2 多实例:运行态 = 任一模拟器会话在运行(会话/引擎状态由 device-sim sessions 管理)
   const running = useAnySimRunning()
   const runningRef = useRef(false)
+  // handleRun 重入守卫(见 handleRun 内注释)
+  const runReentryRef = useRef(false)
   runningRef.current = running
   const [busy, setBusy] = useState<'build' | 'push' | null>(null)
   const [pushPercent, setPushPercent] = useState(-1)
@@ -489,6 +493,28 @@ export default function App(): React.JSX.Element {
       })
     )
 
+    // 真机日志(main 常驻 logs.subscribe 连接批量转发;deviceKey 路由到底部日志设备下拉)
+    unsubs.push(
+      window.api.onDevdLog((events) =>
+        appendLog(
+          'app',
+          events.map((e) => ({
+            level: e.level,
+            text: `[${e.tag}] ${e.msg}`,
+            // 设备未同步 NTP 时 ts 接近 1970,回退用接收时间显示
+            ts: e.ts > 1e12 ? e.ts : Date.now(),
+            deviceKey: e.deviceKey
+          }))
+        )
+      )
+    )
+    // 全量回放前清掉该设备旧行(老固件重连 / 设备重启),避免重复
+    unsubs.push(
+      window.api.onDevdLogReset(({ key }) =>
+        setAppLogs((prev) => prev.filter((l) => l.deviceKey !== key))
+      )
+    )
+
     // 模拟器应用日志(device-sim 引擎经 CustomEvent 上报;detail 附带来源设备标签,
     // 底部日志按设备下拉路由,见 LogsToolWindow)
     const onSimLog = (ev: WindowEventMap['pixelbox-sim:log']): void => {
@@ -527,6 +553,40 @@ export default function App(): React.JSX.Element {
 
     return () => unsubs.forEach((u) => u())
   }, [appendLog, refreshProjectInfo, t])
+
+  // 底部日志设备下拉选中真机 → main 建立 logs.subscribe 常驻连接(断线自动重连);
+  // 切走即断开,重新选中时由设备环形缓冲全量回放补齐历史
+  useEffect(() => {
+    let currentKey: string | null = null
+    const sync = (): void => {
+      const st = shellDeviceStore.get()
+      const wantKey = isSimDeviceKey(st.selectedKey) ? null : st.selectedKey
+      if (wantKey === currentKey) return
+      if (currentKey) {
+        void window.api.devdLogsUnsubscribe(currentKey)
+        currentKey = null
+      }
+      if (!wantKey) return
+      const dev = st.devices.find((d) => deviceKey(d) === wantKey)
+      if (!dev) return // 尚未被 mDNS 发现(如启动初期),devices 更新后重试
+      currentKey = wantKey
+      // 重新订阅将全量回放,先清掉该设备旧行避免重复
+      setAppLogs((prev) => prev.filter((l) => l.deviceKey !== wantKey))
+      void window.api.devdLogsSubscribe({ key: wantKey, host: dev.ip || dev.host, port: dev.port })
+    }
+    sync()
+    const unsub = shellDeviceStore.subscribe(sync)
+    // 页面 reload(⌘R)不执行 React cleanup,不兜底会在 main 留下僵尸订阅
+    const onBeforeUnload = (): void => {
+      if (currentKey) void window.api.devdLogsUnsubscribe(currentKey)
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+      unsub()
+      if (currentKey) void window.api.devdLogsUnsubscribe(currentKey)
+    }
+  }, [])
 
   // 集成终端:事件订阅 + renderer 重载后恢复 main 进程存活会话(幂等)
   useEffect(() => {
@@ -1089,7 +1149,7 @@ export default function App(): React.JSX.Element {
         g.setTabs((prev) =>
           prev.some((tb) => tb.path === req.path)
             ? prev
-            : [...prev, { path: req.path, name, virtual: true }]
+            : [...prev, { path: req.path, name, virtual: true, synthetic: true }]
         )
         g.setActive(req.path)
         void g.ref.current?.openVirtual(req.path, req.content ?? '').then(() => {
@@ -1429,14 +1489,19 @@ export default function App(): React.JSX.Element {
       showToast(t('run.noProfile'), 'warn')
       return
     }
+    // 防重入:busy 是 React state,saveAll 挂起期间新点击读到的仍可能是旧值,
+    // 用 ref 同步守卫(标题栏 ▶ / Cmd+R / 设备管理器行内 ▶ 三个入口共用)
+    if (runReentryRef.current) return
+    runReentryRef.current = true
     openBottomTab('build')
-    await editorRef.current?.saveAll() // 运行前自动保存
-    setBusy('build')
+    setBusy('build') // 含 saveAll 阶段:▶ 置灰窗口与真实忙碌一致
     let result: Awaited<ReturnType<typeof window.api.build>>
     try {
+      await editorRef.current?.saveAll() // 运行前自动保存
       result = await window.api.build(root)
     } finally {
       setBusy(null)
+      runReentryRef.current = false
     }
     setProblems(result.errors)
     if (!result.success || !result.code || !result.manifest || !result.outDir) {
@@ -1781,8 +1846,15 @@ export default function App(): React.JSX.Element {
                 </div>
               )
             ) : (
-              // 设备管理器(虚拟设备档案表格 + 新建模拟器向导,阶段 2 落地)
-              <DeviceManagerPanel />
+              // 设备管理器(虚拟设备档案表格 + 新建模拟器向导 + 行内 ▶/⏹,类 AVD Manager)
+              <DeviceManagerPanel
+                canRun={projectKind === 'app' || projectKind === null}
+                building={busy === 'build'}
+                onLaunch={(p) => {
+                  shellDeviceStore.set({ selectedKey: simDeviceKey(p.id) })
+                  void handleRun()
+                }}
+              />
             )}
           </ToolWindow>
         )
@@ -1918,6 +1990,7 @@ export default function App(): React.JSX.Element {
         onPush={() => void handlePushToDevice()}
         onRefreshDevices={() => void refreshDevices()}
         onQuickOpen={() => setQuickOpenVisible(true)}
+        onOpenDeviceManager={() => setLeftTool('devices')}
       />
 
       <div className="flex min-h-0 flex-1">

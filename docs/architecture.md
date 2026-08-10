@@ -146,6 +146,40 @@ storage,   data, littlefs, ,         0x3D0000
 
 应用包目录:`/flash/apps/current/{manifest.json, main.js, assets/**}`;推送先写 `/flash/apps/staging/`,`push_end` 校验通过后原子重命名切换,再**仅重启 JS VM**(不重启芯片)。manifest 字段见 §6。
 
+### 4.4 系统按键与配网路径
+
+系统按键集中在 `firmware/main/system_keys.cpp`(键序 = 外壳物理顺序):
+
+| 手势 | 动作 |
+|---|---|
+| 键1 Boot(GPIO0)短按 | 打开内置设置页 |
+| 键2 PWR(PMU 轮询)短按 | 返回应用页 / 退出设置页 / 退出配网 |
+| 键2 长按 ~2s | 清空推送应用回欢迎页(**别按满 6s** —— 那是 AXP2101 硬断电兜底) |
+| 键3 User(GPIO18)短按 | 息屏/亮屏切换 |
+| 键3 长按 1.2s | 屏显关机提示 → 深度睡眠(再按键3 开机) |
+| **键1 + 键3 同时按住 2s** | **网页配网模式** |
+
+> **键2 为何不能参与组合键。** 真机实测 SYS_OUT(GPIO16)感知线路不可用,PWR 键事件唯一可靠来源是 200ms 轮询 AXP2101 的 PKEY IRQ 状态寄存器。该寄存器只报"短按/长按已发生",读不到"当前是否按住",因此组合键只能用键1 + 键3(两者都是常规 GPIO 键,Down/Up 全程可知)。
+>
+> 两个实现约束:① 键3 长按 1.2s 关机会抢在 2s 组合键之前,故键1 按下期间键3 的 LongPress 必须无条件忽略;② `iot_button` 的 `SINGLE_CLICK` 在 `PRESS_UP` **之后**才送达,所以组合键触发后的抑制标志不能在 Up 时清,改为该键下一次 Down 时清。
+>
+> 多目标:`system_keys.cpp` 直接调 `axp2101_available()` / `axp2101_poll_pkey()`,而 `axp2101.c` 只在带 PMU 的 S3 板型编入,故无 PMU 板型(`BOARD_GENERIC_SPI` / `BOARD_HEADLESS`)编 `boards/src/axp2101_stub.c` 补齐符号,`available()` 恒 false → 键2 无事件,其余按键照常。
+
+配网有两条路径:
+
+1. **设置页触屏配网**(`components/appmgr/src/settings_app.js` 的 `wifi`/`pass` 两页):屏上 WiFi 列表 + QWERTY 键盘。小屏敲 WPA2 长密码痛苦,无触摸板型不可用。
+2. **网页配网**(`components/wifi_portal/`):设备开 SoftAP → 手机连上 → 浏览器填表 → 设备连目标 WiFi。屏幕全程显示热点名称、密码、`192.168.4.1` 与连接状态。
+
+网页配网关键决策:
+
+- **原生 C++ 绘制而非内置 JS 页。** 配网期间必须独占屏幕(应用每帧 `clear` 会盖掉热点密码),干净做法是 `appmgr_stop_app()` 停掉 JS VM —— 而 `js_task` 是无限循环,VM 停止后**仍在泵 `post` 队列**,所以原生代码依然能经 `jsvm::post` 在 JS 线程上安全画帧(帧缓冲与 QSPI IO 归 JS 线程所有,同 `system_keys.cpp` 的关机流程)。这样也不新增 JS API,免去 `sdk/types/pixelbox.d.ts` 契约与 simulator 的同步工作。
+- **不动 STA。** `start_ap()` 走 APSTA 共存,误触进配网不掐断已有连接;配网未成功就退出时用 `WifiManager::reconnect_saved()` 把设备放回原状态。
+- **密码错误不会覆盖好凭据。** 沿用 `connect(..., save=true)` 的既有语义 —— 凭据拿到 IP 后才写 NVS。
+- **扫描是按钮触发而非自动。** APSTA 下扫描会让 AP 短暂离开信道,自动扫描会莫名踢掉手机。
+- **httpd 端口 80 + `ctrl_port` 32801。** devd 那个 httpd 实例占用默认 `ctrl_port`(32768),两个实例共用同一 UDP 控制端口会让后启动的绑定失败。
+- captive portal 靠 DHCP 选项 `ESP_NETIF_CAPTIVEPORTAL_URI` + 404 处理器 302 跳转兜住 `/hotspot-detect.html`、`/generate_204` 等探测;选项设置失败只降级为"手动开浏览器",不算错误。
+- 多目标:无片上 WiFi 的目标(P4)编 `wifi_portal_stub.cpp`,`start()` 返回 `ESP_ERR_NOT_SUPPORTED`,`active()` 恒 false,组合键退化为无操作。
+
 ## 5. devd 开发服务协议(热更新/日志/REPL)
 
 - 传输:`ws://<device-ip>:8765/devd`,文本帧 JSON。请求 `{id, method, params}`;响应 `{id, result}` 或 `{id, error:{code, message}}`;主动事件 `{event, data}`。
@@ -159,9 +193,11 @@ storage,   data, littlefs, ,         0x3D0000
 | `app.push_end` | `{session}` | `{ok:true}` → 校验+切换+热重启 VM |
 | `app.restart` / `app.stop` | `{}` | `{ok:true}` |
 | `js.eval` | `{code}` | `{result}`(字符串化) |
-| `logs.subscribe` / `logs.unsubscribe` | `{}` | `{ok:true}` |
+| `logs.subscribe` / `logs.unsubscribe` | `{since?}` | `{ok:true, last_seq, boot}` |
 
-事件:`log {level, tag, msg, ts}`(console.* 与 ESP_LOG 均转发)、`app.state {state: 'running'|'stopped'|'updating'|'crashed', error?}`。
+事件:`log {level, tag, msg, ts, seq}`(console.* 与 ESP_LOG 均转发;`seq` 单调递增,设备重启归零)、`app.state {state: 'running'|'stopped'|'updating'|'crashed', error?}`。
+
+日志订阅语义:`logs.subscribe {since}` 先在响应中返回 `last_seq`(设备当前最大 seq)与 `boot`(每次开机随机标识),随后回放环形缓冲中 `seq > since` 的历史,再持续推送新日志。客户端断线重连时携带已见最大 seq 增量续传;若响应 `boot` 与上次不同(或兜底:`last_seq` 小于已见 seq),说明设备已重启,应以 `since=0` 重新订阅并清空本地已展示日志。回放与广播两路水位刻意不合并(避免新订阅者抬升全局水位使其他订阅者丢行),交叠的重复行由客户端按 `seq` 去重。连接存活靠 WebSocket ping/pong(httpd 自动应答);设备硬重启不发 FIN,客户端须心跳判死链。
 
 ## 6. 应用 manifest(pixelbox.json)
 

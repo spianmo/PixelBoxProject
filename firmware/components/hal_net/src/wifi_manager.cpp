@@ -83,19 +83,24 @@ esp_err_t WifiManager::ensure_init() {
   return ESP_OK;
 }
 
-void WifiManager::load_and_autoconnect() {
+esp_err_t WifiManager::load_and_autoconnect() {
   nvs_handle_t h;
-  if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+  if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return ESP_ERR_NOT_FOUND;
   char ssid[33] = {0};
   char pass[65] = {0};
   size_t sl = sizeof(ssid), pl = sizeof(pass);
   bool ok = nvs_get_str(h, "ssid", ssid, &sl) == ESP_OK;
   if (nvs_get_str(h, "pass", pass, &pl) != ESP_OK) pass[0] = '\0';
   nvs_close(h);
-  if (ok && ssid[0]) {
-    ESP_LOGI(TAG, "开机自动连接已保存的 WiFi: %s", ssid);
-    connect(ssid, pass, /*save=*/false);
-  }
+  if (!ok || !ssid[0]) return ESP_ERR_NOT_FOUND;
+  ESP_LOGI(TAG, "自动连接已保存的 WiFi: %s", ssid);
+  return connect(ssid, pass, /*save=*/false);
+}
+
+esp_err_t WifiManager::reconnect_saved() {
+  esp_err_t err = ensure_init();
+  if (err != ESP_OK) return err;
+  return load_and_autoconnect();
 }
 
 // ---------------------------------------------------------------- 连接/断开
@@ -105,48 +110,71 @@ esp_err_t WifiManager::connect(const std::string& ssid, const std::string& passw
   if (err != ESP_OK) return err;
   if (ssid.empty() || ssid.size() > 32 || password.size() > 64) return ESP_ERR_INVALID_ARG;
 
-  std::lock_guard<std::recursive_mutex> lk(mtx_);
-  wifi_config_t wc = {};
-  // ssid/password 为定长字节数组而非 C 字符串 (长度已在上方校验 ≤ 字段宽度,
-  // wc={} 已整体清零), 用 memcpy 避免 RISC-V GCC 的 stringop-truncation 告警
-  std::memcpy(wc.sta.ssid, ssid.data(), ssid.size());
-  std::memcpy(wc.sta.password, password.data(), password.size());
-  wc.sta.threshold.authmode = password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
-  wc.sta.pmf_cfg.capable = true;
-  wc.sta.pmf_cfg.required = false;
+  ScanDone aborted_scan;
+  {
+    std::lock_guard<std::recursive_mutex> lk(mtx_);
+    wifi_config_t wc = {};
+    // ssid/password 为定长字节数组而非 C 字符串 (长度已在上方校验 ≤ 字段宽度,
+    // wc={} 已整体清零), 用 memcpy 避免 RISC-V GCC 的 stringop-truncation 告警
+    std::memcpy(wc.sta.ssid, ssid.data(), ssid.size());
+    std::memcpy(wc.sta.password, password.data(), password.size());
+    wc.sta.threshold.authmode = password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
+    wc.sta.pmf_cfg.capable = true;
+    wc.sta.pmf_cfg.required = false;
 
-  err = esp_wifi_set_config(WIFI_IF_STA, &wc);
-  if (err != ESP_OK) return err;
+    err = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    if (err != ESP_OK) return err;
 
-  if (save) {
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-      nvs_set_str(h, "ssid", ssid.c_str());
-      nvs_set_str(h, "pass", password.c_str());
-      nvs_commit(h);
-      nvs_close(h);
+    // 凭据不在此处落盘:等 GOT_IP 验证成功后再写 NVS,
+    // 否则一次误输密码会覆盖掉原本可用的凭据
+    pending_save_ = save;
+    pending_save_ssid_ = save ? ssid : std::string();
+    pending_save_pass_ = save ? password : std::string();
+
+    // disconnect/connect 会中止在途扫描且 SCAN_DONE 不再可靠送达 —— 摘出回调
+    // 由本函数结算,防上层扫描 Promise 永久悬挂 (事件真来了 done 为空,无害)
+    if (scanning_) {
+      aborted_scan = std::move(scan_done_);
+      scan_done_ = nullptr;
+      scanning_ = false;
+      esp_wifi_scan_stop();
+    }
+
+    cur_ssid_ = ssid;
+    want_connected_ = true;
+    backoff_ms_ = 1000;
+    has_ip_ = false;
+    associated_ = false;
+    esp_wifi_disconnect();  // 若正连着别的 AP 先断开;失败可忽略
+    err = esp_wifi_connect();
+    if (err == ESP_ERR_WIFI_CONN || err == ESP_ERR_WIFI_STATE) {
+      // 正在连接过程中,由 DISCONNECTED 事件驱动重试
+      err = ESP_OK;
     }
   }
-
-  cur_ssid_ = ssid;
-  want_connected_ = true;
-  backoff_ms_ = 1000;
-  has_ip_ = false;
-  associated_ = false;
-  esp_wifi_disconnect();  // 若正连着别的 AP 先断开;失败可忽略
-  err = esp_wifi_connect();
-  if (err == ESP_ERR_WIFI_CONN || err == ESP_ERR_WIFI_STATE) {
-    // 正在连接过程中,由 DISCONNECTED 事件驱动重试
-    err = ESP_OK;
-  }
+  // 锁外结算,避免回调再入
+  if (aborted_scan) aborted_scan(ESP_ERR_INVALID_STATE, {});
   return err;
 }
 
 void WifiManager::disconnect() {
-  std::lock_guard<std::recursive_mutex> lk(mtx_);
-  want_connected_ = false;
-  if (reconnect_timer_) esp_timer_stop((esp_timer_handle_t)reconnect_timer_);
-  esp_wifi_disconnect();
+  ScanDone aborted_scan;
+  {
+    std::lock_guard<std::recursive_mutex> lk(mtx_);
+    want_connected_ = false;
+    pending_save_ = false;  // 放弃未验证的待存凭据
+    pending_save_ssid_.clear();
+    pending_save_pass_.clear();
+    if (scanning_) {  // 同 connect(): 主动断开也会打断扫描
+      aborted_scan = std::move(scan_done_);
+      scan_done_ = nullptr;
+      scanning_ = false;
+      esp_wifi_scan_stop();
+    }
+    if (reconnect_timer_) esp_timer_stop((esp_timer_handle_t)reconnect_timer_);
+    esp_wifi_disconnect();
+  }
+  if (aborted_scan) aborted_scan(ESP_ERR_INVALID_STATE, {});
 }
 
 // ---------------------------------------------------------------- 扫描
@@ -338,12 +366,31 @@ void WifiManager::on_ip_event(int32_t event_id, void* data) {
   auto* ev = static_cast<ip_event_got_ip_t*>(data);
   char ip[16] = {0};
   snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ev->ip_info.ip));
+  std::string save_ssid, save_pass;
   {
     std::lock_guard<std::recursive_mutex> lk(mtx_);
     has_ip_ = true;
     cur_ip_ = ip;
     backoff_ms_ = 1000;  // 成功后复位退避
     if (reconnect_timer_) esp_timer_stop((esp_timer_handle_t)reconnect_timer_);
+    if (pending_save_ && pending_save_ssid_ == cur_ssid_) {
+      save_ssid = pending_save_ssid_;
+      save_pass = pending_save_pass_;
+    }
+    pending_save_ = false;
+    pending_save_ssid_.clear();
+    pending_save_pass_.clear();
+  }
+  if (!save_ssid.empty()) {
+    // 凭据已被本次 GOT_IP 验证,此刻才落盘 (锁外做 flash 写)
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_str(h, "ssid", save_ssid.c_str());
+      nvs_set_str(h, "pass", save_pass.c_str());
+      nvs_commit(h);
+      nvs_close(h);
+      ESP_LOGI(TAG, "WiFi 凭据已保存: %s", save_ssid.c_str());
+    }
   }
   ESP_LOGI(TAG, "已获取 IP: %s", ip);
   fire(WifiEvent::GotIp, 0);

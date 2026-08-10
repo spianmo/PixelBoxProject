@@ -5,7 +5,7 @@
  * - 排版:标题 12px/500 主色,正文 11px 次级色;图标 14px 按级别着色
  *   (info 蓝 / success 绿 / warn 黄 / error 红)
  * - 自动消失 4s(错误 8s),悬停暂停计时,✕ 手动关,点击展开长文本
- * - 每条 toast 同时记入通知历史(标题栏 🔔 通知面板消费)
+ * - 每条 toast 同时记入通知历史(标题栏 🔔 通知面板消费;history:false 的除外)
  */
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -19,6 +19,8 @@ export interface ToastOptions {
   title?: string
   /** 覆盖自动消失时长(缺省按级别:错误 8s,其余 4s) */
   durationMs?: number
+  /** 是否记入通知历史(缺省 true);「复制路径」这类高频轻操作传 false,避免刷掉历史里的真事件 */
+  history?: boolean
 }
 
 interface ToastItem {
@@ -90,6 +92,7 @@ export function showToast(text: string, kind: ToastKind = 'info', opts?: ToastOp
   items = [...items, { id, kind, text, title: opts?.title, durationMs: opts?.durationMs ?? KIND_DURATION[kind] }]
   emit()
 
+  if (opts?.history === false) return
   const ns = notificationStore.get()
   notificationStore.set({
     items: [{ id, kind, text, ts: Date.now() }, ...ns.items].slice(0, NOTIFY_MAX),

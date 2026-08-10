@@ -44,6 +44,7 @@ struct TcpSock {
   std::string remote_host;
   int remote_port = 0;
   JSContext* ctx = nullptr;
+  uint32_t gen = 0;             ///< 创建时的 jsvm::vm_generation()(失效判定,勿比 ctx 指针)
   JSValue self = JS_UNDEFINED;  ///< 打开期间 dup 保活
 
   // 订阅注册表(仅 JS 线程)
@@ -86,7 +87,7 @@ static void tcp_teardown(TcpPtr s, std::string err_msg) {
   });
 
   pxjs::run_on_js([s, err_msg = std::move(err_msg)]() {
-    if (s->ctx == pxjs::g_ctx) {
+    if (!pxjs::vm_stale(s->gen)) {
       if (!err_msg.empty()) {
         JSValue m = JS_NewString(s->ctx, err_msg.c_str());
         s->on_error.dispatch(s->ctx, 1, &m);
@@ -161,7 +162,7 @@ static void tcp_register_poll(const TcpPtr& s) {
       }
       auto bytes = std::make_shared<std::vector<uint8_t>>(g_rxbuf, g_rxbuf + r);
       pxjs::run_on_js([s, bytes]() {
-        if (s->ctx != pxjs::g_ctx || s->on_data.empty()) return;
+        if (pxjs::vm_stale(s->gen) || s->on_data.empty()) return;
         JSValue ab = pxjs::new_ab_copy(s->ctx, bytes->data(), bytes->size());
         if (JS_IsException(ab)) {
           JS_FreeValue(s->ctx, JS_GetException(s->ctx));
@@ -267,6 +268,7 @@ static JSValue tcp_make_js(JSContext* ctx, const TcpPtr& s) {
   if (JS_IsException(obj)) return obj;
   JS_SetOpaque(obj, new TcpPtr(s));
   s->ctx = ctx;
+  s->gen = jsvm::vm_generation();  // 绑定当前 VM,投递回 JS 线程时判失效
   JS_DefinePropertyValueStr(ctx, obj, "remoteHost", JS_NewString(ctx, s->remote_host.c_str()), 0);
   JS_DefinePropertyValueStr(ctx, obj, "remotePort", JS_NewInt32(ctx, s->remote_port), 0);
   s->self = JS_DupValue(ctx, obj);  // 打开期间保活
@@ -372,6 +374,7 @@ struct TcpServer {
   int port = 0;
   std::atomic<bool> torn{false};
   JSContext* ctx = nullptr;
+  uint32_t gen = 0;  ///< 创建时的 jsvm::vm_generation()(失效判定,勿比 ctx 指针)
   JSValue self = JS_UNDEFINED;
   pxjs::JsFuncPtr on_conn;
 };
@@ -391,7 +394,7 @@ static void server_teardown(ServerPtr sv) {
     if (fd >= 0) ::close(fd);
   });
   pxjs::run_on_js([sv]() {
-    if (sv->ctx == pxjs::g_ctx && !JS_IsUndefined(sv->self)) JS_FreeValue(sv->ctx, sv->self);
+    if (!pxjs::vm_stale(sv->gen) && !JS_IsUndefined(sv->self)) JS_FreeValue(sv->ctx, sv->self);
     sv->self = JS_UNDEFINED;
     sv->on_conn.reset();
   });
@@ -451,6 +454,7 @@ static JSValue js_listen_tcp(JSContext* ctx, JSValueConst, int argc, JSValueCons
   sv->fd = fd;
   sv->port = port;
   sv->ctx = ctx;
+  sv->gen = jsvm::vm_generation();  // 绑定当前 VM,投递回 JS 线程时判失效
   sv->on_conn = std::make_shared<pxjs::JsFunc>(ctx, cb);
   JS_FreeValue(ctx, cb);
 
@@ -483,13 +487,13 @@ static JSValue js_listen_tcp(JSContext* ctx, JSValueConst, int argc, JSValueCons
       s->remote_port = ntohs(peer.sin_port);
 
       pxjs::run_on_js([sv, s]() {
-        if (!sv->on_conn || sv->on_conn->ctx() != pxjs::g_ctx || sv->torn.load()) {
+        if (!sv->on_conn || !sv->on_conn->alive() || sv->torn.load()) {
           // VM 已重启/服务器已关:直接丢弃连接
           int fd2 = s->fd;
           NetPoll::instance().post_task([fd2]() { ::close(fd2); });
           return;
         }
-        JSContext* c = pxjs::g_ctx;
+        JSContext* c = jsvm::context();  // alive() 已保证 VM 存活, context() 为权威来源
         JSValue sock_obj = tcp_make_js(c, s);
         if (JS_IsException(sock_obj)) {
           JS_FreeValue(c, JS_GetException(c));
@@ -514,6 +518,7 @@ struct UdpSock {
   int fd = -1;
   std::atomic<bool> torn{false};
   JSContext* ctx = nullptr;
+  uint32_t gen = 0;  ///< 创建时的 jsvm::vm_generation()(失效判定,勿比 ctx 指针)
   JSValue self = JS_UNDEFINED;
   pxjs::SubRegistry on_msg;
 };
@@ -533,7 +538,7 @@ static void udp_teardown(UdpPtr u) {
     if (fd >= 0) ::close(fd);
   });
   pxjs::run_on_js([u]() {
-    if (u->ctx == pxjs::g_ctx && !JS_IsUndefined(u->self)) JS_FreeValue(u->ctx, u->self);
+    if (!pxjs::vm_stale(u->gen) && !JS_IsUndefined(u->self)) JS_FreeValue(u->ctx, u->self);
     u->self = JS_UNDEFINED;
     u->on_msg.clear();
   });
@@ -638,6 +643,7 @@ static JSValue js_create_udp(JSContext* ctx, JSValueConst, int argc, JSValueCons
   auto u = std::make_shared<UdpSock>();
   u->fd = fd;
   u->ctx = ctx;
+  u->gen = jsvm::vm_generation();  // 绑定当前 VM,投递回 JS 线程时判失效
 
   JSValue obj = JS_NewObjectClass(ctx, g_udp_class_id);
   JS_SetOpaque(obj, new UdpPtr(u));
@@ -659,7 +665,7 @@ static JSValue js_create_udp(JSContext* ctx, JSValueConst, int argc, JSValueCons
       std::string host = ipstr;
       int port = ntohs(peer.sin_port);
       pxjs::run_on_js([u, bytes, host, port]() {
-        if (u->ctx != pxjs::g_ctx || u->on_msg.empty()) return;
+        if (pxjs::vm_stale(u->gen) || u->on_msg.empty()) return;
         JSContext* c = u->ctx;
         JSValue msg = JS_NewObject(c);
         JSValue ab = pxjs::new_ab_copy(c, bytes->data(), bytes->size());

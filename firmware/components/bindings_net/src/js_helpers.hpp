@@ -25,6 +25,14 @@ void set_ctx(JSContext* ctx);
 /** 把闭包投递到 JS 线程执行(封装 jsvm::post,可从任意任务调用) */
 void run_on_js(std::function<void()> fn);
 
+/**
+ * VM 是否已热重启(gen = 对象创建时记下的 jsvm::vm_generation())。
+ * 判断"投递回 JS 线程的旧对象是否失效"必须用它,不能比较 ctx 指针:
+ * 新 VM 的 JSContext 大概率复用旧堆地址,指针守卫会放行对已释放
+ * runtime 的 JS_Call → 堆损坏。
+ */
+bool vm_stale(uint32_t gen);
+
 /** PSRAM 优先分配(失败回落内部 RAM);配套 psram_free */
 uint8_t* psram_alloc(size_t size);
 void psram_free(void* p);
@@ -35,9 +43,14 @@ void psram_free(void* p);
  * 跨线程可 settle 的 Promise 包装。
  * create() 仅 JS 线程调用;resolve_on_js/reject_msg 可从任意线程调用,
  * 内部经事件循环投递。settle 一次后再次调用为空操作。
+ *
+ * 失效判定用 VM generation 号,不能用 ctx 指针相等:VM 热重启后新 JSContext
+ * 大概率复用旧堆地址(teardown 后紧接 boot 的同尺寸首分配),指针守卫会放行
+ * 旧 VM 的 settle,对已释放 runtime 调 JS_Call → 堆损坏(真机"切设置页黑屏"元凶)。
  */
 struct Promise : std::enable_shared_from_this<Promise> {
   JSContext* ctx = nullptr;
+  uint32_t gen = 0;  /* 创建时的 jsvm::vm_generation() */
   JSValue resolve = JS_UNDEFINED;
   JSValue reject = JS_UNDEFINED;
   bool settled = false;
@@ -76,9 +89,14 @@ class JsFunc {
   void call_now(int argc, JSValue* argv);
 
   JSContext* ctx() const { return ctx_; }
+  /** 仍属于当前 VM(generation 比对,见 Promise 注释) */
+  bool alive() const;
+  /** 仅 VM teardown 钩子调用:立刻释放持有的函数引用 */
+  void teardown_release(JSContext* ctx);
 
  private:
   JSContext* ctx_;
+  uint32_t gen_;
   JSValue fn_;
 };
 using JsFuncPtr = std::shared_ptr<JsFunc>;

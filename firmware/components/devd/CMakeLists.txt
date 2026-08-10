@@ -12,5 +12,5 @@ idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS include
     PRIV_INCLUDE_DIRS src
-    PRIV_REQUIRES esp_http_server json mbedtls esp_netif esp_hw_support
+    PRIV_REQUIRES esp_http_server json mbedtls esp_netif esp_hw_support esp_timer
                   esp_app_format appmgr jsvm hal_common)

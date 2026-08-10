@@ -27,6 +27,7 @@ import {
   LuLanguages,
   LuLayoutTemplate,
   LuMinus,
+  LuMonitorSmartphone,
   LuPackage,
   LuPlay,
   LuPlus,
@@ -97,6 +98,8 @@ interface Props {
   onPush: () => void
   onRefreshDevices: () => void
   onQuickOpen: () => void
+  /** 设备下拉「设备管理器」→ 打开左轨道设备管理器工具窗(AS Device Manager 入口) */
+  onOpenDeviceManager: () => void
 }
 
 function baseName(p: string): string {
@@ -411,10 +414,16 @@ export function TitleBar(props: Props): React.JSX.Element {
           onSelect: () => shellDeviceStore.set({ selectedKey: deviceKey(d) })
         }))),
     {
+      key: '__device-manager__',
+      label: t('titlebar.deviceManager'), // AS 设备下拉底部的「Device Manager」同位入口
+      icon: <LuMonitorSmartphone />,
+      group: '',
+      onSelect: props.onOpenDeviceManager
+    },
+    {
       key: '__rescan__',
       label: t('titlebar.rescanDevices'),
       icon: <LuRefreshCw className={dev.scanning ? 'animate-spin' : ''} />,
-      group: '',
       disabled: dev.scanning,
       onSelect: props.onRefreshDevices
     }

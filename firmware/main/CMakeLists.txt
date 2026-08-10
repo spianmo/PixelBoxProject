@@ -8,6 +8,6 @@ idf_component_register(
         boards hal_common jsvm appmgr devd
         hal_display bindings_screen
         hal_audio bindings_audio voicechat
-        hal_net bindings_net
+        hal_net bindings_net wifi_portal
         hal_periph bindings_periph
-    PRIV_REQUIRES nvs_flash esp_event esp_netif esp_hw_support esp_driver_gpio)
+    PRIV_REQUIRES nvs_flash esp_event esp_netif esp_hw_support esp_driver_gpio esp_timer)

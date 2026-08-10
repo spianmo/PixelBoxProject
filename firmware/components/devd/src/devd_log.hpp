@@ -25,7 +25,7 @@ void push(int level, const char *tag, const char *msg);
 
 /**
  * 收集 seq > since_seq 的条目, 每条格式化为 devd 协议事件 JSON:
- *   {"event":"log","data":{"level":"info","tag":"js","msg":"...","ts":123}}
+ *   {"event":"log","data":{"level":"info","tag":"js","msg":"...","ts":123,"seq":45}}
  * @return 收集后最新 seq
  */
 uint32_t collect_json(uint32_t since_seq, std::vector<std::string> &out);
