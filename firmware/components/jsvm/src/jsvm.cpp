@@ -63,10 +63,11 @@ EntryProvider s_entry_provider;
 std::mutex s_hook_mutex;
 std::vector<void (*)(JSContext *)> s_teardown_hooks;
 
-std::mutex s_module_mutex;
 std::vector<Module> &module_registry()
 {
-    /* Meyers 单例: 规避静态初始化顺序问题 (JSVM_REGISTER_MODULE 在静态构造期调用) */
+    /* Meyers 单例: 规避静态初始化顺序问题 (JSVM_REGISTER_MODULE 在静态构造期调用)。
+     * 不设互斥: 写入全部在全局构造期 (单线程, 调度器未启动), 读取在 VM 启动后,
+     * 天然串行; 且该阶段锁 std::mutex 会因 pthread 不可用抛异常直接 abort。 */
     static std::vector<Module> v;
     return v;
 }
@@ -398,11 +399,7 @@ bool boot_vm()
     JS_SetPropertyStr(s_ctx, global, "px", JS_DupValue(s_ctx, px));
     JS_SetPropertyStr(s_ctx, global, "pixelbox", JS_DupValue(s_ctx, px));
 
-    std::vector<Module> mods;
-    {
-        std::lock_guard<std::mutex> lk(s_module_mutex);
-        mods = module_registry();
-    }
+    std::vector<Module> mods = module_registry();
     std::stable_sort(mods.begin(), mods.end(),
                      [](const Module &a, const Module &b) { return a.priority < b.priority; });
 
@@ -491,11 +488,11 @@ void js_task_main(void *arg)
             }
         }
 
+        /* 每次迭代只处理一个投递任务: 不做"排空式"批量消费 —— 生产速度
+         * 高于消费时(如大屏帧 tick 渲染慢于投递周期)队列恒非空, 无界排水
+         * 会永久跳过下方的微任务/定时器轮转, Promise 与 setTimeout 全部饿死 */
         std::function<void()> *job = nullptr;
         if (xQueueReceive(s_queue, &job, wait) == pdTRUE) {
-            run_one_job(job);
-        }
-        while (xQueueReceive(s_queue, &job, 0) == pdTRUE) {
             run_one_job(job);
         }
 
@@ -638,7 +635,7 @@ uint32_t vm_generation()
 
 void register_module(const Module &m)
 {
-    std::lock_guard<std::mutex> lk(s_module_mutex);
+    /* 仅限静态构造期调用 (见 jsvm.hpp 声明处约定), 此阶段禁止加锁 */
     module_registry().push_back(m);
 }
 

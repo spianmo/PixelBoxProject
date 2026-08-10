@@ -14,6 +14,10 @@ menu "PixelBox Board"
             bool "微雪 ESP32-S3-Touch-AMOLED-1.8 (SH8601/FT3168/ES8311/QMI8658/AXP2101)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_WAVESHARE_AMOLED_216
+            bool "微雪 ESP32-S3-Touch-AMOLED-2.16 (CO5300 480x480/CST9220/ES8311+ES7210/QMI8658/AXP2101)"
+            depends on IDF_TARGET_ESP32S3
+
         config BOARD_CUSTOM_V1
             bool "PixelBox 定制 PCB v1 (Stage B)"
             depends on IDF_TARGET_ESP32S3
@@ -119,6 +123,80 @@ menu "PixelBox Board"
             default 0
 
     endif # BOARD_WAVESHARE_AMOLED_18
+
+    if BOARD_WAVESHARE_AMOLED_216
+
+        comment "―― 微雪 AMOLED-2.16 引脚 (默认值取自官方 wiki 引脚表与原理图) ――"
+
+        config BOARD_WS216_I2C_SDA
+            int "I2C SDA (触摸/codec/PMU/IMU/RTC 共用总线)"
+            default 15
+        config BOARD_WS216_I2C_SCL
+            int "I2C SCL"
+            default 14
+        config BOARD_WS216_I2C_FREQ_KHZ
+            int "I2C 速率 (kHz)"
+            default 400
+
+        config BOARD_WS216_TP_INT
+            int "触摸中断 TP_INT"
+            default 11
+        config BOARD_WS216_TP_RST
+            int "触摸复位 TP_RESET"
+            default 40
+        config BOARD_WS216_TP_ADDR
+            hex "触摸控制器 CST9220 I2C 地址"
+            default 0x5A
+
+        config BOARD_WS216_LCD_CS
+            int "屏幕 QSPI CS"
+            default 12
+        config BOARD_WS216_LCD_SCLK
+            int "屏幕 QSPI SCLK"
+            default 38
+        config BOARD_WS216_LCD_D0
+            int "屏幕 QSPI SDIO0"
+            default 4
+        config BOARD_WS216_LCD_D1
+            int "屏幕 QSPI SDIO1"
+            default 5
+        config BOARD_WS216_LCD_D2
+            int "屏幕 QSPI SDIO2"
+            default 6
+        config BOARD_WS216_LCD_D3
+            int "屏幕 QSPI SDIO3"
+            default 7
+        config BOARD_WS216_LCD_RST
+            int "屏幕复位 LCD_RESET"
+            default 39
+        config BOARD_WS216_LCD_PCLK_MHZ
+            int "屏幕 QSPI 像素时钟 (MHz)"
+            default 40
+
+        config BOARD_WS216_I2S_MCLK
+            int "I2S MCLK"
+            default 42
+        config BOARD_WS216_I2S_BCLK
+            int "I2S BCLK"
+            default 9
+        config BOARD_WS216_I2S_WS
+            int "I2S WS (LRCK)"
+            default 45
+        config BOARD_WS216_I2S_DOUT
+            int "I2S DOUT (ESP32 → ES8311 播放, 官方网名 I2S_DSDIN)"
+            default 8
+        config BOARD_WS216_I2S_DIN
+            int "I2S DIN (ES7210 录音 → ESP32, 官方网名 I2S_ASDOUT)"
+            default 10
+        config BOARD_WS216_PA_ENABLE
+            int "功放使能 PA_CTRL"
+            default 46
+
+        config BOARD_WS216_BOOT_GPIO
+            int "BOOT 按键 GPIO"
+            default 0
+
+    endif # BOARD_WAVESHARE_AMOLED_216
 
     if BOARD_CUSTOM_V1
 

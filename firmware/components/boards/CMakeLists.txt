@@ -6,6 +6,9 @@ set(srcs "")
 
 if(CONFIG_BOARD_WAVESHARE_AMOLED_18)
     list(APPEND srcs "src/board_waveshare_amoled_18.c" "src/axp2101.c" "src/tca9554.c")
+elseif(CONFIG_BOARD_WAVESHARE_AMOLED_216)
+    # 2.16 板无 IO 扩展器: LCD/TP 复位直连 GPIO39/40
+    list(APPEND srcs "src/board_waveshare_amoled_216.c" "src/axp2101.c")
 elseif(CONFIG_BOARD_CUSTOM_V1)
     list(APPEND srcs "src/board_custom_v1.c" "src/axp2101.c" "src/tca9554.c")
 elseif(CONFIG_BOARD_GENERIC_SPI)

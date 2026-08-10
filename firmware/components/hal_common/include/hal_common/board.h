@@ -62,6 +62,7 @@ typedef struct {
     int pin_din;            /*!< codec → ESP32 (麦克风数据) */
     int pin_pa_enable;      /*!< 功放使能; -1 = 无 */
     uint8_t es8311_addr;    /*!< ES8311 I2C 7 位地址 */
+    uint8_t es7210_addr;    /*!< ES7210 拾音 ADC 地址; 0 = 无 (录音走 ES8311 自带 ADC) */
 } board_audio_config_t;
 
 /** 共享 I2C 总线配置 (触摸/codec 控制/PMU/IMU/RTC 同一条总线) */

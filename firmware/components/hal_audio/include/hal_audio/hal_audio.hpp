@@ -34,6 +34,7 @@ struct Config {
     int pin_din = -1;          ///< codec ADC 数据(录音)
     int pin_pa = -1;           ///< 功放使能脚,-1 表示无
     uint8_t i2c_addr = 0x18;   ///< ES8311 7bit I2C 地址
+    uint8_t es7210_addr = 0;   ///< ES7210 拾音 ADC 地址; 0 = 无(录音走 ES8311)
     /** i2c_master 总线句柄(IDF v5.5 新驱动,由板级初始化共享总线后传入) */
     void* i2c_bus_handle = nullptr;
     int i2c_port = 0;          ///< 兼容字段:bus_handle 为空时使用端口号

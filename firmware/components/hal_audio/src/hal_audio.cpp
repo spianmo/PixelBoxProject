@@ -45,6 +45,11 @@ struct State {
     const audio_codec_if_t* codec_if = nullptr;
     esp_codec_dev_handle_t dev = nullptr;
 
+    // ES7210 独立录音链路 (双 codec 板: ES8311 只放音); 为空时录音走 dev
+    const audio_codec_ctrl_if_t* rec_ctrl_if = nullptr;
+    const audio_codec_if_t* rec_codec_if = nullptr;
+    esp_codec_dev_handle_t rec_dev = nullptr;
+
     uint32_t rate = 16000;
     int volume = 70;
     int mic_gain = 70;
@@ -68,6 +73,9 @@ struct State {
 
 State s;
 
+/** 录音设备: 有 ES7210 时走独立 IN 设备, 否则复用 ES8311 双工设备 */
+esp_codec_dev_handle_t record_dev() { return s.rec_dev ? s.rec_dev : s.dev; }
+
 // ---------------- 采集任务 ----------------
 
 void capture_task(void*) {
@@ -83,7 +91,7 @@ void capture_task(void*) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
-        const int err = esp_codec_dev_read(s.dev, buf, chunk * 2);
+        const int err = esp_codec_dev_read(record_dev(), buf, chunk * 2);
         if (err != ESP_CODEC_DEV_OK) {
             ESP_LOGW(TAG, "codec 读取失败: %d", err);
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -226,6 +234,13 @@ esp_err_t open_codec(uint32_t rate) {
         ESP_LOGE(TAG, "codec 打开失败: %d (rate=%u)", err, static_cast<unsigned>(rate));
         return ESP_FAIL;
     }
+    if (s.rec_dev) {
+        const int rerr = esp_codec_dev_open(s.rec_dev, &fs);
+        if (rerr != ESP_CODEC_DEV_OK) {
+            ESP_LOGE(TAG, "录音 codec 打开失败: %d (rate=%u)", rerr, static_cast<unsigned>(rate));
+            return ESP_FAIL;
+        }
+    }
     return ESP_OK;
 }
 
@@ -257,6 +272,7 @@ esp_err_t init_from_board() {
     cfg.pin_din = a->pin_din;
     cfg.pin_pa = a->pin_pa_enable;
     cfg.i2c_addr = a->es8311_addr;
+    cfg.es7210_addr = a->es7210_addr;
     cfg.i2c_bus_handle = board_i2c_bus();
     cfg.i2c_port = board_i2c_config()->port;
     cfg.use_mclk = a->pin_mclk >= 0;
@@ -305,12 +321,14 @@ esp_err_t init(const Config& cfg) {
         return ESP_FAIL;
     }
 
-    // 3) ES8311(控制走共享 I2C 总线,寄存器配置期间持锁)
+    // 3) ES8311(控制走共享 I2C 总线,寄存器配置期间持锁);
+    //    板上有 ES7210 时 ES8311 只做 DAC, 录音走独立 ES7210 链路
     BoardI2cLock i2c_lk;
     es8311_codec_cfg_t es_cfg = {};
     es_cfg.ctrl_if = s.ctrl_if;
     es_cfg.gpio_if = s.gpio_if;
-    es_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH;
+    es_cfg.codec_mode = cfg.es7210_addr ? ESP_CODEC_DEV_WORK_MODE_DAC
+                                        : ESP_CODEC_DEV_WORK_MODE_BOTH;
     es_cfg.pa_pin = static_cast<int16_t>(cfg.pin_pa);
     es_cfg.use_mclk = cfg.use_mclk;
     es_cfg.hw_gain.pa_voltage = 5.0f;
@@ -323,7 +341,7 @@ esp_err_t init(const Config& cfg) {
     }
 
     esp_codec_dev_cfg_t dev_cfg = {};
-    dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN_OUT;
+    dev_cfg.dev_type = cfg.es7210_addr ? ESP_CODEC_DEV_TYPE_OUT : ESP_CODEC_DEV_TYPE_IN_OUT;
     dev_cfg.codec_if = s.codec_if;
     dev_cfg.data_if = s.data_if;
     s.dev = esp_codec_dev_new(&dev_cfg);
@@ -332,9 +350,34 @@ esp_err_t init(const Config& cfg) {
         return ESP_FAIL;
     }
 
+    // 3b) ES7210 拾音 ADC (共享同一 I2S data_if, 仅输入)
+    if (cfg.es7210_addr) {
+        audio_codec_i2c_cfg_t rec_i2c_cfg = {};
+        rec_i2c_cfg.port = static_cast<uint8_t>(cfg.i2c_port);
+        rec_i2c_cfg.addr = cfg.es7210_addr << 1;
+        rec_i2c_cfg.bus_handle = cfg.i2c_bus_handle;
+        s.rec_ctrl_if = audio_codec_new_i2c_ctrl(&rec_i2c_cfg);
+
+        es7210_codec_cfg_t rec_cfg = {};
+        rec_cfg.ctrl_if = s.rec_ctrl_if;
+        rec_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2;
+        s.rec_codec_if = es7210_codec_new(&rec_cfg);
+
+        esp_codec_dev_cfg_t rec_dev_cfg = {};
+        rec_dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
+        rec_dev_cfg.codec_if = s.rec_codec_if;
+        rec_dev_cfg.data_if = s.data_if;
+        s.rec_dev = s.rec_codec_if ? esp_codec_dev_new(&rec_dev_cfg) : nullptr;
+        if (!s.rec_ctrl_if || !s.rec_codec_if || !s.rec_dev) {
+            ESP_LOGE(TAG, "ES7210 初始化失败(检查 I2C 总线/地址 0x%02X)", cfg.es7210_addr);
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "录音链路: ES7210 (addr=0x%02X, MIC1+MIC2)", cfg.es7210_addr);
+    }
+
     ESP_RETURN_ON_ERROR(open_codec(s.rate), TAG, "codec open 失败");
     esp_codec_dev_set_out_vol(s.dev, s.volume);
-    esp_codec_dev_set_in_gain(s.dev, s.mic_gain * 0.42f);
+    esp_codec_dev_set_in_gain(record_dev(), s.mic_gain * 0.42f);
 
     // 4) 任务与同步原语
     s.cap_done = xSemaphoreCreateBinary();
@@ -364,11 +407,18 @@ esp_err_t deinit() {
         xSemaphoreTake(s.ply_done, pdMS_TO_TICKS(1000));
         s.ply_task = nullptr;
     }
+    if (s.rec_dev) {
+        esp_codec_dev_close(s.rec_dev);
+        esp_codec_dev_delete(s.rec_dev);
+        s.rec_dev = nullptr;
+    }
     if (s.dev) {
         esp_codec_dev_close(s.dev);
         esp_codec_dev_delete(s.dev);
         s.dev = nullptr;
     }
+    if (s.rec_codec_if) { audio_codec_delete_codec_if(s.rec_codec_if); s.rec_codec_if = nullptr; }
+    if (s.rec_ctrl_if) { audio_codec_delete_ctrl_if(s.rec_ctrl_if); s.rec_ctrl_if = nullptr; }
     if (s.codec_if) { audio_codec_delete_codec_if(s.codec_if); s.codec_if = nullptr; }
     if (s.ctrl_if) { audio_codec_delete_ctrl_if(s.ctrl_if); s.ctrl_if = nullptr; }
     if (s.gpio_if) { audio_codec_delete_gpio_if(s.gpio_if); s.gpio_if = nullptr; }
@@ -388,11 +438,12 @@ esp_err_t set_device_rate(uint32_t rate) {
     if (rate == s.rate) return ESP_OK;
     BoardI2cLock i2c_lk;
     esp_codec_dev_close(s.dev);
+    if (s.rec_dev) esp_codec_dev_close(s.rec_dev);
     const esp_err_t err = open_codec(rate);
     if (err == ESP_OK) {
         s.rate = rate;
         esp_codec_dev_set_out_vol(s.dev, s.volume);
-        esp_codec_dev_set_in_gain(s.dev, s.mic_gain * 0.42f);
+        esp_codec_dev_set_in_gain(record_dev(), s.mic_gain * 0.42f);
     } else {
         open_codec(s.rate);  // 尝试恢复
     }
@@ -418,7 +469,7 @@ void set_mic_gain(int percent) {
     // 0-100% 线性映射到 0-42dB ADC 增益
     if (s.ready) {
         BoardI2cLock i2c_lk;
-        esp_codec_dev_set_in_gain(s.dev, percent * 0.42f);
+        esp_codec_dev_set_in_gain(record_dev(), percent * 0.42f);
     }
 }
 

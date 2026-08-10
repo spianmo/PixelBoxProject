@@ -3,13 +3,15 @@
  *
  * 数据通路:
  *   gfx 绘图 → 逻辑帧缓冲 (PSRAM, 旋转后坐标系) → mark_dirty 记录脏矩形
- *   → flush(): 脏区(软件旋转)打包进 PSRAM 中转缓冲 → esp_lcd draw_bitmap
- *   → QSPI DMA → 面板, 等 trans_done 信号量后返回 (缓冲即可复用)。
+ *   → flush(): 脏区(软件旋转)按行带打包进内部 DMA 中转缓冲
+ *   → esp_lcd draw_bitmap → QSPI DMA → 面板, 每带等 trans_done 后复用。
  *
- * 之所以总是经中转缓冲: ① 旋转时必须重排像素; ② 保证 DMA 缓冲 64 字节
- * 对齐 (PSRAM DMA 对缓存行对齐敏感), 帧缓冲内任意行偏移不满足;
- * ③ 发送期间 JS 可继续绘制帧缓冲不产生撕裂竞争。全帧拷贝 ≈ 2ms,
- * 相对 QSPI 传输 8ms 可接受。
+ * 中转缓冲必须是内部 (非 PSRAM) DMA 内存: S3 的 GPSPI 驱动对非
+ * esp_ptr_dma_capable 缓冲会逐事务临时 malloc 内部副本 (失败静默
+ * NO_MEM, 见 spi_master setup_priv_desc), PSRAM 整帧缓冲在内存压力下
+ * 必然间歇丢帧。行带取 32 行 (480 宽 × 32 × 2B = 30KB), 恰低于单笔
+ * SPI DMA 事务 32KB 上限, 每带一笔事务、零运行时分配。
+ * 经中转缓冲的另两个理由: 旋转重排像素; 发送期间 JS 可继续绘制。
  */
 #include "hal_display/hal_display.hpp"
 
@@ -24,7 +26,12 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
+#include "sdkconfig.h"
+#if CONFIG_BOARD_WAVESHARE_AMOLED_216
+#include "esp_lcd_co5300.h"
+#else
 #include "esp_lcd_sh8601.h"
+#endif
 #include "esp_log.h"
 #include "hal_common/board.h"
 #include "hal_common/px_alloc.h"
@@ -44,6 +51,9 @@ struct Rect {
 };
 
 constexpr int kMaxDirty = 8;
+
+/* 行带高度: 面板宽 × 32 行 × 2B ≤ 30KB, 低于 S3 单笔 SPI DMA 事务上限 (32KB) */
+constexpr int kStripRows = 32;
 
 struct State {
     bool ready = false;
@@ -105,6 +115,47 @@ bool on_color_trans_done(esp_lcd_panel_io_handle_t /*io*/, esp_lcd_panel_io_even
     return woken == pdTRUE;
 }
 
+#if CONFIG_BOARD_WAVESHARE_AMOLED_216
+/* Waveshare ESP32-S3-Touch-AMOLED-2.16 (CO5300, 480x480) 初始化序列,
+ * 逐字对齐官方 BSP esp32_s3_touch_amoled_2_16.c 的 lcd_init_cmds:
+ * 0x11 SLPOUT 后 600ms 长延时是官方实测值 (组件默认 60ms 不够);
+ * 0xFE 页切换 (0x20 页写 0x19/0x1C, 回 0x00 页); 0x3A=0x55 RGB565;
+ * 0x35 TEON; 0x53=0x20 亮度控制使能; 0x51/0x63 亮度与 HBM 上限;
+ * 0x2A/0x2B 全屏窗口 (480-1=0x1DF); 0x36=0xA0 MADCTL 方向;
+ * 0x29 DISPON + 600ms。0x3A/0x36 会覆盖驱动默认值并打 WARN, 属预期。
+ * (C++ 不支持复合字面量, 参数数组单独定义) */
+const uint8_t kCmd11[] = {0x00};
+const uint8_t kCmdFE20[] = {0x20};
+const uint8_t kCmd19[] = {0x10};
+const uint8_t kCmd1C[] = {0xA0};
+const uint8_t kCmdFE00[] = {0x00};
+const uint8_t kCmdC4[] = {0x80};
+const uint8_t kCmd3A[] = {0x55};
+const uint8_t kCmd35[] = {0x00};
+const uint8_t kCmd53[] = {0x20};
+const uint8_t kCmd51[] = {0xFF};
+const uint8_t kCmd63[] = {0xFF};
+const uint8_t kCmd2A[] = {0x00, 0x00, 0x01, 0xDF};
+const uint8_t kCmd2B[] = {0x00, 0x00, 0x01, 0xDF};
+const uint8_t kCmd36[] = {0xA0};
+const co5300_lcd_init_cmd_t kInitCmds[] = {
+    {0x11, kCmd11, 0, 600},
+    {0xFE, kCmdFE20, 1, 0},
+    {0x19, kCmd19, 1, 0},
+    {0x1C, kCmd1C, 1, 0},
+    {0xFE, kCmdFE00, 1, 0},
+    {0xC4, kCmdC4, 1, 0},
+    {0x3A, kCmd3A, 1, 0},
+    {0x35, kCmd35, 1, 0},
+    {0x53, kCmd53, 1, 0},
+    {0x51, kCmd51, 1, 0},
+    {0x63, kCmd63, 1, 0},
+    {0x2A, kCmd2A, 4, 0},
+    {0x2B, kCmd2B, 4, 0},
+    {0x36, kCmd36, 1, 0},
+    {0x29, nullptr, 0, 600},
+};
+#else
 /* Waveshare ESP32-S3-Touch-AMOLED-1.8 (SH8601, 368x448) 附加初始化序列:
  * 0x44+0x35 使能 TE; 0x53=0x20 打开亮度控制 (0x51 才生效);
  * 0x2A/0x2B 声明全屏窗口 (368-1=0x16F, 448-1=0x1BF)。
@@ -121,6 +172,7 @@ const sh8601_lcd_init_cmd_t kInitCmds[] = {
     {0x2A, kCmd2A, sizeof(kCmd2A), 0},
     {0x2B, kCmd2B, sizeof(kCmd2B), 0},
 };
+#endif
 
 /* ------------------------------------------------------------
  * 旋转坐标变换
@@ -228,7 +280,11 @@ esp_err_t init()
     io_cfg.dc_gpio_num = -1;
     io_cfg.spi_mode = 0;
     io_cfg.pclk_hz = static_cast<unsigned int>(cfg->pclk_hz);
+#if CONFIG_BOARD_WAVESHARE_AMOLED_216
+    io_cfg.trans_queue_depth = 3;  // 官方 BSP 值 (整帧 450KB DMA, 深队列无意义)
+#else
     io_cfg.trans_queue_depth = 10;
+#endif
     io_cfg.on_color_trans_done = on_color_trans_done;
     io_cfg.user_ctx = nullptr;
     io_cfg.lcd_cmd_bits = 32;
@@ -239,6 +295,21 @@ esp_err_t init()
                             static_cast<esp_lcd_spi_bus_handle_t>(s.spi_host), &io_cfg, &s.io),
                         TAG, "new_panel_io_spi 失败");
 
+#if CONFIG_BOARD_WAVESHARE_AMOLED_216
+    // 3) CO5300 面板驱动 (组件注册表 espressif/esp_lcd_co5300)
+    co5300_vendor_config_t vendor_cfg = {};
+    vendor_cfg.init_cmds = kInitCmds;
+    vendor_cfg.init_cmds_size = sizeof(kInitCmds) / sizeof(kInitCmds[0]);
+    vendor_cfg.flags.use_qspi_interface = 1;
+
+    esp_lcd_panel_dev_config_t panel_cfg = {};
+    panel_cfg.reset_gpio_num = cfg->pin_reset;  // 2.16 板复位直连 GPIO39
+    panel_cfg.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    panel_cfg.bits_per_pixel = 16;
+    panel_cfg.vendor_config = &vendor_cfg;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_co5300(s.io, &panel_cfg, &s.panel), TAG,
+                        "new_panel_co5300 失败");
+#else
     // 3) SH8601 面板驱动 (组件注册表 espressif/esp_lcd_sh8601)
     sh8601_vendor_config_t vendor_cfg = {};
     vendor_cfg.init_cmds = kInitCmds;
@@ -252,19 +323,21 @@ esp_err_t init()
     panel_cfg.vendor_config = &vendor_cfg;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_sh8601(s.io, &panel_cfg, &s.panel), TAG,
                         "new_panel_sh8601 失败");
+#endif
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s.panel), TAG, "panel_reset 失败");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s.panel), TAG, "panel_init 失败");
 
-    // 4) 帧缓冲 + 中转缓冲 (均 PSRAM; 中转缓冲 64B 对齐供 DMA)
+    // 4) 帧缓冲 (PSRAM) + 行带中转缓冲 (内部 DMA 内存, 见文件头注释)
     if (!gfx::create_surface(&s.fb, s.panel_w, s.panel_h)) {
         ESP_LOGE(TAG, "帧缓冲分配失败 (%dx%d)", s.panel_w, s.panel_h);
         return ESP_ERR_NO_MEM;
     }
-    const size_t fb_bytes = static_cast<size_t>(s.panel_w) * s.panel_h * sizeof(uint16_t);
-    s.staging = static_cast<uint16_t *>(px_aligned_alloc_prefer_psram(64, fb_bytes));
+    const size_t strip_bytes = static_cast<size_t>(s.panel_w) * kStripRows * sizeof(uint16_t);
+    s.staging = static_cast<uint16_t *>(
+        heap_caps_aligned_alloc(64, strip_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (!s.staging) {
         gfx::destroy_surface(&s.fb);
-        ESP_LOGE(TAG, "中转缓冲分配失败");
+        ESP_LOGE(TAG, "行带中转缓冲分配失败 (%zu B 内部 DMA)", strip_bytes);
         return ESP_ERR_NO_MEM;
     }
 
@@ -332,13 +405,28 @@ esp_err_t flush()
     }
     esp_err_t err = ESP_OK;
     for (int i = 0; i < s.dirty_count && err == ESP_OK; ++i) {
-        const Rect p = to_physical(s.dirty[i]);
+        Rect p = to_physical(s.dirty[i]);
         if (p.empty()) continue;
-        gather_rect(p);
-        err = esp_lcd_panel_draw_bitmap(s.panel, p.x, p.y, p.x + p.w, p.y + p.h, s.staging);
-        if (err == ESP_OK) {
-            // 等待 DMA 完成, staging 才能被下一个矩形复用
-            xSemaphoreTake(s.trans_done, portMAX_DELAY);
+
+        // SH8601/CO5300 QSPI 硬约束: 刷新窗口坐标须 2 像素对齐
+        // (起点向下取偶, 终点向上取偶, 越界裁剪)
+        const int x1 = (p.x + p.w + 1) & ~1;
+        const int y1 = (p.y + p.h + 1) & ~1;
+        p.x &= ~1;
+        p.y &= ~1;
+        p.w = ((x1 > s.panel_w) ? s.panel_w : x1) - p.x;
+        p.h = ((y1 > s.panel_h) ? s.panel_h : y1) - p.y;
+
+        // 按行带推送: staging 仅容 kStripRows 行, 每带一笔 DMA、等完成后复用
+        for (int row = 0; row < p.h && err == ESP_OK; row += kStripRows) {
+            const int band_h = (p.h - row < kStripRows) ? (p.h - row) : kStripRows;
+            const Rect band{p.x, p.y + row, p.w, band_h};
+            gather_rect(band);
+            err = esp_lcd_panel_draw_bitmap(s.panel, band.x, band.y, band.x + band.w,
+                                            band.y + band.h, s.staging);
+            if (err == ESP_OK) {
+                xSemaphoreTake(s.trans_done, portMAX_DELAY);
+            }
         }
     }
     s.dirty_count = 0;
