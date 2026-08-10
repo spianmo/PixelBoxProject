@@ -83,6 +83,8 @@ static const board_rtc_config_t s_rtc = {
 
 static const board_button_config_t s_button = {
     .pin_boot = CONFIG_BOARD_WS18_BOOT_GPIO,
+    .pin_user = -1,
+    .pin_pwr_sense = -1,
 };
 
 static const board_caps_t s_caps = {

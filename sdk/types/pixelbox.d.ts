@@ -237,6 +237,9 @@ interface PxTextStyle {
   font?: 'pixel8' | 'pixel12' | 'pixel16';
   /** 整数倍放大,默认 1 */
   scale?: number;
+  /** 放大平滑 (Scale2x/3x 阶梯圆滑),默认 false;仅 2/3/4/6/8 倍生效。
+   * 适合大号拉丁字母/简单形状;会侵蚀密集中文小字的笔画,中文勿开 */
+  smooth?: boolean;
   align?: 'left' | 'center' | 'right';
 }
 interface PxDrawImageOpts {
@@ -324,8 +327,10 @@ interface PxScreen extends PxDrawTarget {
 
 interface PxTouchEvent { type: 'down' | 'move' | 'up'; x: number; y: number }
 interface PxButtonEvent {
-  /** 'boot' 为板载 BOOT 键,数字为扩展按键编号 */
-  id: 'boot' | number;
+  /** 'boot' BOOT 键(物理键1) | 'power' 电源键(物理键2,经 PMU 轮询) | 'user' 用户键(物理键3);
+   * 数字为扩展按键编号。三键同时承担系统动作(键1 设置页/键2 应用页·长按清应用/
+   * 键3 息屏·关机),应用仍可监听 */
+  id: 'boot' | 'user' | 'power' | number;
   type: 'down' | 'up' | 'click' | 'doubleClick' | 'longPress';
 }
 interface PxGestureEvent { dir: 'left' | 'right' | 'up' | 'down'; distance: number }

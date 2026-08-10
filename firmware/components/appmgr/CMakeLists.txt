@@ -4,7 +4,7 @@ idf_component_register(
         src/appmgr.cpp
         src/mod_app.cpp
     INCLUDE_DIRS include
-    EMBED_TXTFILES src/default_app.js
+    EMBED_TXTFILES src/default_app.js src/settings_app.js
     REQUIRES jsvm
     PRIV_REQUIRES json mbedtls esp_app_format
     WHOLE_ARCHIVE)

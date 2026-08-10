@@ -84,6 +84,8 @@ static const board_rtc_config_t s_rtc = {
 
 static const board_button_config_t s_button = {
     .pin_boot = CONFIG_BOARD_WS216_BOOT_GPIO,
+    .pin_user = 18,      /* KEY3, R18 10K 上拉, 低有效 */
+    .pin_pwr_sense = 16, /* SYS_OUT: PWR 键经 BSS138 电平转换, 极性上电自检 */
 };
 
 static const board_caps_t s_caps = {

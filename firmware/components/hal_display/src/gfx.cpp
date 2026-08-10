@@ -312,9 +312,170 @@ uint32_t utf8_next(const char **p)
     return cp;
 }
 
+/* ------------------------------------------------------------
+ * Scale2x / Scale3x (EPX / AdvMAME): 像素画无插值平滑放大。
+ * 对 1bit 字形蒙版做对角阶梯圆滑, 仅用相等性比较、无中间灰度,
+ * 放大后边缘圆润但块面锐利, 保持像素风格。
+ * ------------------------------------------------------------ */
+
+static void scale2x_mask(const uint8_t *src, int w, int h, uint8_t *dst)
+{
+    for (int y = 0; y < h; ++y) {
+        const uint8_t *r = src + static_cast<size_t>(y) * w;
+        const uint8_t *up = y > 0 ? r - w : nullptr;
+        const uint8_t *dn = y + 1 < h ? r + w : nullptr;
+        uint8_t *o0 = dst + static_cast<size_t>(2 * y) * (2 * w);
+        uint8_t *o1 = o0 + 2 * w;
+        for (int x = 0; x < w; ++x) {
+            const uint8_t P = r[x];
+            const uint8_t A = up ? up[x] : 0;
+            const uint8_t B = x + 1 < w ? r[x + 1] : 0;
+            const uint8_t C = x > 0 ? r[x - 1] : 0;
+            const uint8_t D = dn ? dn[x] : 0;
+            uint8_t e0 = P, e1 = P, e2 = P, e3 = P;
+            if (C == A && C != D && A != B) e0 = A;
+            if (A == B && A != C && B != D) e1 = B;
+            if (D == C && D != B && C != A) e2 = C;
+            if (B == D && B != A && D != C) e3 = D;
+            o0[2 * x] = e0;
+            o0[2 * x + 1] = e1;
+            o1[2 * x] = e2;
+            o1[2 * x + 1] = e3;
+        }
+    }
+}
+
+static void scale3x_mask(const uint8_t *src, int w, int h, uint8_t *dst)
+{
+    for (int y = 0; y < h; ++y) {
+        const uint8_t *r = src + static_cast<size_t>(y) * w;
+        const uint8_t *up = y > 0 ? r - w : nullptr;
+        const uint8_t *dn = y + 1 < h ? r + w : nullptr;
+        uint8_t *o0 = dst + static_cast<size_t>(3 * y) * (3 * w);
+        uint8_t *o1 = o0 + 3 * w;
+        uint8_t *o2 = o1 + 3 * w;
+        for (int x = 0; x < w; ++x) {
+            const uint8_t E = r[x];
+            const uint8_t B = up ? up[x] : 0;
+            const uint8_t H = dn ? dn[x] : 0;
+            const uint8_t D = x > 0 ? r[x - 1] : 0;
+            const uint8_t F = x + 1 < w ? r[x + 1] : 0;
+            const uint8_t A = (up && x > 0) ? up[x - 1] : 0;
+            const uint8_t C = (up && x + 1 < w) ? up[x + 1] : 0;
+            const uint8_t G = (dn && x > 0) ? dn[x - 1] : 0;
+            const uint8_t I = (dn && x + 1 < w) ? dn[x + 1] : 0;
+            uint8_t e0 = E, e1 = E, e2 = E, e3 = E, e5 = E, e6 = E, e7 = E, e8 = E;
+            if (D == B && D != H && B != F) {
+                e0 = D;
+                if (E != C) e1 = B;
+                if (E != G) e3 = D;
+            }
+            if (B == F && B != D && F != H) {
+                e2 = F;
+                if (E != A) e1 = B;
+                if (E != I) e5 = F;
+            }
+            if (H == D && H != F && D != B) {
+                e6 = D;
+                if (E != I) e7 = H;
+                if (E != A) e3 = D;
+            }
+            if (F == H && F != B && H != D) {
+                e8 = F;
+                if (E != C) e5 = F;
+                if (E != G) e7 = H;
+            }
+            o0[3 * x] = e0; o0[3 * x + 1] = e1; o0[3 * x + 2] = e2;
+            o1[3 * x] = e3; o1[3 * x + 1] = E;  o1[3 * x + 2] = e5;
+            o2[3 * x] = e6; o2[3 * x + 1] = e7; o2[3 * x + 2] = e8;
+        }
+    }
+}
+
+/** 平滑倍率分解为 2x/3x 链; 返回步数, 0 = 不支持 (5/7 倍) */
+static int smooth_chain(int scale, int passes[3])
+{
+    switch (scale) {
+    case 2: passes[0] = 2; return 1;
+    case 3: passes[0] = 3; return 1;
+    case 4: passes[0] = 2; passes[1] = 2; return 2;
+    case 6: passes[0] = 2; passes[1] = 3; return 2;
+    case 8: passes[0] = 2; passes[1] = 2; passes[2] = 2; return 3;
+    default: return 0;
+    }
+}
+
+constexpr int kSmoothMaxDim = 128;  // 平滑输出边长上限 (16px 字形 × 8 倍)
+
+/** 平滑放大字形绘制; 不支持的倍率/超限/内存不足返回 false 走块状路径 */
+static bool draw_glyph_smooth(Surface &s, const pxfont_t &font, const pxfont_glyph_t *g,
+                              int x, int y, uint16_t c565, int scale)
+{
+    int passes[3];
+    const int np = smooth_chain(scale, passes);
+    if (np == 0) return false;
+    const int w0 = g->width, h0 = font.height;
+    if (w0 <= 0 || w0 * scale > kSmoothMaxDim || h0 * scale > kSmoothMaxDim) return false;
+
+    // 蒙版乒乓缓冲 (惰性分配一次; 绘制仅发生在 JS 线程, 无并发)
+    static uint8_t *s_bufa = nullptr;
+    static uint8_t *s_bufb = nullptr;
+    if (!s_bufa) {
+        s_bufa = static_cast<uint8_t *>(malloc(kSmoothMaxDim * kSmoothMaxDim));
+        s_bufb = static_cast<uint8_t *>(malloc(kSmoothMaxDim * kSmoothMaxDim));
+        if (!s_bufa || !s_bufb) {
+            free(s_bufa);
+            free(s_bufb);
+            s_bufa = s_bufb = nullptr;
+            return false;
+        }
+    }
+
+    // 1bit 位图 → 字节蒙版
+    const uint8_t *bm = pxfont_bitmap(&font, g);
+    const int row_bytes = (w0 + 7) >> 3;
+    for (int gy = 0; gy < h0; ++gy) {
+        const uint8_t *brow = bm + gy * row_bytes;
+        uint8_t *drow = s_bufa + static_cast<size_t>(gy) * w0;
+        for (int gx = 0; gx < w0; ++gx) {
+            drow[gx] = (brow[gx >> 3] >> (7 - (gx & 7))) & 1;
+        }
+    }
+
+    uint8_t *cur = s_bufa;
+    uint8_t *nxt = s_bufb;
+    int cw = w0, ch = h0;
+    for (int i = 0; i < np; ++i) {
+        if (passes[i] == 2) scale2x_mask(cur, cw, ch, nxt);
+        else scale3x_mask(cur, cw, ch, nxt);
+        cw *= passes[i];
+        ch *= passes[i];
+        uint8_t *t = cur;
+        cur = nxt;
+        nxt = t;
+    }
+
+    // 行程填充 blit
+    for (int gy = 0; gy < ch; ++gy) {
+        const uint8_t *row = cur + static_cast<size_t>(gy) * cw;
+        int gx = 0;
+        while (gx < cw) {
+            if (!row[gx]) {
+                ++gx;
+                continue;
+            }
+            int run = gx + 1;
+            while (run < cw && row[run]) ++run;
+            fill_rect(s, x + gx, y + gy, run - gx, 1, c565);
+            gx = run;
+        }
+    }
+    return true;
+}
+
 /** 单字形渲染 (含整数放大); 返回步进宽 (已放大) */
 static int draw_glyph(Surface &s, const pxfont_t &font, uint32_t cp,
-                      int x, int y, uint16_t c565, int scale)
+                      int x, int y, uint16_t c565, int scale, bool smooth)
 {
     const pxfont_glyph_t *g = pxfont_find(&font, cp);
     if (!g) {
@@ -322,6 +483,9 @@ static int draw_glyph(Surface &s, const pxfont_t &font, uint32_t cp,
         const int wid = (cp >= 0x2E80 ? font.height : (font.height + 1) / 2) * scale;
         draw_rect(s, x + scale, y + scale, wid - 2 * scale, font.height * scale - 2 * scale, c565);
         return wid;
+    }
+    if (smooth && scale >= 2 && draw_glyph_smooth(s, font, g, x, y, c565, scale)) {
+        return g->advance * scale;
     }
     const uint8_t *bm = pxfont_bitmap(&font, g);
     const int row_bytes = (g->width + 7) >> 3;
@@ -379,7 +543,7 @@ void draw_text(Surface &s, const char *utf8, int x, int y, const TextStyle &st)
                 pen_x += g ? g->advance * scale
                            : (cp >= 0x2E80 ? st.font->height : (st.font->height + 1) / 2) * scale;
             } else {
-                pen_x += draw_glyph(s, *st.font, cp, pen_x, line_y, st.c565, scale);
+                pen_x += draw_glyph(s, *st.font, cp, pen_x, line_y, st.c565, scale, st.smooth);
             }
         }
         if (*p == '\n') ++p;

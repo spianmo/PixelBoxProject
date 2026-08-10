@@ -372,6 +372,12 @@ bool parse_text_style(JSContext *ctx, JSValueConst style, gfx::TextStyle *out)
     }
     JS_FreeValue(ctx, v);
 
+    v = JS_GetPropertyStr(ctx, style, "smooth");
+    if (!JS_IsUndefined(v)) {
+        out->smooth = JS_ToBool(ctx, v) > 0;
+    }
+    JS_FreeValue(ctx, v);
+
     v = JS_GetPropertyStr(ctx, style, "scale");
     if (!JS_IsUndefined(v)) {
         int32_t sc = 1;

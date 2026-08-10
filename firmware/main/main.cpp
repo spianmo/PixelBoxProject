@@ -20,6 +20,7 @@
 #include "devd/devd.h"
 #include "hal_common/board.h"
 #include "jsvm/jsvm.hpp"
+#include "system_keys.h"
 
 static const char *TAG = "main";
 
@@ -47,7 +48,10 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "devd 启动失败: %s (继续启动 JS 运行时)", esp_err_to_name(err));
     }
 
-    /* 5. JS 运行时 */
+    /* 5. 系统按键动作 (①设置页 ②应用页 ③息屏/关机) */
+    system_keys_init();
+
+    /* 6. JS 运行时 */
     ESP_ERROR_CHECK(jsvm::start());
 
     ESP_LOGI(TAG, "PixelBox 启动完成 (%s)", board_model());

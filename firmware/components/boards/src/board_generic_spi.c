@@ -87,6 +87,8 @@ static const board_rtc_config_t s_rtc = {
 
 static const board_button_config_t s_button = {
     .pin_boot = CONFIG_BOARD_GSPI_BOOT_GPIO,
+    .pin_user = -1,
+    .pin_pwr_sense = -1,
 };
 
 /* 能力位如实: 板上只有屏; BLE 取决于芯片/配置是否编入 NimBLE */

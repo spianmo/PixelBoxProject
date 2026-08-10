@@ -47,11 +47,9 @@ esp_err_t read_reg16(uint16_t reg, uint8_t* data, size_t len) {
     return i2c_master_transmit_receive(s_dev, addr, sizeof(addr), data, len, 100);
 }
 
-/** INT 高电平 = 空闲 (CST92xx 有触摸时拉低); 无 INT 引脚时永远轮询 */
-bool int_gated_idle() {
-    if (s_int_pin < 0) return false;
-    return gpio_get_level(static_cast<gpio_num_t>(s_int_pin)) != 0;
-}
+/* 不做 INT 门控: CST92xx 的 INT 是每数据帧的短脉冲 (非 FT 系的
+ * 触摸期间持续拉低), 10ms 轮询几乎总采样到高电平, 门控会永久跳过
+ * 读取导致触摸失效。7 字节 I2C 读 @400kHz 约 0.2ms, 常轮询代价可忽略 */
 
 void emit(const TouchEvent& ev) {
     std::function<void(const TouchEvent&)> cb;
@@ -69,9 +67,6 @@ void touch_task(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(CONFIG_PX_TOUCH_POLL_MS));
 
-        // 空闲期且 INT 未触发 → 跳过 I2C 读, 省总线带宽
-        if (!was_down && int_gated_idle()) continue;
-
         uint8_t buf[7] = {};
         if (read_reg16(kDataReg, buf, sizeof(buf)) != ESP_OK) continue;
         if (buf[6] != kAckValue) continue;  // 帧无效 (芯片未就绪), 丢弃
@@ -81,8 +76,12 @@ void touch_task(void*) {
         const bool now_down = points > 0 && pressed;
 
         if (now_down) {
-            const uint16_t x = static_cast<uint16_t>((buf[1] << 4) | (buf[3] >> 4));
-            const uint16_t y = static_cast<uint16_t>((buf[2] << 4) | (buf[3] & 0x0F));
+            const uint16_t rx = static_cast<uint16_t>((buf[1] << 4) | (buf[3] >> 4));
+            const uint16_t ry = static_cast<uint16_t>((buf[2] << 4) | (buf[3] & 0x0F));
+            // 坐标系对齐: 面板 MADCTL=0xA0 (旋转) 时官方触摸配 swap_xy=1 +
+            // mirror_y=1, 等效 X=479-raw_y, Y=raw_x (与显示坐标系同向)
+            const uint16_t x = static_cast<uint16_t>(ry >= 480 ? 0 : 479 - ry);
+            const uint16_t y = rx;
             if (!was_down) {
                 emit({TouchEventType::Down, x, y});
             } else if (x != last_x || y != last_y) {

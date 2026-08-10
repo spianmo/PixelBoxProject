@@ -125,13 +125,23 @@ void on_hal_touch(const hal_periph::TouchEvent& ev) {
     }
 }
 
-/** 按键任务回调 */
-void on_hal_button(hal_periph::ButtonEventType t) {
+const char* button_key_str(hal_periph::ButtonKey k) {
+    switch (k) {
+        case hal_periph::ButtonKey::Boot: return "boot";
+        case hal_periph::ButtonKey::User: return "user";
+        case hal_periph::ButtonKey::Power: return "power";
+    }
+    return "boot";
+}
+
+/** 按键任务回调 (系统级动作由 main/system_keys 消费, 此处只透传给 JS) */
+void on_hal_button(hal_periph::ButtonKey key, hal_periph::ButtonEventType t) {
     if (!s_button_reg.active()) return;
+    const char* id = button_key_str(key);
     const char* type = button_type_str(t);
-    s_button_reg.invoke_all([type](JSContext* ctx, JSValue* argv) -> int {
+    s_button_reg.invoke_all([id, type](JSContext* ctx, JSValue* argv) -> int {
         JSValue o = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, o, "id", JS_NewString(ctx, "boot"));
+        JS_SetPropertyStr(ctx, o, "id", JS_NewString(ctx, id));
         JS_SetPropertyStr(ctx, o, "type", JS_NewString(ctx, type));
         argv[0] = o;
         return 1;
@@ -175,7 +185,7 @@ void input_init(JSContext* ctx, JSValue px) {
     if (hal_periph::touch_init() != ESP_OK) ESP_LOGW(TAG, "触摸初始化失败");
     if (hal_periph::button_init() != ESP_OK) ESP_LOGW(TAG, "BOOT 按键初始化失败");
     hal_periph::touch_set_callback(on_hal_touch);
-    hal_periph::button_set_callback(on_hal_button);
+    hal_periph::button_add_callback(on_hal_button);
 
     JSValue input = JS_NewObject(ctx);
     pxb::def_fn(ctx, input, "onTouch", js_on_touch, 1);

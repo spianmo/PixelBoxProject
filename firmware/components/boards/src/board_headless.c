@@ -73,6 +73,8 @@ static const board_rtc_config_t s_rtc = {
 
 static const board_button_config_t s_button = {
     .pin_boot = CONFIG_BOARD_HEADLESS_BOOT_GPIO,
+    .pin_user = -1,
+    .pin_pwr_sense = -1,
 };
 
 /* 能力位如实全 false; BLE 取决于芯片/配置 (C6 可用, P4 无片上蓝牙) */

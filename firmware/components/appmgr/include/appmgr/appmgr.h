@@ -78,6 +78,18 @@ void appmgr_staging_abort(void);
 
 /* ---------------- 生命周期 ---------------- */
 
+/** 卸载已推送的应用 (删除 current/prev 包) 并热重启回欢迎页 */
+esp_err_t appmgr_uninstall_app(void);
+
+/** 打开内置设置页 (入口切换 + VM 热重启; 幂等) */
+void appmgr_open_settings(void);
+
+/** 关闭设置页回到当前应用/欢迎页 (幂等) */
+void appmgr_close_settings(void);
+
+/** 当前是否在设置页 */
+bool appmgr_in_settings(void);
+
 /** 热重启 JS VM (重新加载当前应用) */
 void appmgr_restart_app(void);
 

@@ -291,7 +291,11 @@ def serialize(font: Font) -> bytes:
         offset = len(pool)
         rb = g.row_bytes()
         for row in g.rows:
-            pool += int(row).to_bytes(rb, "big")
+            # 行掩码以 bit(width-1) 为最左像素, 序列化须左对齐到字节边界
+            # (MSB=最左, 与 pxfont.h 约定一致)。宽度非 8 倍数时若右对齐,
+            # 设备端渲染整体右移 (rb*8-width) 像素并截断 —— 12px 汉字右移 4,
+            # 6px ASCII 右移 2, 真机表现为文字"溶解" (2026-08-10 排障)。
+            pool += (int(row) << (rb * 8 - g.width)).to_bytes(rb, "big")
         records += struct.pack("<HBBI", g.cp, g.width, g.advance, offset)
     header = MAGIC + struct.pack(
         "<BBBBII", VERSION, font.height, font.baseline, 0, len(glyphs), len(pool)

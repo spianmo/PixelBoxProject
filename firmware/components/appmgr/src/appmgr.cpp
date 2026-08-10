@@ -35,8 +35,9 @@ static const char *TAG = "appmgr";
 #define STAGING_DIR  "/flash/apps/staging"
 #define PREV_DIR     "/flash/apps/prev"
 
-/* 内置欢迎应用 (EMBED_TXTFILES, NUL 结尾) */
+/* 内置欢迎应用 / 设置页 (EMBED_TXTFILES, NUL 结尾) */
 extern const char _binary_default_app_js_start[];
+extern const char _binary_settings_app_js_start[];
 
 namespace {
 
@@ -44,6 +45,7 @@ std::mutex s_mutex;
 appmgr_manifest_t s_manifest = {};
 bool s_has_app = false;
 bool s_staging_active = false;
+bool s_settings_mode = false;  /* true = 入口切到内置设置页 (系统按键切换) */
 
 appmgr_state_t s_state = APPMGR_STATE_STOPPED;
 constexpr int kMaxStateCbs = 4;
@@ -257,6 +259,16 @@ void vm_state_listener(jsvm::VmState st, const char *error)
 
 bool entry_provider(jsvm::EntrySource &out)
 {
+    {
+        std::lock_guard<std::mutex> lk(s_mutex);
+        if (s_settings_mode) {
+            out.source = _binary_settings_app_js_start;
+            out.filename = "<builtin:settings>";
+            ESP_LOGI(TAG, "运行内置设置页");
+            return true;
+        }
+    }
+
     reload_current_manifest();
 
     appmgr_manifest_t mf;
@@ -525,6 +537,47 @@ extern "C" void appmgr_staging_abort(void)
 }
 
 /* ---------------- 生命周期 ---------------- */
+
+extern "C" esp_err_t appmgr_uninstall_app(void)
+{
+    remove_recursive(CURRENT_DIR);
+    remove_recursive(PREV_DIR);
+    {
+        std::lock_guard<std::mutex> lk(s_mutex);
+        s_has_app = false;
+        memset(&s_manifest, 0, sizeof(s_manifest));
+        s_settings_mode = false; /* 直接回欢迎页而非设置页 */
+    }
+    ESP_LOGI(TAG, "已清空推送的应用, 回到欢迎页");
+    jsvm::request_restart();
+    return ESP_OK;
+}
+
+extern "C" void appmgr_open_settings(void)
+{
+    {
+        std::lock_guard<std::mutex> lk(s_mutex);
+        if (s_settings_mode) return;
+        s_settings_mode = true;
+    }
+    jsvm::request_restart();
+}
+
+extern "C" void appmgr_close_settings(void)
+{
+    {
+        std::lock_guard<std::mutex> lk(s_mutex);
+        if (!s_settings_mode) return;
+        s_settings_mode = false;
+    }
+    jsvm::request_restart();
+}
+
+extern "C" bool appmgr_in_settings(void)
+{
+    std::lock_guard<std::mutex> lk(s_mutex);
+    return s_settings_mode;
+}
 
 extern "C" void appmgr_restart_app(void)
 {

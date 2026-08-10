@@ -35,7 +35,7 @@ namespace {
 constexpr float ACC_LSB_PER_G = 4096.0f;   // ±8g
 constexpr float GYR_LSB_PER_DPS = 64.0f;   // ±512dps
 constexpr uint16_t DETECT_RATE_HZ = 50;    // 摇一摇/姿态检测采样率
-constexpr float SHAKE_THRESH_G = 2.3f;     // 模长阈值
+constexpr float SHAKE_THRESH_G = 1.8f;     // 模长阈值 (2.3g 在 50Hz+LPF 下峰值常落采样间隙,真机实测调低)
 constexpr int64_t SHAKE_DEBOUNCE_US = 700 * 1000;
 constexpr float ORIENT_THRESH_G = 0.70f;   // 姿态判定主轴阈值(带滞回)
 
@@ -102,7 +102,8 @@ bool read_sample(ImuSample& out) {
 
 /**
  * 姿态六态判定(重力低通后取主导轴)。
- * 轴向假设(Waveshare AMOLED-1.8 正放, 屏幕朝上):
+ * 轴向假设(2.16 板贴装经官方原理图第 3 页轴标 + 04_Immersive_block demo 双重证实:
+ * 芯片 +X=屏幕右, +Y=屏幕顶边, +Z=出屏; 1.8 板同向):
  *   +Z 朝屏幕外(朝上=Flat, 朝下=FaceDown)
  *   +Y 朝设备顶边(顶边朝上=Up, 朝下=Down)
  *   +X 朝设备右边(右边朝上=Right, 左边朝上=Left)

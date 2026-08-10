@@ -42,5 +42,11 @@ idf_component_register(
 # 关闭其上游默认告警噪音, 避免被 IDF 告警配置打断编译。
 # xtensa GCC14 上 int32_t 定义为 long, quickjs-ng 上游按 int 使用指针,
 # 需额外抑制 incompatible-pointer-types 升级为错误。
+#
+# -fno-strict-aliasing 是硬性要求, 不是消音: 上游存在 (int*)&uint32 型
+# 跨类型指针写 (如 js_string_iterator_next → string_getc(p, (int*)&idx)),
+# 在本工具链 uint32_t=unsigned long 下构成严格别名 UB, GCC14 -O2 会把
+# 写回判定为不影响原变量而删除死存储 —— 真机表现为 for...of 字符串
+# 迭代 idx 永不推进、无限循环耗尽 JS 堆后随机崩溃 (2026-08-10 真机排障)。
 set_source_files_properties(${QJS_SRCS} PROPERTIES COMPILE_OPTIONS
-    "-D_GNU_SOURCE;-Wno-error;-Wno-error=incompatible-pointer-types;-Wno-unused-parameter;-Wno-unused-variable;-Wno-unused-but-set-variable;-Wno-sign-compare;-Wno-implicit-fallthrough;-Wno-missing-field-initializers;-Wno-format;-Wno-format-truncation;-Wno-maybe-uninitialized;-Wno-char-subscripts")
+    "-D_GNU_SOURCE;-fno-strict-aliasing;-Wno-error;-Wno-error=incompatible-pointer-types;-Wno-unused-parameter;-Wno-unused-variable;-Wno-unused-but-set-variable;-Wno-sign-compare;-Wno-implicit-fallthrough;-Wno-missing-field-initializers;-Wno-format;-Wno-format-truncation;-Wno-maybe-uninitialized;-Wno-char-subscripts")

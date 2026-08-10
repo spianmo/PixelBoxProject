@@ -453,7 +453,8 @@ esp_err_t set_power(bool on)
     if (on) {
         err = tx_cmd(0x11, nullptr, 0);  // sleep out
         if (err == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(120));
+            // CO5300 SLPOUT 后须等 600ms (官方 BSP 实测值, 120ms 唤醒有闪白风险)
+            vTaskDelay(pdMS_TO_TICKS(600));
             err = esp_lcd_panel_disp_on_off(s.panel, true);
         }
         if (err == ESP_OK) {

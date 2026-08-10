@@ -1,6 +1,7 @@
 /**
- * button_input.hpp — 板载 BOOT 按键(基于组件注册表 espressif/button v4)
+ * button_input.hpp — 板载按键(基于组件注册表 espressif/button v4)
  *
+ * 多键: Boot(BOOT/GPIO0) / User(用户键, 2.16 板 KEY3) / Power(电源键状态感知)。
  * 事件在 iot_button 内部任务/定时器上下文回调, 使用方负责投递到 JS 线程。
  */
 #pragma once
@@ -14,10 +15,12 @@ namespace hal_periph {
 
 enum class ButtonEventType : uint8_t { Down, Up, Click, DoubleClick, LongPress };
 
-/** 初始化 BOOT 按键(幂等) */
+enum class ButtonKey : uint8_t { Boot, User, Power };
+
+/** 初始化全部板载按键(幂等); 板型未配置的键自动跳过 */
 esp_err_t button_init();
 
-/** 设置事件回调(任务上下文;传空函数清除) */
-void button_set_callback(std::function<void(ButtonEventType)> cb);
+/** 追加事件回调(任务上下文; 多消费者: JS 绑定 + 系统按键动作), 不支持移除 */
+void button_add_callback(std::function<void(ButtonKey, ButtonEventType)> cb);
 
 }  // namespace hal_periph

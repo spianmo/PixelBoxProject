@@ -133,6 +133,10 @@ struct TextStyle {
     uint16_t c565 = 0xFFFF;          //!< 前景色 (565)
     int scale = 1;                   //!< 整数放大 1-8
     Align align = Align::Left;       //!< 对齐 (center/right 以 x 为锚点)
+    /** 放大平滑 (Scale2x/3x 阶梯圆滑, 仅 2/3/4/6/8 倍生效; 5/7 倍退化块状)。
+     * 默认关: EPX 对大号拉丁/简单形状效果好, 但会吃掉密集 CJK 小字的
+     * 笔画转角像素 (真机实测"溶解"), 中文文本请保持关闭 */
+    bool smooth = false;
 };
 
 /**

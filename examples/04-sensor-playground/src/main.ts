@@ -53,8 +53,9 @@ if (px.sensors.imu.available()) {
   px.sensors.imu.start({
     rateHz: 50,
     onData: (d) => {
-      // 屏幕坐标:x 向右,y 向下。安装方位不同时调整符号即可。
-      ax = d.ax;
+      // 屏幕坐标: x 向右, y 向下。芯片 +X=屏右 +Y=屏顶 (官方原理图轴标),
+      // 小球加速度 = 读数取负投影: x 同向取负, y 反向两负相抵。
+      ax = -d.ax;
       ay = d.ay;
     },
   });

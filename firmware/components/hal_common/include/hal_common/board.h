@@ -95,6 +95,9 @@ typedef struct {
 /** 按键配置 */
 typedef struct {
     int pin_boot;           /*!< 板载 BOOT 键 (低有效); -1 = 无 */
+    int pin_user;           /*!< 用户键 (低有效, 2.16 板 KEY3=GPIO18); -1 = 无 */
+    int pin_pwr_sense;      /*!< 电源键状态感知脚 (2.16 板 SYS_OUT=GPIO16,
+                                 极性上电自检); -1 = 无 */
 } board_button_config_t;
 
 /** 硬件能力开关 (与 px.system.info().capabilities 一一对应) */
