@@ -12,6 +12,7 @@
 
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -202,7 +203,10 @@ WifiStatus WifiManager::status() {
     st.ip = has_ip_ ? cur_ip_ : std::string();
   }
   uint8_t mac[6] = {0};
-  if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+  // esp_wifi_get_mac 要求 WiFi 已 init;从未联过网的设备退回 eFuse 里的 STA MAC
+  // (两者同值, 除非上层调过 esp_wifi_set_mac), 保证 d.ts 的 mac 字段任何时候都有值
+  // —— 设置页要显示它, 用户拿它去路由器做白名单。
+  if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK || esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
     char buf[18];
     snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
              mac[4], mac[5]);

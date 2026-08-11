@@ -24,7 +24,7 @@
   var LH12 = 12 * textScale; /* pixel12 行高 */
 
   var PAD = Math.round(W * 0.06);
-  var ROW_H = Math.round(H * 0.105);
+  var ROW_H = Math.round(H * 0.105); /* 指宽下限, 不因加行而缩小 —— 装不下就滚动 (见 mainMaxScroll) */
   var VAL_W = 6 * textScale * 3 + Math.round(8 * S); /* 滑条数值列 (3 位数字) */
   var SLIDER_W = Math.round(W * 0.42);
   var TAP_SLOP = Math.max(8, Math.round(H * 0.02)); /* 位移超过即视为拖动 */
@@ -72,8 +72,19 @@
   function showToast(text, color) { toast = { text: text, color: color || C.text, until: monoMs + 2500 }; }
 
   function wifiStatus() {
-    if (!hasWifi) return { connected: false, ssid: null, ip: null };
-    try { return px.wifi.status(); } catch (e) { return { connected: false, ssid: null, ip: null }; }
+    if (!hasWifi) return { connected: false, ssid: null, ip: null, mac: '' };
+    try { return px.wifi.status(); } catch (e) { return { connected: false, ssid: null, ip: null, mac: '' }; }
+  }
+
+  /* 出厂 MAC 不会变: 缓存一次, 免得 MAC 行每帧再调一次 px.wifi.status()。
+   * 空串 = WiFi 尚未 init 且 eFuse 也没读到, 此时不缓存, 下一帧再试。 */
+  var macCache = null;
+  function deviceMac() {
+    if (macCache) return macCache;
+    var m = wifiStatus().mac;
+    if (!m) return '-';
+    macCache = String(m).toUpperCase(); /* 像素字体下大写十六进制更好认, 也对齐路由器客户端列表 */
+    return macCache;
   }
 
   /** 字库外码点替换为 '?' (连续折叠): 仅保留 ASCII / GB2312 常用汉字 / 全角标点 */
@@ -93,7 +104,11 @@
 
   var rows = [];
   var yTitle = Math.round(H * 0.045);
-  var yCur = Math.round(H * 0.16);
+  /* 主页布局: 标题固定在上, 三行按键提示固定在下, 中间行列表在 [MAIN_TOP, mainViewBottom()) 内滚动。
+   * r.y 是内容坐标 (不随滚动变), 屏幕坐标一律走 rowScreenY(r) —— 绘制与命中共用同一换算。 */
+  var MAIN_TOP = Math.round(H * 0.16);
+  var HINT_TOP = H - Math.round(H * 0.17); /* 底部三行提示的第一行 */
+  var yCur = MAIN_TOP;
   function addRow(r) { r.y = yCur; rows.push(r); yCur += ROW_H; }
 
   var brightness = px.screen.getBrightness ? px.screen.getBrightness() : 80;
@@ -109,6 +124,7 @@
     return st.connected ? dispText(st.ssid || '') : '未连接';
   } };
   addRow(wifiRow);
+  addRow({ kind: 'info', label: 'MAC', get: deviceMac });
   addRow({ kind: 'info', label: '电池', get: function () {
     try { var b = px.system.battery(); return b.level < 0 ? '无电池' : (b.level + '%' + (b.charging ? ' 充电中' : '')); }
     catch (e) { return '不可用'; }
@@ -121,11 +137,25 @@
     catch (e) { return '-'; }
   } });
 
-  var dragging = null;   /* 拖动中的 slider 行 */
-  var mainTouch = null;  /* 主页 WiFi 行待确认 tap: { x, y } */
+  var dragging = null;    /* 拖动中的 slider 行 */
+  var mainTouch = null;   /* 主页手势: { x, y, scrollY, moved, tgt } —— moved 后转为滚动 */
+  var mainScrollY = 0;    /* 主页行列表滚动偏移 (像素) */
+
+  function mainViewBottom() { return HINT_TOP - Math.round(4 * S); }
+  function mainMaxScroll() {
+    return Math.max(0, rows.length * ROW_H - (mainViewBottom() - MAIN_TOP));
+  }
+  function clampMainScroll() {
+    var ms = mainMaxScroll();
+    if (mainScrollY > ms) mainScrollY = ms;
+    if (mainScrollY < 0) mainScrollY = 0;
+  }
+  /** 内容坐标 → 屏幕坐标 */
+  function rowScreenY(r) { return r.y - mainScrollY; }
 
   function sliderRect(r) {
-    return { x: W - PAD - VAL_W - SLIDER_W, y: r.y + Math.round(ROW_H * 0.28), w: SLIDER_W, h: Math.round(ROW_H * 0.34) };
+    var y = rowScreenY(r);
+    return { x: W - PAD - VAL_W - SLIDER_W, y: y + Math.round(ROW_H * 0.28), w: SLIDER_W, h: Math.round(ROW_H * 0.34) };
   }
   function applySlider(r, tx) {
     var sr = sliderRect(r);
@@ -477,17 +507,22 @@
       r.vCache = v;
       r.vDisp = truncText(v, anchorX - (PAD + r.labelW + Math.round(10 * S)));
     }
-    px.screen.drawText(r.vDisp, anchorX, r.y + Math.round(ROW_H * 0.25), {
+    px.screen.drawText(r.vDisp, anchorX, rowScreenY(r) + Math.round(ROW_H * 0.25), {
       color: C.text, font: 'pixel12', scale: textScale, align: 'right',
     });
   }
 
   function drawMain() {
-    px.screen.drawText('设置', PAD, yTitle, { color: 0xffffff, font: 'pixel16', scale: textScale + 1, align: 'left' });
+    clampMainScroll(); /* 行数/几何变化后重钳, 与命中用同一个 mainScrollY */
+    var bot = mainViewBottom();
+    var ms = mainMaxScroll();
 
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      px.screen.drawText(r.label, PAD, r.y + Math.round(ROW_H * 0.25), {
+      var y = rowScreenY(r);
+      if (y + ROW_H <= MAIN_TOP || y >= bot) continue; /* 视区外整行跳过 */
+      var ty = y + Math.round(ROW_H * 0.25);
+      px.screen.drawText(r.label, PAD, ty, {
         color: C.dim, font: 'pixel12', scale: textScale, align: 'left',
       });
       if (r.kind === 'slider') {
@@ -496,22 +531,34 @@
         px.screen.fillRect(sr.x, sr.y, sr.w, sr.h, C.panel);
         px.screen.fillRect(sr.x, sr.y, Math.round(sr.w * v / 100), sr.h, C.accent);
         px.screen.drawRect(sr.x, sr.y, sr.w, sr.h, C.border);
-        px.screen.drawText(String(v), W - PAD, r.y + Math.round(ROW_H * 0.25), {
+        px.screen.drawText(String(v), W - PAD, ty, {
           color: C.text, font: 'pixel12', scale: textScale, align: 'right',
         });
       } else if (r.kind === 'link') {
         var chs = Math.round(5 * S);
-        var cy = r.y + Math.round(ROW_H * 0.25) + (LH12 >> 1);
-        drawChevron(W - PAD - chs, cy, chs, C.dimmer);
+        drawChevron(W - PAD - chs, ty + (LH12 >> 1), chs, C.dimmer);
         drawRowValue(r, W - PAD - chs * 2 - Math.round(8 * S));
       } else {
         drawRowValue(r, W - PAD);
       }
     }
 
-    /* 注意: 带圈数字 U+2460-2462 不在 GB2312 一级字库, 用半角数字。
-     * 三行提示占 H*0.17 以下: 主页行列表止于 H*0.79 (0.16 + 6*0.105), 不重叠。 */
-    px.screen.drawText('键1 设置  键2 返回应用', (W / 2) | 0, H - Math.round(H * 0.17), {
+    /* 滚动条 (同 wifi 页画法) */
+    if (ms > 0) {
+      var viewH = bot - MAIN_TOP;
+      var barH = Math.max(20, Math.round(viewH * viewH / (rows.length * ROW_H)));
+      var barY = MAIN_TOP + Math.round((viewH - barH) * mainScrollY / ms);
+      px.screen.fillRect(W - 3, barY, 2, barH, C.border);
+    }
+
+    /* 上下不透明覆盖带: gfx 无裁剪, 半可见行会画进标题/提示区, 后画盖掉 */
+    px.screen.fillRect(0, 0, W, MAIN_TOP, C.bg);
+    px.screen.fillRect(0, bot, W, H - bot, C.bg);
+
+    px.screen.drawText('设置', PAD, yTitle, { color: 0xffffff, font: 'pixel16', scale: textScale + 1, align: 'left' });
+
+    /* 注意: 带圈数字 U+2460-2462 不在 GB2312 一级字库, 用半角数字。 */
+    px.screen.drawText('键1 设置  键2 返回应用', (W / 2) | 0, HINT_TOP, {
       color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
     });
     px.screen.drawText('键3 短按息屏 长按关机', (W / 2) | 0, H - Math.round(H * 0.115), {
@@ -766,34 +813,51 @@
 
   function touchMain(ev) {
     if (ev.type === 'down') {
-      for (var i = 0; i < rows.length; i++) {
-        var r = rows[i];
-        if (r.kind === 'slider') {
-          var sr = sliderRect(r);
-          if (ev.x >= sr.x - 8 && ev.x <= sr.x + sr.w + 8 && ev.y >= r.y && ev.y <= r.y + ROW_H) {
-            dragging = r;
-            applySlider(r, ev.x);
-            return;
-          }
-        } else if (r.kind === 'link' && hasWifi) {
-          if (ev.y >= r.y && ev.y <= r.y + ROW_H) {
-            mainTouch = { x: ev.x, y: ev.y }; /* up 无位移才进页, 防误触 */
-            return;
-          }
+      /* 标题带/提示带是覆盖画上去的, 其下可能压着半行 —— 不许穿透 */
+      if (ev.y < MAIN_TOP || ev.y >= mainViewBottom()) return;
+      var i, r;
+      /* 滑条轨道优先: 落在轨道上就是调值 (横向拖), 不参与纵向滚动。
+       * 轨道只占右半宽, 左侧标签区始终是滚动手柄。 */
+      for (i = 0; i < rows.length; i++) {
+        r = rows[i];
+        if (r.kind !== 'slider') continue;
+        var sr = sliderRect(r);
+        if (ev.x >= sr.x - 8 && ev.x <= sr.x + sr.w + 8 &&
+            ev.y >= rowScreenY(r) && ev.y <= rowScreenY(r) + ROW_H) {
+          dragging = r;
+          applySlider(r, ev.x);
+          return;
         }
       }
+      /* 其余区域 = 滚动手柄; 若落在 link 行上, 无位移的 up 才当 tap (防误触) */
+      var tgt = null;
+      for (i = 0; i < rows.length; i++) {
+        r = rows[i];
+        if (r.kind === 'link' && hasWifi &&
+            ev.y >= rowScreenY(r) && ev.y <= rowScreenY(r) + ROW_H) { tgt = r; break; }
+      }
+      mainTouch = { x: ev.x, y: ev.y, scrollY: mainScrollY, moved: false, tgt: tgt };
     } else if (ev.type === 'move') {
-      if (dragging) applySlider(dragging, ev.x);
-      else if (mainTouch &&
-               (Math.abs(ev.x - mainTouch.x) > TAP_SLOP || Math.abs(ev.y - mainTouch.y) > TAP_SLOP)) {
-        mainTouch = null;
+      if (dragging) { applySlider(dragging, ev.x); return; }
+      if (!mainTouch) return;
+      if (!mainTouch.moved) {
+        if (Math.abs(ev.y - mainTouch.y) > TAP_SLOP || Math.abs(ev.x - mainTouch.x) > TAP_SLOP) {
+          mainTouch.moved = true;
+          /* 重定基准到当前点: 拖动从 0 平滑起步, 消除 TAP_SLOP 死区跳变 */
+          mainTouch.y = ev.y;
+          mainTouch.scrollY = mainScrollY;
+        }
+      } else {
+        mainScrollY = mainTouch.scrollY - (ev.y - mainTouch.y);
+        clampMainScroll();
       }
     } else if (ev.type === 'up') {
       dragging = null;
-      if (mainTouch) {
-        mainTouch = null;
-        if (ev.y >= wifiRow.y && ev.y <= wifiRow.y + ROW_H) enterWifiPage();
-      }
+      var ts = mainTouch;
+      mainTouch = null;
+      if (!ts || ts.moved || !ts.tgt) return;
+      /* up 必须仍落在同一行上 (滚动中途松手不算 tap) */
+      if (ev.y >= rowScreenY(ts.tgt) && ev.y <= rowScreenY(ts.tgt) + ROW_H) enterWifiPage();
     }
   }
 
@@ -937,10 +1001,18 @@
         return { page: page, aps: aps.length, ssids: names, secures: secs, scanning: scanning, scanErr: scanErr,
                  passSsid: passSsid, passLen: passInput.length, kbMode: kbMode,
                  connecting: !!connecting, passErr: passErr, scrollY: scrollY,
+                 mainScrollY: mainScrollY, mainMaxScroll: mainMaxScroll(), mainRows: rows.length,
                  pressed: pressedKey ? pressedKey.id : null, pendingAps: !!pendingAps,
                  toast: toast ? toast.text : null };
       },
-      rows: { wifi: { x: (W / 2) | 0, y: wifiRow.y + (ROW_H >> 1) } },
+      /* 主页行坐标随滚动移动, 用 getter 取"此刻"的屏幕坐标 (滚动为 0 时与旧值一致) */
+      rows: { get wifi() { return { x: (W / 2) | 0, y: rowScreenY(wifiRow) + (ROW_H >> 1) }; } },
+      mainRow: function (i) {
+        var r = rows[i];
+        var y = rowScreenY(r);
+        return { x: (W / 2) | 0, y: y + (ROW_H >> 1), label: r.label, value: String(r.get()),
+                 visible: y >= MAIN_TOP && y + ROW_H <= mainViewBottom() };
+      },
       listRow: function (i) { return { x: (W / 2) | 0, y: wifiListTop() + i * wifiRowH() - scrollY + (wifiRowH() >> 1) }; },
     };
   } catch (e) {}
