@@ -143,6 +143,93 @@ export interface DecodedGif {
   frames: GifFrame[]
 }
 
+/** 只清除与 GIF 帧边界四连通的近背景色像素。 */
+export function removeGifExteriorBackground(image: DecodedImage, threshold = 44): void {
+  const ctx = image.canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) throw new Error('无法读取 GIF 帧画布')
+  const frame = ctx.getImageData(0, 0, image.width, image.height)
+  const rgba = frame.data
+  const corners = [0, image.width - 1, (image.height - 1) * image.width, image.width * image.height - 1]
+  const background = [0, 0, 0]
+  let cornerCount = 0
+  for (const pixelIndex of corners) {
+    const offset = pixelIndex * 4
+    if (rgba[offset + 3] < 32) continue
+    background[0] += rgba[offset]
+    background[1] += rgba[offset + 1]
+    background[2] += rgba[offset + 2]
+    cornerCount++
+  }
+  if (cornerCount === 0) {
+    background[0] = 255
+    background[1] = 255
+    background[2] = 255
+  } else {
+    background[0] /= cornerCount
+    background[1] /= cornerCount
+    background[2] /= cornerCount
+  }
+
+  const count = image.width * image.height
+  const outside = new Uint8Array(count)
+  const queue = new Int32Array(count)
+  const thresholdSq = threshold * threshold
+  let head = 0
+  let tail = 0
+  const enqueue = (pixelIndex: number): void => {
+    if (outside[pixelIndex] !== 0) return
+    const offset = pixelIndex * 4
+    const dr = rgba[offset] - background[0]
+    const dg = rgba[offset + 1] - background[1]
+    const db = rgba[offset + 2] - background[2]
+    if (rgba[offset + 3] !== 0 && dr * dr + dg * dg + db * db > thresholdSq) return
+    outside[pixelIndex] = 1
+    queue[tail++] = pixelIndex
+  }
+
+  for (let x = 0; x < image.width; x++) {
+    enqueue(x)
+    enqueue((image.height - 1) * image.width + x)
+  }
+  for (let y = 1; y + 1 < image.height; y++) {
+    enqueue(y * image.width)
+    enqueue(y * image.width + image.width - 1)
+  }
+  while (head < tail) {
+    const pixelIndex = queue[head++]
+    const x = pixelIndex % image.width
+    const y = Math.floor(pixelIndex / image.width)
+    if (x > 0) enqueue(pixelIndex - 1)
+    if (x + 1 < image.width) enqueue(pixelIndex + 1)
+    if (y > 0) enqueue(pixelIndex - image.width)
+    if (y + 1 < image.height) enqueue(pixelIndex + image.width)
+  }
+  for (let pixelIndex = 0; pixelIndex < count; pixelIndex++) {
+    if (outside[pixelIndex] !== 0) rgba[pixelIndex * 4 + 3] = 0
+  }
+  ctx.putImageData(frame, 0, 0)
+}
+
+/** 比较两份完整 RGBA 数据，任一通道不同都不是重复帧。 */
+export function gifFramePixelsEqual(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+/** 完整比较两张 RGBA 帧，识别 GIF 编码器附加的重复末帧。 */
+export function gifFramesEqual(a: DecodedImage, b: DecodedImage): boolean {
+  if (a.width !== b.width || a.height !== b.height) return false
+  const aCtx = a.canvas.getContext('2d', { willReadFrequently: true })
+  const bCtx = b.canvas.getContext('2d', { willReadFrequently: true })
+  if (!aCtx || !bCtx) throw new Error('无法读取 GIF 帧画布')
+  const aRgba = aCtx.getImageData(0, 0, a.width, a.height).data
+  const bRgba = bCtx.getImageData(0, 0, b.width, b.height).data
+  return gifFramePixelsEqual(aRgba, bRgba)
+}
+
 export function decodeGifFrames(bytes: ArrayBuffer | Uint8Array): DecodedGif {
   const u8 = toU8(bytes)
   // parseGIF 需要 ArrayBuffer;拷贝一份保证偏移干净

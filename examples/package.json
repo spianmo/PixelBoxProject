@@ -8,8 +8,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node scripts/build-all.mjs",
-    "check": "node scripts/build-all.mjs"
+    "build": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs",
+    "check": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs",
+    "test": "node scripts/test-electronic-perler.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.23.1",

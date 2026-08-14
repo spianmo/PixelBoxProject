@@ -5,7 +5,7 @@
  *   - 帧画布由 native 助手 __decodeImage / __loadGifFrames 解码 (帧存 PSRAM);
  *   - 播放计时用 screen.onFrame 驱动 (play 时订阅, pause/stop/dispose 退订),
  *     支持逐帧独立时长 (GIF) 与固定 fps (帧数组/雪碧图);
- *   - draw(x, y, target?) 把当前帧画到目标 (默认主屏)。
+ *   - draw(x, y, target?, opts?) 把当前帧画到目标 (默认主屏)。
  */
 (function () {
   'use strict';
@@ -69,9 +69,9 @@
       this._acc = 0;
     }
 
-    draw(x, y, target) {
+    draw(x, y, target, opts) {
       if (this._disposed) throw new Error('动画已 dispose');
-      (target || screen).drawImage(this._frames[this._cur].canvas, x | 0, y | 0);
+      (target || screen).drawImage(this._frames[this._cur].canvas, x | 0, y | 0, opts);
     }
 
     onEnd(cb) {
@@ -156,9 +156,9 @@
     return new PxAnimationImpl(frames, frames.map(() => frameMs), loop);
   };
 
-  /** loadGif(src): GIF → 动画 (逐帧时长取自 GIF, 默认循环) */
-  screen.loadGif = function loadGif(src) {
-    const r = screen.__loadGifFrames(src);
+  /** loadGif(src, opts?): GIF → 动画 (逐帧时长取自 GIF, 默认循环) */
+  screen.loadGif = function loadGif(src, opts) {
+    const r = screen.__loadGifFrames(src, opts);
     const frames = r.frames.map((c) => ({ canvas: c, owned: true }));
     return new PxAnimationImpl(frames, r.delays, true);
   };

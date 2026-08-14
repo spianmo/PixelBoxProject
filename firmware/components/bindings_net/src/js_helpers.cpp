@@ -18,23 +18,45 @@ namespace pxjs {
 
 static const char* TAG = "px_netjs";
 
+/** 定义在文件末尾的 SubRegistry 退订表 (teardown 时作废) */
+static void unsub_actions_clear();
+
 /* ------------------------------------------------------------
- * 存活注册表 (Promise / JsFunc)
+ * 析构与 teardown 钩子的互斥约定 (三个析构函数都依赖它, 集中说明一次)
+ *
+ * teardown 钩子全程持有 s_live_mtx, 且只在持锁期间把 s_in_teardown 置真。
+ * 于是有不变式:**持锁读到 s_in_teardown == true ⟺ 自己就是钩子所在的 JS 线程**
+ * (跨线程析构必然阻塞在锁上, 等拿到锁时钩子已经收尾, 标志已复位)。
+ *
+ * 所以"出表"与"读标志"必须在同一个临界区里做完 —— 中间放锁会开一个窗口:
+ * 析构先把自己从存活表摘走 → 钩子拿到锁跑完 (扫不到它) → 析构再看标志已是假 →
+ * 走投递路径 → vm_stale 守卫拦下 → 这条引用永远不释放 → JS_FreeRuntime 断言炸。
+ * ------------------------------------------------------------ */
+
+/* ------------------------------------------------------------
+ * 存活注册表 (Promise / JsFunc / SelfRef)
  *
  * VM teardown 时必须释放所有 C++ 侧持有的 JSValue (未 settle Promise 的
- * resolve/reject、JsFunc 的函数引用) —— 否则 JS_FreeRuntime 断言
- * gc_obj_list 非空直接 abort (真机 coredump 实证: 在途 ntpSync/fetch
- * 期间热重启 = "assert failed: JS_FreeRuntime quickjs.c (list_empty)")。
+ * resolve/reject、JsFunc 的函数引用、socket/server 的 self 保活引用)
+ * —— 否则 JS_FreeRuntime 断言 gc_obj_list 非空直接 abort (真机 coredump
+ * 实证: 在途 ntpSync/fetch 期间热重启 = "assert failed: JS_FreeRuntime
+ * quickjs.c (list_empty)"; 开着 listenTcp 的应用按键1 切设置页 = 整机复位)。
  * 与 jsvm::Callback 的 live-ctrl 集合同款思路。
  * recursive_mutex: teardown 释放闭包可级联析构其他注册对象 (同线程重入)。
  * ------------------------------------------------------------ */
 static std::recursive_mutex s_live_mtx;
+/** 正处在 teardown 钩子里 (仅 JS 线程读写, 持 s_live_mtx): 见下方析构函数 */
+static bool s_in_teardown = false;
 static std::unordered_set<Promise*>& live_promises() {
   static std::unordered_set<Promise*> s;
   return s;
 }
 static std::unordered_set<JsFunc*>& live_funcs() {
   static std::unordered_set<JsFunc*> s;
+  return s;
+}
+static std::unordered_set<SelfRef*>& live_selfrefs() {
+  static std::unordered_set<SelfRef*> s;
   return s;
 }
 
@@ -44,6 +66,7 @@ static void teardown_free_live(JSContext* ctx) {
    * (故先把值挪到局部、标记 settled 后再 free, free 之后不再触碰对象)。
    * 跨线程析构则阻塞在本锁上直到钩子完成, 对象内存在此期间必然有效。 */
   std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
+  s_in_teardown = true;
   while (!live_promises().empty()) {
     Promise* p = *live_promises().begin();
     live_promises().erase(live_promises().begin());
@@ -59,6 +82,18 @@ static void teardown_free_live(JSContext* ctx) {
     live_funcs().erase(live_funcs().begin());
     f->teardown_release(ctx);
   }
+  /* self 放最后: 释放它常常让 JS 对象引用归零, 当场跑 finalizer 级联析构
+     整个 socket 结构体 (含其中的 SubRegistry/JsFunc)。先清空 live_funcs
+     才能保证那些 JsFunc 的 fn_ 已经是 UNDEFINED, 析构时直接空转。 */
+  while (!live_selfrefs().empty()) {
+    SelfRef* r = *live_selfrefs().begin();
+    live_selfrefs().erase(live_selfrefs().begin());
+    r->teardown_release(ctx);
+  }
+  /* Unsubscribe 动作表按 VM 生命周期作废: 里面的闭包捕获的是旧 VM 的
+     SubRegistry 宿主, 留着既没用也会跨代累积 */
+  unsub_actions_clear();
+  s_in_teardown = false;
 }
 
 JSContext* g_ctx = nullptr;
@@ -181,7 +216,7 @@ void Promise::reject_msg(std::string msg) {
 }
 
 Promise::~Promise() {
-  // 注册表擦除与 settled 判读必须同锁: teardown 钩子可能正持锁释放本对象的值
+  // 出表、settled 判读、s_in_teardown 读取必须在同一临界区(见文件头互斥约定)
   JSContext* c;
   uint32_t g;
   JSValue r1, r2;
@@ -194,15 +229,20 @@ Promise::~Promise() {
     g = gen;
     r1 = resolve;
     r2 = reject;
-  }
-  // 未 settle 就析构:把 resolve/reject 引用投递回 JS 线程释放
-  if (c) {
-    run_on_js([c, g, r1, r2]() {
-      if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
+    resolve = reject = JS_UNDEFINED;
+    if (!c) return;
+    if (s_in_teardown) {  // 钩子内被级联析构:当场释放(投递出去就再也没人执行了)
       JS_FreeValue(c, r1);
       JS_FreeValue(c, r2);
-    });
+      return;
+    }
   }
+  // 未 settle 就析构:把 resolve/reject 引用投递回 JS 线程释放
+  run_on_js([c, g, r1, r2]() {
+    if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
+    JS_FreeValue(c, r1);
+    JS_FreeValue(c, r2);
+  });
 }
 
 // ------------------------------------------------------------ JsFunc
@@ -234,11 +274,70 @@ JsFunc::~JsFunc() {
     fn_ = JS_UNDEFINED;
     c = ctx_;
     g = gen_;
+    if (JS_IsUndefined(f)) return;  // teardown 已释放
+    if (s_in_teardown) {            // 钩子内被级联析构:当场释放
+      JS_FreeValue(c, f);
+      return;
+    }
   }
-  if (JS_IsUndefined(f)) return;  // teardown 已释放
   run_on_js([c, g, f]() {
     if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
     JS_FreeValue(c, f);
+  });
+}
+
+// ------------------------------------------------------------ SelfRef
+
+void SelfRef::hold(JSContext* ctx, JSValueConst obj) {
+  if (!JS_IsUndefined(v_)) release(ctx);
+  ctx_ = ctx;
+  gen_ = jsvm::vm_generation();
+  v_ = JS_DupValue(ctx, obj);
+  std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
+  live_selfrefs().insert(this);
+}
+
+void SelfRef::release(JSContext* ctx) {
+  JSValue v;
+  {
+    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
+    live_selfrefs().erase(this);
+    v = v_;
+    v_ = JS_UNDEFINED;
+  }
+  if (JS_IsUndefined(v)) return;
+  if (vm_stale(gen_)) return;  // VM 已重启,旧值随旧 runtime 回收
+  JS_FreeValue(ctx ? ctx : ctx_, v);
+}
+
+void SelfRef::teardown_release(JSContext* ctx) {
+  // 仅 teardown 钩子调用 (JS 线程, 持 s_live_mtx);
+  // 先挪局部再 free: 释放常触发 finalizer 级联析构本对象所在的结构体
+  JSValue v = v_;
+  v_ = JS_UNDEFINED;
+  if (!JS_IsUndefined(v)) JS_FreeValue(ctx, v);
+}
+
+SelfRef::~SelfRef() {
+  JSContext* c;
+  uint32_t g;
+  JSValue v;
+  {
+    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
+    live_selfrefs().erase(this);
+    v = v_;
+    v_ = JS_UNDEFINED;
+    c = ctx_;
+    g = gen_;
+    if (JS_IsUndefined(v) || !c) return;  // 已释放 / 从未 hold 过
+    if (s_in_teardown) {                  // 钩子内被级联析构:当场释放
+      JS_FreeValue(c, v);
+      return;
+    }
+  }
+  run_on_js([c, g, v]() {
+    if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
+    JS_FreeValue(c, v);
   });
 }
 
@@ -369,6 +468,8 @@ static std::unordered_map<int, std::function<void()>>& unsub_actions() {
   return m;
 }
 static int g_unsub_next_id = 1;
+
+static void unsub_actions_clear() { unsub_actions().clear(); }
 
 static JSValue unsub_trampoline(JSContext* ctx, JSValueConst, int, JSValueConst*, int,
                                 JSValue* data) {

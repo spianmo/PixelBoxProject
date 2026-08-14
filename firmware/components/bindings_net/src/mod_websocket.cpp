@@ -28,8 +28,8 @@ static const char* TAG = "px_ws";
 struct WsClient {
   esp_websocket_client_handle_t handle = nullptr;
   JSContext* ctx = nullptr;
-  uint32_t gen = 0;             ///< 创建时的 jsvm::vm_generation(),VM 热重启失效判定用
-  JSValue self = JS_UNDEFINED;  ///< 连接活动期间持有的 JS 对象引用
+  uint32_t gen = 0;    ///< 创建时的 jsvm::vm_generation(),VM 热重启失效判定用
+  pxjs::SelfRef self;  ///< 连接活动期间持有的 JS 对象引用(VM 拆除时同步释放)
   std::atomic<int> state{0};    ///< 0 CONNECTING / 1 OPEN / 2 CLOSING / 3 CLOSED
   std::string url;
   bool terminal_sent = false;   ///< onclose 已派发(仅 JS 线程)
@@ -72,13 +72,13 @@ static void ws_call_handler(const WsPtr& ws, const char* prop, JSValue ev) {
   JSContext* ctx = ws->ctx;
   // VM 热重启后 ctx 地址可能被复用,不可比较指针;gen 失配即 self/ev 属旧 runtime,不可再触碰
   if (pxjs::vm_stale(ws->gen)) return;
-  if (JS_IsUndefined(ws->self)) {
+  if (ws->self.empty()) {
     JS_FreeValue(ctx, ev);
     return;
   }
-  JSValue fn = JS_GetPropertyStr(ctx, ws->self, prop);
+  JSValue fn = JS_GetPropertyStr(ctx, ws->self.get(), prop);
   if (JS_IsFunction(ctx, fn)) {
-    JSValue ret = JS_Call(ctx, fn, ws->self, 1, &ev);
+    JSValue ret = JS_Call(ctx, fn, ws->self.get(), 1, &ev);
     if (JS_IsException(ret)) {
       JSValue e = JS_GetException(ctx);
       const char* s = JS_ToCString(ctx, e);
@@ -98,15 +98,14 @@ static void ws_dispatch_terminal(const WsPtr& ws, int code, std::string reason) 
   ws->terminal_sent = true;
   ws->state.store(3);
   JSContext* ctx = ws->ctx;
-  if (!pxjs::vm_stale(ws->gen) && !JS_IsUndefined(ws->self)) {
+  if (!pxjs::vm_stale(ws->gen) && !ws->self.empty()) {
     JSValue ev = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, ev, "type", JS_NewString(ctx, "close"));
     JS_SetPropertyStr(ctx, ev, "code", JS_NewInt32(ctx, code));
     JS_SetPropertyStr(ctx, ev, "reason", JS_NewString(ctx, reason.c_str()));
     ws_call_handler(ws, "onclose", ev);
-    JS_FreeValue(ctx, ws->self);
   }
-  ws->self = JS_UNDEFINED;
+  ws->self.release(ctx);  // VM 已重启时内部只注销, 不碰旧 runtime
   ws_schedule_destroy(ws);
 }
 
@@ -326,11 +325,10 @@ static JSValue js_ws_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSV
   JS_SetPropertyStr(ctx, obj, "onerror", JS_NULL);
 
   JS_SetOpaque(obj, new WsPtr(ws));
-  ws->self = JS_DupValue(ctx, obj);  // 连接期间保活
+  ws->self.hold(ctx, obj);  // 连接期间保活
 
   if (esp_websocket_client_start(ws->handle) != ESP_OK) {
-    JS_FreeValue(ctx, ws->self);
-    ws->self = JS_UNDEFINED;
+    ws->self.release(ctx);
     ws->state.store(3);
     ws_schedule_destroy(ws);  // 同时回收 handler_ref
     JS_FreeValue(ctx, obj);

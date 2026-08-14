@@ -197,12 +197,10 @@ void pkey_poll_task(void *)
             ESP_LOGI(TAG, "键2(PWR) 长按: 清空应用, 回欢迎页");
             appmgr_uninstall_app();
         } else if (sp) {
-            if (appmgr_in_settings()) {
-                ESP_LOGI(TAG, "键2(PWR): 退出设置页, 返回应用");
-                appmgr_close_settings();
-            } else {
-                ESP_LOGI(TAG, "键2(PWR): 已在应用页");
-            }
+            // PMU 是 2.16 真机上键2的唯一可靠来源；统一分发后系统和当前应用都能收到。
+            ESP_LOGI(TAG, "键2(PWR): 短按");
+            hal_periph::button_emit(hal_periph::ButtonKey::Power,
+                                    hal_periph::ButtonEventType::Click);
         }
     }
 }

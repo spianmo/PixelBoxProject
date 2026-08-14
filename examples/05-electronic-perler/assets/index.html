@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#171b1a" />
+    <title>电子拼豆</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span>电子拼豆</span>
+      </div>
+      <span id="device-status" class="device-status" role="status">正在连接设备</span>
+    </header>
+
+    <main class="workspace">
+      <section class="preview-area" aria-label="图案预览">
+        <div class="preview-toolbar">
+          <div class="segmented" role="group" aria-label="预览模式">
+            <button id="mode-original" class="active" type="button">原图</button>
+            <button id="mode-crop" type="button">裁剪</button>
+            <button id="mode-beads" type="button">像素化</button>
+          </div>
+          <span id="pattern-meta" class="pattern-meta">尚未选择图片</span>
+        </div>
+        <div id="canvas-shell" class="canvas-shell">
+          <canvas id="preview" width="640" height="640" aria-label="图片和拼豆预览"></canvas>
+          <label id="empty-picker" class="empty-picker" for="image-file">
+            <span class="upload-symbol" aria-hidden="true">+</span>
+            <strong>选择图片</strong>
+            <small>JPG、PNG、WEBP、GIF</small>
+          </label>
+        </div>
+      </section>
+
+      <aside class="control-panel" aria-label="拼豆参数">
+        <div class="control-head">
+          <div>
+            <p class="eyebrow">图案设置</p>
+            <h1>生成拼豆图纸</h1>
+          </div>
+          <label class="file-button" for="image-file">更换图片</label>
+          <input id="image-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+        </div>
+
+        <div class="control-group music-control">
+          <div class="label-row">
+            <label for="music-url">设备音乐</label>
+            <output id="music-state">未播放</output>
+          </div>
+          <input
+            id="music-url"
+            class="music-url"
+            type="url"
+            maxlength="1024"
+            inputmode="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="https://example.com/music.mp3"
+          />
+          <div class="music-actions">
+            <button id="music-play" class="primary" type="button" disabled>播放</button>
+            <button id="music-pause" class="secondary" type="button" disabled>暂停</button>
+            <button id="music-stop" class="secondary" type="button" disabled>停止</button>
+          </div>
+          <p id="music-message" class="action-status music-message" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="control-group">
+          <div class="label-row">
+            <label>设备显示</label>
+          </div>
+          <div id="device-mode" class="segmented device-mode" role="group" aria-label="设备显示模式">
+            <button id="device-beads" type="button" class="active">像素图案</button>
+            <button id="device-media" type="button">裁剪原图 / GIF</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="label-row">
+            <label>像素密度</label>
+            <output id="grid-output">24 x 24</output>
+          </div>
+          <div id="grid-options" class="segmented grid-options" role="group" aria-label="网格尺寸">
+            <button type="button" data-grid="16">16</button>
+            <button type="button" data-grid="24" class="active">24</button>
+            <button type="button" data-grid="32">32</button>
+            <button type="button" data-grid="48">48</button>
+            <button type="button" data-grid="64">64</button>
+          </div>
+          <div class="density-custom">
+            <label for="grid-custom">自定义</label>
+            <input id="grid-custom" type="number" min="8" max="64" step="1" value="24" inputmode="numeric" />
+            <span>像素 / 边</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="label-row">
+            <label for="color-count">颜色数量</label>
+            <output id="color-output">12 色</output>
+          </div>
+          <input id="color-count" type="range" min="4" max="24" step="1" value="12" />
+          <div id="palette-strip" class="palette-strip" aria-label="当前色板"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="label-row">
+            <label for="zoom">裁剪缩放</label>
+            <output id="zoom-output">100%</output>
+          </div>
+          <input id="zoom" type="range" min="100" max="300" step="5" value="100" />
+        </div>
+
+        <div class="switch-row">
+          <span>
+            <strong>智能去背景</strong>
+            <small>仅清除外部连通背景</small>
+          </span>
+          <label class="switch">
+            <input id="remove-background" type="checkbox" checked />
+            <span aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div id="threshold-group" class="control-group compact">
+          <div class="label-row">
+            <label for="background-threshold">背景容差</label>
+            <output id="threshold-output">44</output>
+          </div>
+          <input id="background-threshold" type="range" min="8" max="100" step="2" value="44" />
+        </div>
+
+        <div class="switch-row">
+          <span>
+            <strong>颜色抖动</strong>
+            <small>改善明暗过渡</small>
+          </span>
+          <label class="switch">
+            <input id="dither" type="checkbox" />
+            <span aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="send-pattern" class="primary" type="button" disabled>显示到设备</button>
+          <button id="download-pattern" class="secondary" type="button" disabled>下载图纸</button>
+        </div>
+        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+      </aside>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

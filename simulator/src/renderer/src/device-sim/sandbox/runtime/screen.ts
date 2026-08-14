@@ -16,7 +16,14 @@ import type { HostLink } from './rpc'
 import { Emitter } from './events'
 import { colorToCss, clamp } from './util'
 import { resolveFont, type PxFontName } from './fonts'
-import { decodeImageBytes, decodeGifFrames, withColorKey, type DecodedImage } from './images'
+import {
+  decodeImageBytes,
+  decodeGifFrames,
+  gifFramesEqual,
+  removeGifExteriorBackground,
+  withColorKey,
+  type DecodedImage
+} from './images'
 import type { Vfs } from './storage'
 
 /** 缺省分辨率(PixelBox 一代内置档案;正常路径由 init.device 注入,不再硬编码使用) */
@@ -38,6 +45,11 @@ interface DrawImageOpts {
   sw?: number
   sh?: number
   colorKey?: number
+}
+
+interface GifLoadOpts {
+  removeBackground?: boolean
+  backgroundThreshold?: number
 }
 
 type BinaryLike = ArrayBuffer | Uint8Array
@@ -297,10 +309,18 @@ export class DrawSurface {
   }
 
   /** 直接绘制一个画布源(动画帧绘制用,内部 API) */
-  blit(source: CanvasImageSource, x: number, y: number): void {
+  blit(source: CanvasImageSource, sourceWidth: number, sourceHeight: number, x: number, y: number,
+       opts?: DrawImageOpts): void {
     this.assertAlive()
+    const sx = opts?.sx ?? 0
+    const sy = opts?.sy ?? 0
+    const sw = opts?.sw ?? sourceWidth - sx
+    const sh = opts?.sh ?? sourceHeight - sy
+    const dw = opts?.w ?? sw
+    const dh = opts?.h ?? sh
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return
     this.ctx.imageSmoothingEnabled = false
-    this.ctx.drawImage(source, x | 0, y | 0)
+    this.ctx.drawImage(source, sx, sy, sw, sh, x | 0, y | 0, dw, dh)
     this.markDirty()
   }
 
@@ -401,11 +421,11 @@ export class AnimationImpl {
     this.index = clamp(frame | 0, 0, Math.max(0, this.frames.length - 1))
   }
 
-  draw(x: number, y: number, target?: unknown): void {
+  draw(x: number, y: number, target?: unknown, opts?: DrawImageOpts): void {
     if (this.disposed || this.frames.length === 0) return
     const fr = this.frames[this.index]
     const surface = target instanceof DrawSurface ? target : this.screen
-    surface.blit(fr.source, x, y)
+    surface.blit(fr.source, fr.width, fr.height, x, y, opts)
   }
 
   onEnd(cb: () => void): () => void {
@@ -536,10 +556,18 @@ export class ScreenImpl extends DrawSurface {
     return new AnimationImpl(frames, fps, loop, this)
   }
 
-  loadGif(src: string | BinaryLike): AnimationImpl {
+  loadGif(src: string | BinaryLike, opts?: GifLoadOpts): AnimationImpl {
     const raw: ArrayBuffer | Uint8Array = typeof src === 'string' ? this.resolver.readBytes(src) : src
     const gif = decodeGifFrames(raw)
     if (gif.frames.length === 0) throw new Error('loadGif: GIF 无有效帧')
+    if (opts?.removeBackground) {
+      const threshold = clamp(Math.round(opts.backgroundThreshold ?? 44), 0, 255)
+      for (const frame of gif.frames) removeGifExteriorBackground(frame.image, threshold)
+    }
+    if (gif.frames.length > 1 &&
+        gifFramesEqual(gif.frames[0].image, gif.frames[gif.frames.length - 1].image)) {
+      gif.frames.pop()
+    }
     const frames: AnimFrame[] = gif.frames.map((f) => ({
       source: f.image.canvas,
       width: f.image.width,

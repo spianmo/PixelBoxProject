@@ -11,10 +11,10 @@
 #include <memory>
 
 #include "esp_audio_simple_dec.h"
-#include "esp_audio_simple_dec_default.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_mp3_dec.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hal_audio/wav.hpp"
@@ -27,6 +27,25 @@ static const char* TAG = "hal_audio.dec";
 namespace {
 constexpr size_t kReadChunk = 4096;
 constexpr uint32_t kFeedTimeoutMs = 30000;  // 环满时最长等待(混音器消费)
+constexpr uint32_t kFeedPollMs = 250;
+constexpr size_t kMaxId3v2TagBytes = 16 * 1024 * 1024;
+
+/** 解析 ID3v2 的 4 字节 syncsafe 长度，返回包含 10 字节头和可选 footer 的总长度。 */
+bool parse_id3v2_tag_bytes(const uint8_t* data, size_t len, size_t& tag_bytes) {
+    if (!data || len < 10 || memcmp(data, "ID3", 3) != 0) return false;
+    const uint8_t version = data[3];
+    if (version < 2 || version > 4) return false;
+    for (int i = 6; i < 10; ++i) {
+        if ((data[i] & 0x80) != 0) return false;
+    }
+    const size_t payload = (static_cast<size_t>(data[6]) << 21) |
+                           (static_cast<size_t>(data[7]) << 14) |
+                           (static_cast<size_t>(data[8]) << 7) |
+                           static_cast<size_t>(data[9]);
+    const size_t footer = version == 4 && (data[5] & 0x10) != 0 ? 10 : 0;
+    tag_bytes = 10 + payload + footer;
+    return tag_bytes <= kMaxId3v2TagBytes;
+}
 }  // namespace
 
 // ---------------- 字节流读取抽象 ----------------
@@ -118,11 +137,23 @@ Fmt sniff(const uint8_t* d, size_t n, const std::string& src) {
 }
 
 bool mp3_decoder_registered() {
-    static bool done = false;
-    if (!done) {
-        done = esp_audio_simple_dec_register_default() == ESP_AUDIO_ERR_OK;
-    }
-    return done;
+    static const bool registered = []() {
+        // simple decoder 已内置 MP3 裸流解析器，但底层 MP3 codec 必须单独注册。
+        const esp_audio_err_t register_ret = esp_mp3_dec_register();
+        if (register_ret != ESP_AUDIO_ERR_OK && register_ret != ESP_AUDIO_ERR_ALREADY_EXIST) {
+            ESP_LOGE(TAG, "MP3 codec 注册失败: %d", static_cast<int>(register_ret));
+            return false;
+        }
+
+        const esp_audio_err_t check_ret = esp_audio_dec_check_audio_type(ESP_AUDIO_TYPE_MP3);
+        if (check_ret != ESP_AUDIO_ERR_OK) {
+            ESP_LOGE(TAG, "MP3 codec 注册后不可用: %d", static_cast<int>(check_ret));
+            return false;
+        }
+        ESP_LOGI(TAG, "MP3 codec 已注册");
+        return true;
+    }();
+    return registered;
 }
 
 }  // namespace
@@ -217,8 +248,23 @@ bool DecodeStream::pump(Reader& rd, esp_err_t& err_out) {
 
 bool DecodeStream::ring_write(const uint8_t* pcm, size_t len) {
     if (!ring_ || abort_.load()) return false;
-    const size_t n = ring_->feed_blocking(pcm, len, kFeedTimeoutMs);
-    return n == len;
+    size_t written = 0;
+    uint32_t stalled_ms = 0;
+    while (written < len && !abort_.load()) {
+        const size_t n = ring_->feed_blocking(pcm + written, len - written, kFeedPollMs);
+        written += n;
+        if (written >= len) return true;
+        if (ring_->stopped() || ring_->ended()) return false;
+
+        // 暂停会让混音器停止消费，不能把正常暂停误判为解码背压超时。
+        if (ring_->paused() || n > 0) {
+            stalled_ms = 0;
+            continue;
+        }
+        stalled_ms += kFeedPollMs;
+        if (stalled_ms >= kFeedTimeoutMs) return false;
+    }
+    return false;
 }
 
 bool DecodeStream::pump_wav(Reader& rd, const uint8_t* pre, size_t pre_len, esp_err_t& err_out) {
@@ -301,12 +347,44 @@ bool DecodeStream::pump_mp3(Reader& rd, const uint8_t* pre, size_t pre_len, esp_
     auto* in_buf = static_cast<uint8_t*>(big_alloc(kReadChunk));
     size_t out_cap = 8192;
     auto* out_buf = static_cast<uint8_t*>(big_alloc(out_cap));
-    bool ok = true;
+    bool ok = in_buf != nullptr && out_buf != nullptr;
     bool eof = false;
+    if (!ok) err_out = ESP_ERR_NO_MEM;
 
-    // 先消化嗅探时预读的字节
-    memcpy(in_buf, pre, pre_len);
-    size_t in_len = pre_len;
+    // Espressif MP3 解码器不解析 ID3；按 syncsafe 长度流式跳过封面等元数据。
+    const uint8_t* initial = pre;
+    size_t initial_len = pre_len;
+    size_t in_len = 0;
+    if (ok && pre_len >= 3 && memcmp(pre, "ID3", 3) == 0) {
+        size_t tag_bytes = 0;
+        if (!parse_id3v2_tag_bytes(pre, pre_len, tag_bytes)) {
+            ESP_LOGE(TAG, "ID3v2 标签头无效或超过 %u 字节",
+                     static_cast<unsigned>(kMaxId3v2TagBytes));
+            err_out = ESP_ERR_INVALID_SIZE;
+            ok = false;
+        } else {
+            const size_t from_pre = std::min(tag_bytes, initial_len);
+            initial += from_pre;
+            initial_len -= from_pre;
+            size_t remaining = tag_bytes - from_pre;
+            while (remaining > 0 && !abort_.load()) {
+                const size_t want = std::min(remaining, kReadChunk);
+                const int n = rd.read(in_buf, want);
+                if (n <= 0) {
+                    err_out = n < 0 ? ESP_FAIL : ESP_ERR_INVALID_SIZE;
+                    ok = false;
+                    break;
+                }
+                remaining -= static_cast<size_t>(n);
+            }
+            if (remaining > 0) ok = false;
+            if (ok) ESP_LOGI(TAG, "已跳过 ID3v2 标签: %u 字节", static_cast<unsigned>(tag_bytes));
+        }
+    }
+    if (ok) {
+        memcpy(in_buf, initial, initial_len);
+        in_len = initial_len;
+    }
 
     while (ok && !abort_.load()) {
         if (!eof && in_len < kReadChunk) {

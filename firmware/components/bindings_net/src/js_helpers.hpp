@@ -107,6 +107,48 @@ using JsFuncPtr = std::shared_ptr<JsFunc>;
  */
 void call_func_on_js(JsFuncPtr fn, int argc, std::function<void(JSContext*, JSValue* argv)> make);
 
+// ------------------------------------------------------------ native 保活引用
+
+/**
+ * native 结构体长期持有的 JS 对象引用(socket/server 的"打开期间保活" self)。
+ *
+ * 必须用它而不是裸 JSValue —— 这条引用 GC 看不见(藏在 C++ 结构体里),
+ * 一旦活到 JS_FreeRuntime,对象就仍留在 rt->gc_obj_list 上,quickjs 的
+ * `assert(list_empty(&rt->gc_obj_list))` 当场 abort:表现是**整机 panic 重启**,
+ * 不是"应用崩溃只重启 VM"。真机复现:电子拼豆(开着 listenTcp)运行时按键1
+ * 切设置页,VM 拆除 → 服务器对象的 self 没人释放 → 芯片复位。
+ *
+ * 靠应用在 onExit 里 close() 兜不住:
+ *   1. 多数应用不会写 close();
+ *   2. 就算写了,close() 的释放是 run_on_js 投递的,而 teardown 之后事件循环
+ *      再也不会跑这条队列;
+ *   3. teardown_vm() 开头就递增了 generation,投递闭包里的 vm_stale 守卫必然为真。
+ * 所以只能由 teardown 钩子同步扫表释放 —— 即本类的存在意义。
+ */
+class SelfRef {
+ public:
+  SelfRef() = default;
+  ~SelfRef();
+  SelfRef(const SelfRef&) = delete;
+  SelfRef& operator=(const SelfRef&) = delete;
+
+  /** 仅 JS 线程:dup 并登记(重复 hold 先释放旧值) */
+  void hold(JSContext* ctx, JSValueConst obj);
+  /** 仅 JS 线程:释放并注销;VM 已重启时只注销(旧值随旧 runtime 回收) */
+  void release(JSContext* ctx);
+  /** 仅 VM teardown 钩子调用:无视 generation 守卫立刻释放 */
+  void teardown_release(JSContext* ctx);
+
+  bool empty() const { return JS_IsUndefined(v_); }
+  /** 借出引用(不转移所有权),供 JS_GetPropertyStr / JS_Call 的 this 使用 */
+  JSValueConst get() const { return v_; }
+
+ private:
+  JSValue v_ = JS_UNDEFINED;
+  JSContext* ctx_ = nullptr;
+  uint32_t gen_ = 0;
+};
+
 // ------------------------------------------------------------ 值转换
 
 /** JSValue → std::string(非 string 会被 ToString) */

@@ -284,10 +284,17 @@ interface PxAnimation {
   readonly playing: boolean;
   readonly frameCount: number;
   readonly currentFrame: number;
-  /** 把当前帧画到目标 (默认主屏) */
-  draw(x: number, y: number, target?: PxDrawTarget): void;
+  /** 把当前帧画到目标 (默认主屏)，缩放和裁剪参数与 drawImage 一致 */
+  draw(x: number, y: number, target?: PxDrawTarget, opts?: PxDrawImageOpts): void;
   onEnd(cb: () => void): Unsubscribe;
   dispose(): void;
+}
+
+interface PxGifLoadOpts {
+  /** 仅清除每帧中与画布边界连通的背景区域 */
+  removeBackground?: boolean;
+  /** RGB 欧氏距离容差，默认 44 */
+  backgroundThreshold?: number;
 }
 
 interface PxScreen extends PxDrawTarget {
@@ -318,7 +325,7 @@ interface PxScreen extends PxDrawTarget {
     loop?: boolean;
   }): PxAnimation;
   /** 加载 GIF 为动画对象 */
-  loadGif(src: string | BinaryLike): PxAnimation;
+  loadGif(src: string | BinaryLike, opts?: PxGifLoadOpts): PxAnimation;
 }
 
 // ------------------------------------------------------------

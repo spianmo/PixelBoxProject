@@ -30,7 +30,7 @@ ES8311 codec(`espressif/esp_codec_dev`)+ I2S std 双工,默认 16kHz / 单声道
 | `PcmBufferSource` | `player.playPcm`:整块 PCM 拷入 PSRAM |
 | `PcmRingSource` | `player.openPcmStream` / TTS 下行 / 解码器输出,支持 `feed/feed_blocking/end/stop/buffered_ms` |
 | `ToneSource` | `player.tone` 正弦合成(5ms 淡入淡出) |
-| `DecodeStream` | `player.play`:文件或 http(s) 流 → WAV 解析 / MP3 解码(`espressif/esp_audio_codec`)→ 内部 `PcmRingSource` |
+| `DecodeStream` | `player.play`:文件或 http(s) 流 → 跳过 ID3v2 标签 → WAV 解析 / MP3 解码(`espressif/esp_audio_codec`)→ 内部 `PcmRingSource`;暂停期间不累计背压超时，`resume()` 后继续解码 |
 
 多源同时播放时逐样本饱和混音;`Source::on_finished` 在播放任务上下文触发,
 绑定层负责经 `jsvm::post` 投递到 JS 线程。

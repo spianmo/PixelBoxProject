@@ -28,20 +28,9 @@ button_handle_t s_handles[3] = {nullptr, nullptr, nullptr};
 std::vector<std::function<void(ButtonKey, ButtonEventType)>> s_cbs;
 std::mutex s_cb_mtx;
 
-void emit(ButtonKey key, ButtonEventType t) {
-    std::vector<std::function<void(ButtonKey, ButtonEventType)>> cbs;
-    {
-        std::lock_guard<std::mutex> lk(s_cb_mtx);
-        cbs = s_cbs;
-    }
-    for (auto& cb : cbs) {
-        if (cb) cb(key, t);
-    }
-}
-
 void on_btn_event(void* /*btn_handle*/, void* usr_data) {
     const auto packed = reinterpret_cast<uintptr_t>(usr_data);
-    emit(static_cast<ButtonKey>(packed >> 8), static_cast<ButtonEventType>(packed & 0xFF));
+    button_emit(static_cast<ButtonKey>(packed >> 8), static_cast<ButtonEventType>(packed & 0xFF));
 }
 
 /** 注册一个 GPIO 键; active_level: 按下时的电平 */
@@ -86,6 +75,17 @@ esp_err_t add_key(ButtonKey key, int pin, int active_level, bool keep_pull = fal
 }
 
 }  // namespace
+
+void button_emit(ButtonKey key, ButtonEventType type) {
+    std::vector<std::function<void(ButtonKey, ButtonEventType)>> cbs;
+    {
+        std::lock_guard<std::mutex> lk(s_cb_mtx);
+        cbs = s_cbs;
+    }
+    for (auto& cb : cbs) {
+        if (cb) cb(key, type);
+    }
+}
 
 esp_err_t button_init() {
     if (s_handles[0] || s_handles[1] || s_handles[2]) return ESP_OK;

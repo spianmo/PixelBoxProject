@@ -778,11 +778,101 @@ struct GifFrames {
     std::vector<gfx::Surface> frames;
     std::vector<int> delays;
     size_t bytes = 0;
+    bool remove_background = false;
+    int background_threshold = 44;
+    bool background_failed = false;
 };
+
+/** 完整比较两张 RGB565 帧，识别 GIF 编码器附加的重复末帧。 */
+bool gif_frames_equal(const gfx::Surface &a, const gfx::Surface &b)
+{
+    if (!a.px || !b.px || a.w != b.w || a.h != b.h) return false;
+    const size_t row_bytes = static_cast<size_t>(a.w) * sizeof(uint16_t);
+    for (int y = 0; y < a.h; ++y) {
+        if (memcmp(a.row(y), b.row(y), row_bytes) != 0) return false;
+    }
+    return true;
+}
+
+/** 仅把与帧边界四连通的近背景色像素改为黑色。 */
+bool remove_gif_exterior_background(gfx::Surface &frame, int threshold)
+{
+    if (!frame.px || frame.w <= 0 || frame.h <= 0) return false;
+    const size_t count = static_cast<size_t>(frame.w) * frame.h;
+    auto *outside = static_cast<uint8_t *>(px_alloc_prefer_psram(count));
+    auto *queue = static_cast<int32_t *>(px_alloc_prefer_psram(count * sizeof(int32_t)));
+    if (!outside || !queue) {
+        if (outside) heap_caps_free(outside);
+        if (queue) heap_caps_free(queue);
+        return false;
+    }
+    memset(outside, 0, count);
+
+    const uint32_t corners[4] = {
+        gfx::to888(frame.row(0)[0]),
+        gfx::to888(frame.row(0)[frame.w - 1]),
+        gfx::to888(frame.row(frame.h - 1)[0]),
+        gfx::to888(frame.row(frame.h - 1)[frame.w - 1]),
+    };
+    int background[3] = {0, 0, 0};
+    for (const uint32_t color : corners) {
+        background[0] += static_cast<int>((color >> 16) & 0xFF);
+        background[1] += static_cast<int>((color >> 8) & 0xFF);
+        background[2] += static_cast<int>(color & 0xFF);
+    }
+    for (int &channel : background) channel /= 4;
+    const int threshold_sq = threshold * threshold;
+    size_t head = 0, tail = 0;
+
+    auto enqueue = [&](int pixel_index) {
+        if (outside[pixel_index]) return;
+        const int x = pixel_index % frame.w;
+        const int y = pixel_index / frame.w;
+        const uint32_t color = gfx::to888(frame.row(y)[x]);
+        const int dr = static_cast<int>((color >> 16) & 0xFF) - background[0];
+        const int dg = static_cast<int>((color >> 8) & 0xFF) - background[1];
+        const int db = static_cast<int>(color & 0xFF) - background[2];
+        if (dr * dr + dg * dg + db * db > threshold_sq) return;
+        outside[pixel_index] = 1;
+        queue[tail++] = pixel_index;
+    };
+
+    for (int x = 0; x < frame.w; ++x) {
+        enqueue(x);
+        enqueue((frame.h - 1) * frame.w + x);
+    }
+    for (int y = 1; y + 1 < frame.h; ++y) {
+        enqueue(y * frame.w);
+        enqueue(y * frame.w + frame.w - 1);
+    }
+    while (head < tail) {
+        const int pixel_index = queue[head++];
+        const int x = pixel_index % frame.w;
+        const int y = pixel_index / frame.w;
+        if (x > 0) enqueue(pixel_index - 1);
+        if (x + 1 < frame.w) enqueue(pixel_index + 1);
+        if (y > 0) enqueue(pixel_index - frame.w);
+        if (y + 1 < frame.h) enqueue(pixel_index + frame.w);
+    }
+
+    const uint16_t black = gfx::to565(0x000000);
+    for (size_t i = 0; i < count; ++i) {
+        if (outside[i]) frame.px[i] = black;
+    }
+    heap_caps_free(queue);
+    heap_caps_free(outside);
+    return true;
+}
 
 bool gif_collect_sink(void *user, gfx::Surface frame, int delay_ms)
 {
     auto *c = static_cast<GifFrames *>(user);
+    if (c->remove_background &&
+        !remove_gif_exterior_background(frame, c->background_threshold)) {
+        gfx::destroy_surface(&frame);
+        c->background_failed = true;
+        return false;
+    }
     c->frames.push_back(frame);
     c->delays.push_back(delay_ms);
     c->bytes += static_cast<size_t>(frame.w) * frame.h * 2;
@@ -793,6 +883,25 @@ bool gif_collect_sink(void *user, gfx::Surface frame, int delay_ms)
 JSValue js_load_gif_frames(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
 {
     if (argc < 1) return throw_error(ctx, "__loadGifFrames(src) 参数不足");
+
+    bool remove_background = false;
+    int32_t background_threshold = 44;
+    if (argc >= 2 && JS_IsObject(argv[1]) && !JS_IsNull(argv[1])) {
+        JSValue remove_value = JS_GetPropertyStr(ctx, argv[1], "removeBackground");
+        if (!JS_IsUndefined(remove_value)) remove_background = JS_ToBool(ctx, remove_value) > 0;
+        JS_FreeValue(ctx, remove_value);
+
+        JSValue threshold_value = JS_GetPropertyStr(ctx, argv[1], "backgroundThreshold");
+        if (!JS_IsUndefined(threshold_value) &&
+            JS_ToInt32(ctx, &background_threshold, threshold_value) != 0) {
+            JS_FreeValue(ctx, threshold_value);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, threshold_value);
+        if (background_threshold < 0 || background_threshold > 255) {
+            return JS_ThrowRangeError(ctx, "backgroundThreshold 须为 0-255");
+        }
+    }
 
     const uint8_t *data = nullptr;
     size_t len = 0;
@@ -812,11 +921,20 @@ JSValue js_load_gif_frames(JSContext *ctx, JSValueConst, int argc, JSValueConst 
     }
 
     GifFrames gc;
+    gc.remove_background = remove_background;
+    gc.background_threshold = background_threshold;
     const int n = img::decode_gif(data, len, 256, gif_collect_sink, &gc);
     if (file_buf) heap_caps_free(file_buf);
-    if (n <= 0) {
+    if (n <= 0 || gc.background_failed || gc.frames.empty()) {
         for (auto &f : gc.frames) gfx::destroy_surface(&f);
-        return throw_error(ctx, "GIF 解码失败");
+        return throw_error(ctx, gc.background_failed ? "GIF 去背景内存不足" : "GIF 解码失败");
+    }
+
+    // 无限循环 GIF 常把首帧复制到末尾；保留一份即可避免边界停顿。
+    if (gc.frames.size() > 1 && gif_frames_equal(gc.frames.front(), gc.frames.back())) {
+        gfx::destroy_surface(&gc.frames.back());
+        gc.frames.pop_back();
+        gc.delays.pop_back();
     }
 
     JSValue frames = JS_NewArray(ctx);
@@ -918,7 +1036,7 @@ void screen_native_init(JSContext *ctx, JSValue px)
     JS_DefinePropertyValueStr(ctx, screen, "__decodeImage",
                               JS_NewCFunction(ctx, js_decode_image, "__decodeImage", 1), 0);
     JS_DefinePropertyValueStr(ctx, screen, "__loadGifFrames",
-                              JS_NewCFunction(ctx, js_load_gif_frames, "__loadGifFrames", 1), 0);
+                              JS_NewCFunction(ctx, js_load_gif_frames, "__loadGifFrames", 2), 0);
     JS_DefinePropertyValueStr(ctx, screen, "__isCanvas",
                               JS_NewCFunction(ctx, js_is_canvas, "__isCanvas", 1), 0);
 

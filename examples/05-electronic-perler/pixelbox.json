@@ -1,0 +1,12 @@
+{
+  "id": "com.pixelbox.examples.electronic-perler",
+  "name": "电子拼豆",
+  "version": "1.0.0",
+  "entry": "main.js",
+  "assets": [
+    "index.html",
+    "style.css",
+    "app.js"
+  ],
+  "minFirmware": "0.1.0"
+}
