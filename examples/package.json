@@ -14,7 +14,8 @@
     "test:obeing": "node scripts/test-obeing-pixel.mjs",
     "render:obeing": "node scripts/render-obeing-pixel.mjs",
     "test:harness": "node 07-obeing-harness/test.mjs",
-    "render:harness": "node 07-obeing-harness/render-check.mjs"
+    "render:harness": "node 07-obeing-harness/render-check.mjs",
+    "test:crash-card": "node scripts/test-crash-card.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.23.1",

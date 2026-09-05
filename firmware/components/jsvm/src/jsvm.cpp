@@ -148,6 +148,26 @@ void notify_state(VmState st, const char *err = nullptr)
     }
 }
 
+std::mutex s_err_sink_mutex;
+std::vector<ErrorSink> s_err_sinks;
+
+/**
+ * 未捕获异常的统一出口: 照旧打 E 级日志 (文案不变, devd/探针按文案匹配),
+ * 再通知 sink —— 屏幕上的报错卡片就挂在这里。
+ */
+void report_js_error(const char *origin, const std::string &msg, bool fatal = false)
+{
+    internal::dispatch_log(3, "js", msg.c_str());
+    std::vector<ErrorSink> sinks;
+    {
+        std::lock_guard<std::mutex> lk(s_err_sink_mutex);
+        sinks = s_err_sinks;
+    }
+    for (auto sink : sinks) {
+        sink(origin, msg.c_str(), fatal);
+    }
+}
+
 void handle_possible_oom(const std::string &msg)
 {
     if (msg.find("out of memory") == std::string::npos) {
@@ -268,7 +288,7 @@ void promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
         return;
     }
     std::string msg = "未处理的 Promise 拒绝: " + value_error_string(ctx, reason);
-    internal::dispatch_log(3, "js", msg.c_str());
+    report_js_error("Promise 拒绝", msg);
     handle_possible_oom(msg);
 }
 
@@ -290,7 +310,7 @@ void pump_jobs()
         }
         if (r < 0) {
             std::string msg = "微任务异常: " + format_exception(jctx ? jctx : s_ctx);
-            internal::dispatch_log(3, "js", msg.c_str());
+            report_js_error("微任务", msg);
         }
         if (++guard > 1024) {
             ESP_LOGW(TAG, "Promise job 连续执行超过 1024 次, 让出事件循环");
@@ -321,7 +341,7 @@ void teardown_vm(bool notify_stopped)
             hook(s_ctx);
             if (JS_HasException(s_ctx)) {
                 std::string msg = "onExit 收尾异常: " + format_exception(s_ctx);
-                internal::dispatch_log(3, "js", msg.c_str());
+                report_js_error("onExit", msg);
             }
         }
     }
@@ -412,7 +432,7 @@ bool boot_vm()
             m.init(s_ctx, px);
             if (JS_HasException(s_ctx)) {
                 std::string msg = std::string("模块 ") + m.name + " 初始化异常: " + format_exception(s_ctx);
-                internal::dispatch_log(3, "js", msg.c_str());
+                report_js_error("模块初始化", msg);
             }
         }
     }
@@ -422,7 +442,7 @@ bool boot_vm()
             JSValue r = JS_Eval(s_ctx, m.prelude, strlen(m.prelude), fname.c_str(), JS_EVAL_TYPE_GLOBAL);
             if (JS_IsException(r)) {
                 std::string msg = std::string("模块 ") + m.name + " prelude 异常: " + format_exception(s_ctx);
-                internal::dispatch_log(3, "js", msg.c_str());
+                report_js_error("模块 prelude", msg);
             }
             JS_FreeValue(s_ctx, r);
         }
@@ -441,7 +461,7 @@ bool boot_vm()
                             es.filename.c_str(), JS_EVAL_TYPE_GLOBAL);
         if (JS_IsException(r)) {
             std::string err = "应用入口异常: " + format_exception(s_ctx);
-            internal::dispatch_log(3, "js", err.c_str());
+            report_js_error("应用入口", err, true);
             JS_FreeValue(s_ctx, r);
             notify_state(VmState::Crashed, err.c_str());
             teardown_vm(false);
@@ -461,7 +481,7 @@ void run_one_job(std::function<void()> *job)
     delete job;
     if (s_ctx && JS_HasException(s_ctx)) {
         std::string msg = "事件回调异常: " + format_exception(s_ctx);
-        internal::dispatch_log(3, "js", msg.c_str());
+        report_js_error("事件回调", msg);
     }
 }
 
@@ -720,7 +740,17 @@ void dump_error(JSContext *ctx)
         return;
     }
     std::string msg = "未捕获异常: " + format_exception(ctx);
-    internal::dispatch_log(3, "js", msg.c_str());
+    /* 调用方遍布 onFrame / 定时器 / BLE / voice 等原生回调点, 统称"回调" */
+    report_js_error("回调", msg);
+}
+
+void add_error_sink(ErrorSink sink)
+{
+    if (!sink) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(s_err_sink_mutex);
+    s_err_sinks.push_back(sink);
 }
 
 /* ------------------------------------------------------------

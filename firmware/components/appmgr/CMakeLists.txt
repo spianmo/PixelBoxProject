@@ -6,5 +6,5 @@ idf_component_register(
     INCLUDE_DIRS include
     EMBED_TXTFILES src/default_app.js src/settings_app.js
     REQUIRES jsvm
-    PRIV_REQUIRES json mbedtls esp_app_format
+    PRIV_REQUIRES json mbedtls esp_app_format errscreen
     WHOLE_ARCHIVE)

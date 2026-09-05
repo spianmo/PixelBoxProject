@@ -9,8 +9,16 @@ export const MAX_MUSIC_URL_LENGTH = 1024;
 export const PATTERN_STORAGE_KEY = 'perler.pattern';
 export const MODE_STORAGE_KEY = 'perler.mode';
 export const MEDIA_STORAGE_KEY = 'perler.media';
+export const MUSIC_STORAGE_KEY = 'perler.music';
 
 export type DisplayMode = 'pattern' | 'image' | 'gif';
+export type PersistedMusicState = 'playing' | 'paused';
+
+export interface PersistedMusic {
+  v: 1;
+  url: string;
+  state: PersistedMusicState;
+}
 
 export interface MediaCrop {
   x: number;
@@ -51,6 +59,19 @@ export function parseMusicUrl(raw: unknown): string {
   if (url.length > MAX_MUSIC_URL_LENGTH) return fail(`MP3 地址不能超过 ${MAX_MUSIC_URL_LENGTH} 个字符`);
   if (!/^https?:\/\/[^\s]+$/i.test(url)) return fail('MP3 地址必须使用 http:// 或 https://');
   return url;
+}
+
+/** 校验 NVS 中用于应用重启恢复的音乐地址与播放意图。 */
+export function parseMusicPreference(raw: unknown): PersistedMusic {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return fail('音乐恢复信息必须是 JSON 对象');
+  }
+  const obj = raw as Record<string, unknown>;
+  if (obj.v !== 1) return fail('不支持的音乐恢复版本');
+  if (obj.state !== 'playing' && obj.state !== 'paused') {
+    return fail('音乐恢复状态必须是 playing 或 paused');
+  }
+  return { v: 1, url: parseMusicUrl(obj), state: obj.state };
 }
 
 /** 校验文件媒体元数据，实际文件长度会在 commit 时再次核对。 */

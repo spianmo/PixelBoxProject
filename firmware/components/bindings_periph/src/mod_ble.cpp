@@ -96,6 +96,26 @@ void reset_char_cbs(JSContext* ctx) {
     s_char_cbs.clear();
 }
 
+/**
+ * VM teardown 钩子:无条件释放 onRead 引用。
+ *
+ * 不能复用 reset_char_cbs —— teardown_vm() 开头就递增了 generation, 那里的
+ * `s_char_gen == vm_generation()` 必然不成立, 引用会被"直接丢弃"而不是释放。
+ * 丢弃对已销毁的旧 runtime 才成立; 而此刻 runtime 还没销毁, 漏掉的引用会让
+ * JS_FreeRuntime 的 `assert(list_empty(&rt->gc_obj_list))` 当场 abort ——
+ * 表现是整机 panic 重启, 不是"只重启 VM"。触发条件: 开着 BLE 外设 onRead 的
+ * 应用运行时按键1 切设置页。其余 JS 回调走 jsvm::Callback, 由 VM 自行收尾。
+ */
+void ble_teardown(JSContext* ctx) {
+    std::lock_guard<std::mutex> lk(s_char_mtx);
+    if (ctx != nullptr) {
+        for (auto& c : s_char_cbs) {
+            if (c.has_on_read) JS_FreeValue(ctx, c.on_read_fn);
+        }
+    }
+    s_char_cbs.clear();
+}
+
 // ---- §3 onRead 同步读桥 ----
 
 struct ReadBridge {
@@ -791,6 +811,12 @@ void ble_init(JSContext* ctx, JSValue px) {
         s_disc_entries.clear();
     }
     reset_char_cbs(nullptr);  // 跨 VM:旧引用随 runtime 销毁, 直接丢弃
+
+    static bool s_teardown_hooked = false;
+    if (!s_teardown_hooked) {
+        s_teardown_hooked = true;
+        jsvm::add_teardown_hook(ble_teardown);  // 见 ble_teardown 注释:防整机 panic
+    }
 
     JSValue ble = JS_NewObject(ctx);
     pxb::def_fn(ctx, ble, "available", js_available, 0);

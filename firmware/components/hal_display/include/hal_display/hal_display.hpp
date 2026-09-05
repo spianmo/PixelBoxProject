@@ -45,6 +45,24 @@ void mark_dirty(int x, int y, int w, int h);
 /** 推送脏区到面板并等待完成; 无脏区时直接返回 ESP_OK */
 esp_err_t flush();
 
+/**
+ * 帧缓冲覆盖层 (系统级浮层: 错误卡片/横幅等)。
+ *
+ * flush() 内部时序: pre() → 推送脏区 → post()。pre 把浮层"盖"进帧缓冲并自行
+ * mark_dirty (故 pre 在"无脏区直接返回"之前调用), post 负责把被覆盖的像素原样
+ * 写回 —— 应用的帧缓冲内容因此永不被永久破坏, 取消浮层只需 mark_dirty + flush。
+ *
+ * 回调在 flush() 的调用线程 (js_task) 上同步执行, 不得阻塞/不得再调 flush。
+ * 熄屏 (get_power() == false) 时整体跳过。
+ */
+struct Overlay {
+    void (*pre)(gfx::Surface &fb, int w, int h) = nullptr;
+    void (*post)(gfx::Surface &fb, int w, int h) = nullptr;
+};
+
+/** 设置/取消覆盖层 (nullptr = 取消); 指针须在取消前保持有效 */
+void set_overlay(const Overlay *ov);
+
 /** 亮度 0-100 (SH8601 命令 0x51, 线性映射到 0-255) */
 esp_err_t set_brightness(int percent);
 int get_brightness();

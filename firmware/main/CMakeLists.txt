@@ -6,7 +6,7 @@ idf_component_register(
     SRCS main.cpp system_keys.cpp
     REQUIRES
         boards hal_common jsvm appmgr devd
-        hal_display bindings_screen
+        hal_display bindings_screen errscreen
         hal_audio bindings_audio voicechat bindings_speech
         hal_net bindings_net wifi_portal
         hal_periph bindings_periph

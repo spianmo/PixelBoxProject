@@ -24,6 +24,16 @@ const patternModule = await import(
   `data:text/javascript;base64,${Buffer.from(patternBundle.outputFiles[0].text).toString('base64')}`
 );
 
+const mainBundle = await build({
+  entryPoints: [join(examplesRoot, '05-electronic-perler', 'src', 'main.ts')],
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2020',
+  write: false,
+  logLevel: 'silent',
+});
+
 const imagesBundle = await build({
   entryPoints: [join(
     examplesRoot,
@@ -78,10 +88,134 @@ function loadAnimationPrelude() {
   };
 }
 
+function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, options = {}) {
+  const writes = [];
+  const removals = [];
+  const playUrls = [];
+  const handle = {
+    pauseCount: 0,
+    resumeCount: 0,
+    stopCount: 0,
+    pause() { this.pauseCount++; },
+    resume() { this.resumeCount++; },
+    stop() { this.stopCount++; },
+    onEnded() { return () => {}; },
+  };
+  let buttonCallback = null;
+  let exitCallback = null;
+  let frameCallback = null;
+  let resolvePlay = null;
+  let gifPlayCount = 0;
+  let gifDrawCount = 0;
+  let gifLoadFailures = options.gifLoadFailures ?? 0;
+  const animation = {
+    play() { gifPlayCount++; },
+    draw() { gifDrawCount++; },
+    dispose() {},
+  };
+  const px = {
+    storage: {
+      kv: {
+        getJSON(key) {
+          if (key === 'perler.music') return savedMusic;
+          if (key === 'perler.media') return savedMedia;
+          return null;
+        },
+        get(key) { return key === 'perler.mode' ? savedMode : null; },
+        set(key, value) { writes.push({ key, value }); },
+        remove(key) { removals.push(key); },
+      },
+      fs: {
+        exists() { return false; },
+        remove() {},
+        stat() { return savedMedia ? { size: savedMedia.size } : null; },
+      },
+    },
+    audio: {
+      player: {
+        play(url) {
+          playUrls.push(url);
+          if (options.deferPlay) {
+            return new Promise((resolve) => { resolvePlay = resolve; });
+          }
+          return Promise.resolve(handle);
+        },
+      },
+    },
+    input: {
+      onButton(callback) {
+        buttonCallback = callback;
+        return () => {};
+      },
+    },
+    wifi: { status: () => ({ ip: '192.168.1.8' }) },
+    net: {
+      hostname: () => 'pixelbox',
+      listenTcp: () => ({ close() {} }),
+      mdns: { advertise: () => () => {} },
+    },
+    screen: {
+      width: 368,
+      height: 448,
+      clear() {},
+      measureText(text) { return { width: text.length * 8, height: 8 }; },
+      drawText() {},
+      loadGif() {
+        if (gifLoadFailures > 0) {
+          gifLoadFailures--;
+          throw new Error('模拟 GIF 瞬时恢复失败');
+        }
+        return animation;
+      },
+      setFps() {},
+      onFrame(callback) {
+        frameCallback = callback;
+        return () => {};
+      },
+    },
+    app: {
+      onExit(callback) { exitCallback = callback; },
+    },
+  };
+  runInNewContext(mainBundle.outputFiles[0].text, {
+    px,
+    console: { log() {}, warn() {}, error() {} },
+    TextEncoder,
+    TextDecoder,
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 1,
+    clearInterval() {},
+  });
+  return {
+    writes,
+    removals,
+    playUrls,
+    handle,
+    get gifPlayCount() { return gifPlayCount; },
+    get gifDrawCount() { return gifDrawCount; },
+    pressPower() { buttonCallback?.({ id: 'power', type: 'click' }); },
+    finishPlay() { resolvePlay?.(handle); },
+    tickFrame() { frameCallback?.(16); },
+    exit() { exitCallback?.(); },
+  };
+}
+
 let passed = 0;
 function test(name, fn) {
   try {
     fn();
+    passed++;
+    console.log(`[OK] ${name}`);
+  } catch (error) {
+    console.error(`[FAIL] ${name}`);
+    throw error;
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
     passed++;
     console.log(`[OK] ${name}`);
   } catch (error) {
@@ -196,6 +330,7 @@ test('持久化键不超过 ESP-IDF NVS 的 15 字节限制', () => {
   assert.ok(Buffer.byteLength(patternModule.PATTERN_STORAGE_KEY, 'utf8') <= 15);
   assert.ok(Buffer.byteLength(patternModule.MODE_STORAGE_KEY, 'utf8') <= 15);
   assert.ok(Buffer.byteLength(patternModule.MEDIA_STORAGE_KEY, 'utf8') <= 15);
+  assert.ok(Buffer.byteLength(patternModule.MUSIC_STORAGE_KEY, 'utf8') <= 15);
 });
 
 test('音乐协议接受 HTTP(S) MP3 地址并清理首尾空白', () => {
@@ -214,6 +349,176 @@ test('音乐协议拒绝空地址、非 HTTP(S) 协议和超长地址', () => {
     () => patternModule.parseMusicUrl({ url: `https://example.com/${'a'.repeat(1024)}` }),
     /不能超过 1024/,
   );
+});
+
+test('音乐恢复协议持久化地址及播放或暂停状态', () => {
+  assert.deepEqual(
+    patternModule.parseMusicPreference({
+      v: 1,
+      url: '  https://media.example.com/music.mp3  ',
+      state: 'playing',
+    }),
+    { v: 1, url: 'https://media.example.com/music.mp3', state: 'playing' },
+  );
+  assert.equal(
+    patternModule.parseMusicPreference({
+      v: 1,
+      url: 'http://192.168.1.8/song.mp3',
+      state: 'paused',
+    }).state,
+    'paused',
+  );
+});
+
+test('音乐恢复协议拒绝未知版本和无效状态', () => {
+  assert.throws(
+    () => patternModule.parseMusicPreference({
+      v: 2,
+      url: 'https://media.example.com/music.mp3',
+      state: 'playing',
+    }),
+    /版本/,
+  );
+  assert.throws(
+    () => patternModule.parseMusicPreference({
+      v: 1,
+      url: 'https://media.example.com/music.mp3',
+      state: 'stopped',
+    }),
+    /playing 或 paused/,
+  );
+});
+
+await testAsync('应用重启保持暂停，键2才重新连接且退出不清除记录', async () => {
+  const runtime = loadPerlerRuntime({
+    v: 1,
+    url: 'https://media.example.com/music.mp3',
+    state: 'paused',
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(runtime.playUrls, []);
+
+  runtime.pressPower();
+  assert.deepEqual(runtime.playUrls, ['https://media.example.com/music.mp3']);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(runtime.handle.pauseCount, 0);
+  assert.equal(runtime.handle.resumeCount, 0);
+  const lastWrite = runtime.writes.at(-1);
+  assert.equal(lastWrite?.key, 'perler.music');
+  assert.equal(lastWrite?.value?.v, 1);
+  assert.equal(lastWrite?.value?.url, 'https://media.example.com/music.mp3');
+  assert.equal(lastWrite?.value?.state, 'playing');
+
+  runtime.exit();
+  assert.equal(runtime.handle.stopCount, 1);
+  assert.equal(runtime.removals.includes('perler.music'), false);
+});
+
+await testAsync('应用重启自动恢复播放中的音乐', async () => {
+  const runtime = loadPerlerRuntime({
+    v: 1,
+    url: 'https://media.example.com/playing.mp3',
+    state: 'playing',
+  });
+  assert.deepEqual(runtime.playUrls, []);
+  runtime.tickFrame();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(runtime.playUrls, ['https://media.example.com/playing.mp3']);
+  runtime.exit();
+  assert.equal(runtime.handle.stopCount, 1);
+  assert.equal(runtime.removals.includes('perler.music'), false);
+});
+
+await testAsync('音乐连接中按键2会在连接完成后暂停，再按继续', async () => {
+  const runtime = loadPerlerRuntime(
+    {
+      v: 1,
+      url: 'https://media.example.com/loading.mp3',
+      state: 'playing',
+    },
+    null,
+    null,
+    { deferPlay: true },
+  );
+  runtime.tickFrame();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(runtime.playUrls, ['https://media.example.com/loading.mp3']);
+
+  runtime.pressPower();
+  assert.equal(runtime.writes.at(-1)?.value?.state, 'paused');
+  runtime.finishPlay();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(runtime.handle.pauseCount, 1);
+
+  runtime.pressPower();
+  assert.equal(runtime.handle.resumeCount, 1);
+  assert.equal(runtime.writes.at(-1)?.value?.state, 'playing');
+});
+
+await testAsync('GIF 原图先恢复首帧，再启动持久化音乐', async () => {
+  const runtime = loadPerlerRuntime(
+    {
+      v: 1,
+      url: 'https://media.example.com/playing.mp3',
+      state: 'playing',
+    },
+    {
+      v: 1,
+      kind: 'gif',
+      slot: 0,
+      size: 128,
+      width: 16,
+      height: 16,
+      removeBackground: false,
+      backgroundThreshold: 44,
+      crop: null,
+    },
+    'gif',
+  );
+  assert.equal(runtime.gifPlayCount, 1);
+  assert.deepEqual(runtime.playUrls, []);
+
+  runtime.tickFrame();
+  assert.equal(runtime.gifDrawCount, 1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(runtime.playUrls, ['https://media.example.com/playing.mp3']);
+});
+
+await testAsync('GIF 瞬时恢复失败不会回退成拼豆并会自动重试', async () => {
+  const runtime = loadPerlerRuntime(
+    null,
+    {
+      v: 1,
+      kind: 'gif',
+      slot: 0,
+      size: 128,
+      width: 16,
+      height: 16,
+      removeBackground: false,
+      backgroundThreshold: 44,
+      crop: null,
+    },
+    'gif',
+    { gifLoadFailures: 1 },
+  );
+  assert.equal(runtime.gifPlayCount, 0);
+  assert.equal(runtime.removals.includes('perler.media'), false);
+  assert.equal(
+    runtime.writes.some((item) => item.key === 'perler.mode' && item.value === 'pattern'),
+    false,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(runtime.gifPlayCount, 1);
+  runtime.tickFrame();
+  assert.equal(runtime.gifDrawCount, 1);
 });
 
 test('媒体协议接受 2 MiB 上限内的 GIF', () => {

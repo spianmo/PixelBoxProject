@@ -74,6 +74,8 @@ struct State {
     esp_lcd_panel_handle_t panel = nullptr;
     spi_host_device_t spi_host = SPI2_HOST;
     SemaphoreHandle_t trans_done = nullptr;
+
+    const Overlay *overlay = nullptr;  // 系统浮层 (错误卡片/横幅), 见 flush()
 };
 
 State s;
@@ -399,10 +401,15 @@ void mark_dirty(int x, int y, int w, int h)
 esp_err_t flush()
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
-    if (s.dirty_count == 0) return ESP_OK;
-    if (!s.power) {  // 熄屏时丢弃推送, 保留脏区待亮屏
+    if (!s.power) {  // 熄屏时丢弃推送, 保留脏区待亮屏 (浮层同样跳过)
         return ESP_OK;
     }
+    const Overlay *ov = s.overlay;
+    // 常态快速出口: 没有覆盖层且没有脏区, 无事可做。有覆盖层时不能走这条路 ——
+    // pre() 要靠本次 flush 把浮层叠上去 (它自己标脏), 且 pre/post 必须成对执行。
+    if (!ov && s.dirty_count == 0) return ESP_OK;
+    if (ov && ov->pre) ov->pre(s.fb, s.fb.w, s.fb.h);  // 浮层自行 mark_dirty
+
     esp_err_t err = ESP_OK;
     for (int i = 0; i < s.dirty_count && err == ESP_OK; ++i) {
         Rect p = to_physical(s.dirty[i]);
@@ -430,8 +437,12 @@ esp_err_t flush()
         }
     }
     s.dirty_count = 0;
+
+    if (ov && ov->post) ov->post(s.fb, s.fb.w, s.fb.h);  // 恢复被浮层覆盖的像素
     return err;
 }
+
+void set_overlay(const Overlay *ov) { s.overlay = ov; }
 
 esp_err_t set_brightness(int percent)
 {

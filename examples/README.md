@@ -32,3 +32,14 @@ pnpm install    # 仓库根执行(pnpm workspace);失败时加 --registry=https:
 cd examples
 pnpm run build  # 对每个示例执行 tsc --noEmit + esbuild --bundle → dist/main.js
 ```
+
+## 真机探针(需设备在网)
+
+```bash
+pnpm run test:crash-card              # 默认 IP 192.168.1.202
+node scripts/test-crash-card.mjs <设备IP>
+```
+
+推送三个故意出错的最小应用,验证「屏上报错」三条通路(横幅 / 刷屏升级 / 入口崩溃,
+见 [排错手册 §10.1](../docs/troubleshooting.md)),跑完把 05-electronic-perler 推回去。
+日志断言自动完成,屏幕表现按脚本每步打印的「人工核对」逐条看。

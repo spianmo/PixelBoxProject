@@ -37,6 +37,12 @@ import {
   type VoiceStatePayload,
   type NetEventPayload
 } from './protocol'
+import {
+  ensureErrorCardFonts,
+  paintBanner,
+  paintFatalCard,
+  type ErrorCardInfo
+} from './errorCard'
 import { AudioPlayerHost } from './host/audioPlayerHost'
 import { MicHost } from './host/micHost'
 import { CameraHost } from './host/cameraHost'
@@ -69,6 +75,11 @@ const DEFAULT_PERIPH: PeriphSnapshot = {
 
 const LOAD_TIMEOUT_MS = 15000
 const EXIT_GRACE_MS = 400
+
+/* 异常提示节奏(与固件 errscreen.cpp 的三个常量对齐) */
+const BANNER_HOLD_MS = 5000
+const BURST_WINDOW_MS = 3000
+const BURST_LIMIT = 5
 
 /** 引擎构造参数(阶段 2:每个「运行的设备」tab 一个引擎实例) */
 export interface EngineOptions {
@@ -128,7 +139,21 @@ export class SimEngine {
 
   private iframe: HTMLIFrameElement | null = null
   private screenCanvas: HTMLCanvasElement | null = null
+  /** 沙箱送来的原始帧(不含异常横幅);横幅撤下后据此还原 */
+  private cleanFrame: ImageData | null = null
+  /** 实际呈现的帧(= cleanFrame 叠加横幅,或异常卡片);截图/重挂画布都取它 */
   private latestFrame: ImageData | null = null
+
+  /** 顶部横幅状态(null = 无);计数用于 ×N 与刷屏升级 */
+  private banner: ErrorCardInfo | null = null
+  private bannerTimer: number | null = null
+  private burstKey = ''
+  private burstStart = 0
+  private burstCount = 0
+  /** 叠加横幅用的离屏画布(逐帧复用,免得每帧新建) */
+  private scratch: HTMLCanvasElement | null = null
+  /** 全屏卡片是否正占着屏幕(决定下次 load 要不要先清屏) */
+  private fatalShown = false
 
   private playerHost: AudioPlayerHost
   private micHost: MicHost
@@ -185,6 +210,9 @@ export class SimEngine {
     this.periphStore.subscribe(() => {
       this.postEvent('periph', this.periphStore.get())
     })
+
+    // 异常卡片用的像素字体:提前注册,真出错时不必等加载
+    void ensureErrorCardFonts()
 
     // 全局消息路由(按 source 过滤;多实例并存时各自只处理自己 iframe 的消息)
     this.onWindowMessage = (ev: MessageEvent): void => {
@@ -273,6 +301,9 @@ export class SimEngine {
   private async load(bundleCode: string, manifest: SimManifest): Promise<void> {
     // 热重载:先优雅停止旧应用
     await this.stopAsync(false)
+    // 撤下上一轮的异常提示(真机侧对应 VmState::Running → errscreen::hide())
+    this.clearBanner(false)
+    this.dismissFatalCard()
 
     const ctx = window.__pixelboxSimContext
     if (!ctx) {
@@ -388,10 +419,107 @@ export class SimEngine {
     this.netRelay = null
   }
 
-  private crash(message: string): void {
+  /**
+   * 应用崩溃:拆沙箱 + 全屏错误卡片。
+   * message 进外壳状态栏(单行),opts.detail 是卡片正文(含堆栈,默认同 message)。
+   */
+  private crash(message: string, opts?: { detail?: string; hint?: string }): void {
+    const info: ErrorCardInfo = {
+      app: this.lastManifest?.name ?? this.uiStore.get().appName,
+      version: this.lastManifest?.version,
+      message: opts?.detail ?? message,
+      hint: opts?.hint,
+      repeat: this.banner?.repeat ?? 1
+    }
     this.teardownSandbox()
+    this.clearBanner(false)
     this.uiStore.set({ running: false, appName: null })
+    this.paintFatal(info)
     this.dispatchState('crashed', message)
+  }
+
+  // ---------------------------------------------------------------
+  // 异常提示(与固件 errscreen 同款:横幅 5s,同错刷屏升级为全屏卡片)
+  // ---------------------------------------------------------------
+
+  /** 全屏卡片直接顶替当前帧 —— 应用已经停了,没人再画 */
+  private paintFatal(info: ErrorCardInfo): void {
+    const w = this.profile.screenW
+    const h = this.profile.screenH
+    const ctx = this.scratchCtx(w, h)
+    if (!ctx) return
+    paintFatalCard(ctx, w, h, info)
+    this.cleanFrame = null
+    this.fatalShown = true
+    this.latestFrame = ctx.getImageData(0, 0, w, h)
+    this.screenCanvas?.getContext('2d')?.putImageData(this.latestFrame, 0, 0)
+    this.onFrame?.()
+  }
+
+  /** 卡片是直接顶替帧的:清成黑屏,免得新应用只画局部时露出残影 */
+  private dismissFatalCard(): void {
+    if (!this.fatalShown) return
+    this.fatalShown = false
+    const w = this.profile.screenW
+    const h = this.profile.screenH
+    const ctx = this.scratchCtx(w, h)
+    if (!ctx) return
+    ctx.fillStyle = '#000000'
+    ctx.fillRect(0, 0, w, h)
+    this.latestFrame = ctx.getImageData(0, 0, w, h)
+    this.screenCanvas?.getContext('2d')?.putImageData(this.latestFrame, 0, 0)
+    this.onFrame?.()
+  }
+
+  /** 非致命异常 → 顶部横幅;同一摘要 3s 内 5 次判为刷屏,升级并停应用 */
+  private reportError(message: string): void {
+    const summary = message.split('\n')[0]?.trim() || '未知错误'
+    const now = performance.now()
+    if (summary === this.burstKey && now - this.burstStart < BURST_WINDOW_MS) {
+      this.burstCount++
+    } else {
+      this.burstKey = summary
+      this.burstStart = now
+      this.burstCount = 1
+    }
+
+    if (this.burstCount >= BURST_LIMIT) {
+      this.log('error', `同一异常 ${BURST_WINDOW_MS / 1000} 秒内 ${BURST_LIMIT} 次,停止应用`)
+      this.banner = { message, repeat: this.burstCount }
+      this.crash(summary, {
+        detail: message,
+        hint: '同一错误反复发生,应用已停止 · 工具栏「重新加载」重启'
+      })
+      return
+    }
+
+    this.banner = { message, repeat: this.burstCount }
+    if (this.bannerTimer !== null) clearTimeout(this.bannerTimer)
+    this.bannerTimer = window.setTimeout(() => this.clearBanner(true), BANNER_HOLD_MS)
+    this.present()
+  }
+
+  /** 撤下横幅;repaint = 立刻用干净帧重画(应用已停时无帧可重画) */
+  private clearBanner(repaint: boolean): void {
+    if (this.bannerTimer !== null) {
+      clearTimeout(this.bannerTimer)
+      this.bannerTimer = null
+    }
+    this.burstKey = ''
+    this.burstCount = 0
+    if (!this.banner) return
+    this.banner = null
+    if (repaint) this.present()
+  }
+
+  /** 离屏画布(叠横幅 / 画卡片共用) */
+  private scratchCtx(w: number, h: number): CanvasRenderingContext2D | null {
+    if (!this.scratch) this.scratch = document.createElement('canvas')
+    if (this.scratch.width !== w || this.scratch.height !== h) {
+      this.scratch.width = w
+      this.scratch.height = h
+    }
+    return this.scratch.getContext('2d', { willReadFrequently: true })
   }
 
   // ---------------------------------------------------------------
@@ -466,7 +594,7 @@ export class SimEngine {
         this.log('error', d.stack ?? d.message)
         const waiter = this.loadWaiter
         this.loadWaiter = null
-        this.crash(d.message)
+        this.crash(d.message, { detail: d.stack ?? d.message })
         waiter?.reject(new Error(d.message))
         break
       }
@@ -477,8 +605,10 @@ export class SimEngine {
       }
       case 'uncaught': {
         const d = msg.data as UncaughtPayload
-        this.log('error', d.stack ? `${d.message}\n${d.stack}` : d.message)
-        if (d.fatal) this.crash(d.message)
+        const text = d.stack ? `${d.message}\n${d.stack}` : d.message
+        this.log('error', text)
+        if (d.fatal) this.crash(d.message, { detail: text })
+        else this.reportError(text)
         break
       }
       case 'frame': {
@@ -521,9 +651,26 @@ export class SimEngine {
   private paintFrame(d: FramePayload): void {
     const data = new Uint8ClampedArray(d.buf)
     if (data.length !== d.width * d.height * 4) return
-    this.latestFrame = new ImageData(data, d.width, d.height)
+    this.cleanFrame = new ImageData(data, d.width, d.height)
+    this.present()
+  }
+
+  /** 呈现当前帧:有横幅就叠上去(真机侧对应 flush 的覆盖层钩子) */
+  private present(): void {
+    const clean = this.cleanFrame
+    if (!clean) return
+    let frame = clean
+    if (this.banner) {
+      const ctx = this.scratchCtx(clean.width, clean.height)
+      if (ctx) {
+        ctx.putImageData(clean, 0, 0)
+        paintBanner(ctx, clean.width, clean.height, this.banner)
+        frame = ctx.getImageData(0, 0, clean.width, clean.height)
+      }
+    }
+    this.latestFrame = frame
     if (this.screenCanvas) {
-      this.screenCanvas.getContext('2d')?.putImageData(this.latestFrame, 0, 0)
+      this.screenCanvas.getContext('2d')?.putImageData(frame, 0, 0)
     }
     this.onFrame?.()
   }
@@ -770,6 +917,7 @@ export class SimEngine {
   /** 停止应用并释放本实例的全局监听(多实例场景防泄漏);实例销毁后不可复用 */
   async dispose(): Promise<void> {
     await this.stopAsync(true)
+    this.clearBanner(false)
     window.removeEventListener('message', this.onWindowMessage)
   }
 }

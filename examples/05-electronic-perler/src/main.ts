@@ -3,11 +3,15 @@ import {
   DisplayMode,
   MEDIA_STORAGE_KEY,
   MODE_STORAGE_KEY,
+  MUSIC_STORAGE_KEY,
   PATTERN_STORAGE_KEY,
+  PersistedMusic,
+  PersistedMusicState,
   PerlerMedia,
   colorFromHex,
   parseDisplayMode,
   parseMediaPayload,
+  parseMusicPreference,
   parseMusicUrl,
   parsePatternPayload,
 } from './pattern';
@@ -33,15 +37,20 @@ type MusicPlaybackState = 'stopped' | 'loading' | 'playing' | 'paused' | 'error'
 let pattern = loadSavedPattern();
 let media = loadSavedMedia();
 let displayMode = loadSavedMode();
+let savedMusicPreference = loadSavedMusic();
 let animation: PxAnimation | null = null;
+let gifRestorePending = false;
 let upload: UploadSession | null = null;
 let uploadSequence = 0;
 let dirty = true;
 let musicHandle: PxPlayHandle | null = null;
 let unsubscribeMusicEnded: Unsubscribe | null = null;
 let musicGeneration = 0;
-let musicUrl = '';
-let musicState: MusicPlaybackState = 'stopped';
+let musicConnecting = false;
+let pauseWhenMusicReady = false;
+let pendingMusicRestoreUrl = savedMusicPreference?.state === 'playing' ? savedMusicPreference.url : null;
+let musicUrl = savedMusicPreference?.url ?? '';
+let musicState: MusicPlaybackState = savedMusicPreference?.state === 'paused' ? 'paused' : 'stopped';
 let musicError: string | null = null;
 
 function mediaPath(slot: 0 | 1): string {
@@ -96,6 +105,18 @@ function loadSavedMode(): DisplayMode {
   return media?.kind ?? 'pattern';
 }
 
+function loadSavedMusic(): PersistedMusic | null {
+  const saved = px.storage.kv.getJSON<unknown>(MUSIC_STORAGE_KEY);
+  if (saved === null) return null;
+  try {
+    return parseMusicPreference(saved);
+  } catch (error) {
+    console.warn(`忽略无效的音乐恢复信息: ${String(error)}`);
+    px.storage.kv.remove(MUSIC_STORAGE_KEY);
+    return null;
+  }
+}
+
 function byteLength(text: string): number {
   return encoder.encode(text).byteLength;
 }
@@ -115,20 +136,31 @@ function detachMusicHandle(stop: boolean): void {
   }
   if (stop && musicHandle) musicHandle.stop();
   musicHandle = null;
+  musicConnecting = false;
+  pauseWhenMusicReady = false;
+}
+
+function saveMusicPreference(url: string, state: PersistedMusicState): void {
+  const preference: PersistedMusic = { v: 1, url, state };
+  px.storage.kv.set(MUSIC_STORAGE_KEY, preference);
 }
 
 /** 异步连接网络音频；generation 防止较慢的旧请求覆盖新请求状态。 */
-function beginMusicPlayback(url: string): void {
+function beginMusicPlayback(url: string, persist = true): void {
+  pendingMusicRestoreUrl = null;
   const generation = ++musicGeneration;
   detachMusicHandle(true);
+  musicConnecting = true;
   musicUrl = url;
   musicState = 'loading';
   musicError = null;
+  if (persist) saveMusicPreference(url, 'playing');
 
   let pending: Promise<PxPlayHandle>;
   try {
     pending = px.audio.player.play(url);
   } catch (error) {
+    musicConnecting = false;
     musicState = 'error';
     musicError = errorMessage(error);
     return;
@@ -138,8 +170,16 @@ function beginMusicPlayback(url: string): void {
       handle.stop();
       return;
     }
+    const shouldPause = pauseWhenMusicReady;
+    musicConnecting = false;
+    pauseWhenMusicReady = false;
     musicHandle = handle;
-    musicState = 'playing';
+    if (shouldPause) {
+      handle.pause();
+      musicState = 'paused';
+    } else {
+      musicState = 'playing';
+    }
     unsubscribeMusicEnded = handle.onEnded(() => {
       if (generation !== musicGeneration || musicHandle !== handle) return;
       detachMusicHandle(false);
@@ -148,37 +188,60 @@ function beginMusicPlayback(url: string): void {
     });
   }).catch((error) => {
     if (generation !== musicGeneration) return;
-    detachMusicHandle(false);
+    detachMusicHandle(true);
     musicState = 'error';
     musicError = errorMessage(error);
   });
 }
 
 function pauseMusicPlayback(): void {
+  if (musicState === 'loading' && musicConnecting) {
+    pauseWhenMusicReady = true;
+    musicState = 'paused';
+    musicError = null;
+    saveMusicPreference(musicUrl, 'paused');
+    return;
+  }
   if (!musicHandle || musicState !== 'playing') throw new Error('当前没有正在播放的音乐');
   musicHandle.pause();
   musicState = 'paused';
   musicError = null;
+  saveMusicPreference(musicUrl, 'paused');
 }
 
 function resumeMusicPlayback(): void {
-  if (!musicHandle || musicState !== 'paused') throw new Error('当前没有已暂停的音乐');
+  if (musicState !== 'paused') throw new Error('当前没有已暂停的音乐');
+  if (musicConnecting) {
+    pauseWhenMusicReady = false;
+    musicState = 'loading';
+    musicError = null;
+    saveMusicPreference(musicUrl, 'playing');
+    return;
+  }
+  if (!musicHandle) {
+    if (!musicUrl) throw new Error('没有可恢复的音乐地址');
+    beginMusicPlayback(musicUrl);
+    return;
+  }
   musicHandle.resume();
   musicState = 'playing';
   musicError = null;
+  saveMusicPreference(musicUrl, 'playing');
 }
 
-function stopMusicPlayback(): void {
+function stopMusicPlayback(forgetPreference = true): void {
+  pendingMusicRestoreUrl = null;
   musicGeneration += 1;
   detachMusicHandle(true);
   musicState = 'stopped';
   musicError = null;
+  if (forgetPreference) px.storage.kv.remove(MUSIC_STORAGE_KEY);
 }
 
 /** 真机键2短按仅在正在播放或已暂停时切换状态，其他音乐状态保持不变。 */
 function toggleMusicPlayback(): void {
   try {
-    if (musicState === 'playing') {
+    if (musicState === 'playing' || musicState === 'loading') {
       pauseMusicPlayback();
       console.log('键2: 音乐已暂停');
     } else if (musicState === 'paused') {
@@ -610,20 +673,31 @@ function render(): void {
   else drawEmptyState(px.wifi.status().ip);
 }
 
-if (displayMode === 'gif' && media) {
+function restoreSavedGif(): boolean {
+  if (displayMode !== 'gif' || !media || animation) return animation !== null;
   try {
     animation = px.screen.loadGif(mediaPath(media.slot), {
       removeBackground: media.removeBackground,
       backgroundThreshold: media.backgroundThreshold,
     });
     animation.play();
+    return true;
   } catch (error) {
     console.warn(`GIF 恢复失败: ${String(error)}`);
-    media = null;
-    displayMode = 'pattern';
-    px.storage.kv.remove(MEDIA_STORAGE_KEY);
-    px.storage.kv.set(MODE_STORAGE_KEY, displayMode);
+    return false;
   }
+}
+
+if (displayMode === 'gif' && media && !restoreSavedGif()) {
+  // 解码内存或启动资源竞争可能只是瞬时失败；保留 NVS 模式和文件，稍后重试。
+  gifRestorePending = true;
+  setTimeout(() => {
+    if (displayMode === 'gif' && media && !animation && restoreSavedGif()) {
+      px.screen.setFps(60);
+      dirty = true;
+    }
+    gifRestorePending = false;
+  }, 250);
 }
 
 const server = px.net.listenTcp({ port: HTTP_PORT, onConnection: handleConnection });
@@ -637,6 +711,8 @@ const stopMdns = px.net.mdns.advertise({
 px.input.onButton((ev) => {
   if (ev.id === 'power' && ev.type === 'click') toggleMusicPlayback();
 });
+
+savedMusicPreference = null;
 
 let lastIp = px.wifi.status().ip;
 setInterval(() => {
@@ -652,11 +728,21 @@ px.screen.onFrame(() => {
   if (displayMode !== 'gif' && !dirty) return;
   dirty = false;
   render();
+
+  // 先让持久化图片/GIF 完成首帧，再启动网络解码，避免启动资源竞争改变显示模式。
+  if (!gifRestorePending && pendingMusicRestoreUrl) {
+    const url = pendingMusicRestoreUrl;
+    pendingMusicRestoreUrl = null;
+    setTimeout(() => {
+      if (musicState === 'stopped') beginMusicPlayback(url, false);
+    }, 0);
+  }
 });
 
 px.app.onExit(() => {
   if (animation) animation.dispose();
-  stopMusicPlayback();
+  // 应用切换只释放当前句柄，NVS 中的播放意图留给下一次启动恢复。
+  stopMusicPlayback(false);
   server.close();
   stopMdns();
 });

@@ -65,7 +65,9 @@ bool ensure_nvs(JSContext* ctx) {
 /** 校验 NVS 键;失败时已抛异常 */
 bool check_key(JSContext* ctx, const std::string& key) {
     if (key.empty() || key.size() > 15) {
-        JS_ThrowRangeError(ctx, "NVS 键长度须为 1~15 字节");
+        // 带上出错的键本身:屏幕卡片/日志里能直接看出该改哪一个
+        JS_ThrowRangeError(ctx, "NVS 键长度须为 1~15 字节 (当前 \"%s\" = %u 字节)",
+                           key.c_str(), (unsigned)key.size());
         return false;
     }
     return true;

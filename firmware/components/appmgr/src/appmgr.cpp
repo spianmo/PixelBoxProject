@@ -24,6 +24,7 @@
 #include "esp_log.h"
 #include "mbedtls/sha256.h"
 
+#include "errscreen/errscreen.hpp"
 #include "jsvm/jsvm.hpp"
 
 static const char *TAG = "appmgr";
@@ -237,17 +238,54 @@ void set_state(appmgr_state_t st, const char *error)
     }
 }
 
+/**
+ * 屏显用的应用标识: 设置页是内置的, 报应用名会误导, 单独标出。
+ * 返回 false 表示当前跑的是设置页 (崩溃有自恢复, 不弹卡片)。
+ */
+bool current_app_label(std::string &name, std::string &version)
+{
+    std::lock_guard<std::mutex> lk(s_mutex);
+    if (s_settings_mode) {
+        name = "设置页";
+        version.clear();
+        return false;
+    }
+    name = s_manifest.name;
+    version = s_manifest.version;
+    return true;
+}
+
+/** jsvm 未捕获异常 → 屏幕横幅 (致命的走 vm_state_listener, 见 jsvm.hpp) */
+void on_js_error(const char *origin, const char *message, bool fatal)
+{
+    if (fatal) {
+        return;  /* 紧接着就是 Crashed, 由 vm_state_listener 出全屏卡片 */
+    }
+    std::string name, version;
+    if (!current_app_label(name, version)) {
+        return;  /* 设置页自己的异常不打扰用户 */
+    }
+    std::string text = message ? message : "";
+    if (origin && *origin) {
+        text = std::string("[") + origin + "] " + text;
+    }
+    errscreen::report_error(name.c_str(), version.c_str(), text.c_str());
+}
+
 void vm_state_listener(jsvm::VmState st, const char *error)
 {
     switch (st) {
     case jsvm::VmState::Running:
         set_state(APPMGR_STATE_RUNNING, nullptr);
+        errscreen::hide();  /* 新应用已经接管屏幕 */
         break;
     case jsvm::VmState::Crashed: {
         set_state(APPMGR_STATE_CRASHED, error);
         /* 设置页崩溃自恢复: 退出设置模式重启回应用/欢迎页, 避免 VM 停死黑屏。
          * 仅对内置设置页兜底 —— 用户应用崩溃保持 crashed 等 devd 处置;
          * 回退目标再崩时 s_settings_mode 已为 false, 不会形成重启循环。 */
+        std::string name, version;
+        const bool is_user_app = current_app_label(name, version);  /* 须在清标志前取 */
         bool fallback = false;
         {
             std::lock_guard<std::mutex> lk(s_mutex);
@@ -259,6 +297,11 @@ void vm_state_listener(jsvm::VmState st, const char *error)
         if (fallback) {
             ESP_LOGW(TAG, "设置页崩溃, 回退应用/欢迎页");
             jsvm::request_restart();
+        }
+        if (is_user_app) {
+            /* VM 已拆除, 屏幕停在最后一帧 —— 直接画全屏卡片告诉用户出了什么事 */
+            errscreen::show_fatal(name.c_str(), version.c_str(),
+                                  error ? error : "应用异常终止");
         }
         break;
     }
@@ -347,6 +390,7 @@ extern "C" esp_err_t appmgr_init(void)
 
     jsvm::set_entry_provider(entry_provider);
     jsvm::set_vm_state_listener(vm_state_listener);
+    jsvm::add_error_sink(on_js_error);
     return ESP_OK;
 }
 
@@ -536,6 +580,13 @@ extern "C" esp_err_t appmgr_staging_commit(void)
         }
         s_staging_active = false;
         set_state(APPMGR_STATE_CRASHED, "热更新切换失败");
+        {
+            std::string name, version;
+            current_app_label(name, version);
+            errscreen::show_fatal(name.c_str(), version.c_str(),
+                                  "热更新切换失败\n新包已就绪但 staging → current 重命名失败\n"
+                                  "旧包已回滚, 请重新推送");
+        }
         return ESP_FAIL;
     }
     s_staging_active = false;

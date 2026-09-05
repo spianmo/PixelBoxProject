@@ -158,6 +158,21 @@ using LogSink = void (*)(int level, const char *tag, const char *msg);
 void add_log_sink(LogSink sink);
 
 /**
+ * 未捕获异常 sink (appmgr → errscreen 屏显)。
+ *
+ * 覆盖全部未捕获路径: 应用入口、事件回调、微任务、定时器/onFrame 等原生调用点、
+ * 未处理的 Promise 拒绝、模块 init/prelude、onExit 收尾。
+ *
+ * origin:  出错位置标签 ("应用入口"/"事件回调"/...), 便于分类;
+ * message: 与日志同一份文本 (首行摘要 + 换行分隔的调用栈);
+ * fatal:   true 表示 VM 已因此被拆除 —— 该情形同时会经 VmStateListener
+ *          报 Crashed, 订阅者按其一处理即可, 别重复弹窗。
+ * 在 JS 线程回调。
+ */
+using ErrorSink = void (*)(const char *origin, const char *message, bool fatal);
+void add_error_sink(ErrorSink sink);
+
+/**
  * 线程安全求值 (devd js.eval): done 在 JS 线程回调,
  * ok=false 时 result 为异常描述 (含栈)。
  */

@@ -9,6 +9,21 @@
  *   - 请求处理在 httpd 任务内串行执行;
  *   - js.eval 异步: 结果经 jsvm 回调 → httpd_queue_work → 异步发送;
  *   - 日志/状态广播统一经 httpd_queue_work 调度到 httpd 上下文发送。
+ *
+ * 僵尸 fd 与日志自放大 (务必保持这两道防线, 缺一即复发):
+ *   注意不是"粗暴断开": 进程直接退出 / kill -9 / 拔线, 内核都会发 FIN 或 RST,
+ *   httpd 下次 select 到可读、recv 得 0 就会正常走 close_fn, 这条路是好的 (实测)。
+ *   真正的僵尸是**连接还开着、但对端不再读**: 进程被 SIGSTOP、笔记本合盖休眠、
+ *   客户端停在调试器断点上、或纯粹消费不过来。此时 TCP 窗口被填满, 发送一直
+ *   阻塞到 httpd 的 send 超时才失败, 而 httpd 永远收不到 EOF, close_fn 不会触发,
+ *   fd 就一直留在 s_clients/s_log_subs 里。往这种 fd 发送失败时, esp_http_server
+ *   自己会打 `W httpd_txrx: error in send` / `W httpd_ws: Failed to send WS header`;
+ *   这两条日志又经 devd_log 广播给同一个死 fd —— 失败→告警→广播→失败, 自我放大
+ *   直到 httpd 任务被打满、devd 彻底失联 (只能按 RESET)。
+ *   1) 收: 检查每次发送的返回值, 连续失败 kMaxSendFailures 次即判定对端已死,
+ *      摘出队列并关闭会话 (note_send_result / reap_dead_fds)。
+ *   2) 断环: 发送期间记住当前任务句柄, 该任务此刻打出的日志不再触发新的 flush
+ *      (SendGuard + on_new_log 的自触发判断) —— 否则第 1 道防线生效前就已雪崩。
  */
 #include "devd/devd.h"
 
@@ -16,9 +31,13 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -54,6 +73,21 @@ std::mutex s_client_mutex;
 std::vector<int> s_clients;  /* 所有已握手 ws 客户端 fd */
 std::vector<int> s_log_subs; /* 日志订阅 fd */
 
+/* fd → 连续发送失败次数 (s_client_mutex 保护)。一次成功即归零, 只有"连着失败"
+   才判死 —— 单次失败也可能只是对端拥塞/发送超时, 不该把活客户端踢掉。 */
+constexpr int kMaxSendFailures = 3;
+std::vector<std::pair<int, int>> s_send_failures;
+
+/* 正在本任务上下文里发送 ws 帧 (见文件头「断环」)。发送失败时 esp_http_server 会
+   就地打告警, 那条告警不能再触发一次 flush, 否则自我放大。只压制"发送任务自己"
+   打出的日志, 其他任务的日志照常触发, 故存任务句柄而非布尔。 */
+std::atomic<TaskHandle_t> s_sending_task{nullptr};
+
+struct SendGuard {
+    SendGuard() { s_sending_task.store(xTaskGetCurrentTaskHandle()); }
+    ~SendGuard() { s_sending_task.store(nullptr); }
+};
+
 std::atomic<bool> s_flush_pending{false};
 uint32_t s_flushed_seq = 0; /* 仅 httpd 上下文访问 */
 uint32_t s_boot_id = 0;     /* 每次开机随机标识, 客户端比对识别重启 (seq 归零) */
@@ -81,6 +115,73 @@ void remove_fd(std::vector<int> &v, int fd)
         if (*it == fd) {
             v.erase(it);
             return;
+        }
+    }
+}
+
+bool has_fd(const std::vector<int> &v, int fd)
+{
+    for (int e : v) {
+        if (e == fd) return true;
+    }
+    return false;
+}
+
+/** 清掉某个 fd 的失败计数 (调用者持 s_client_mutex) */
+void forget_failures_locked(int fd)
+{
+    for (auto it = s_send_failures.begin(); it != s_send_failures.end(); ++it) {
+        if (it->first == fd) {
+            s_send_failures.erase(it);
+            return;
+        }
+    }
+}
+
+/**
+ * 记一次发送结果, 返回 true 表示该 fd 连续失败已达阈值、应当回收。
+ * 可从任意任务调用 (内部自己加锁)。
+ */
+bool note_send_result(int fd, bool ok)
+{
+    std::lock_guard<std::mutex> lk(s_client_mutex);
+    if (ok) {
+        forget_failures_locked(fd);
+        return false;
+    }
+    for (auto &e : s_send_failures) {
+        if (e.first == fd) {
+            return ++e.second >= kMaxSendFailures;
+        }
+    }
+    s_send_failures.push_back({fd, 1});
+    return kMaxSendFailures <= 1;
+}
+
+/**
+ * 回收判死的 fd: 先摘出自己的队列 (哪怕 httpd 已经不认识这个会话, 也不能留在
+ * 队列里继续被广播), 再请 httpd 正常关闭会话 —— close_fn (on_close) 会被回调,
+ * 由它负责 close(sockfd)。trigger_close 内部只是往控制 socket 投一条消息, 不等
+ * 应答, 在 httpd 任务里调用是安全的。
+ */
+void reap_dead_fds(httpd_handle_t hd, const std::vector<int> &dead)
+{
+    if (dead.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_client_mutex);
+        for (int fd : dead) {
+            remove_fd(s_clients, fd);
+            remove_fd(s_log_subs, fd);
+            forget_failures_locked(fd);
+        }
+    }
+    for (int fd : dead) {
+        ESP_LOGW(TAG, "客户端连续 %d 次发送失败, 判定已断开并回收 (fd=%d)",
+                 kMaxSendFailures, fd);
+        if (hd) {
+            httpd_sess_trigger_close(hd, fd);
         }
     }
 }
@@ -137,18 +238,25 @@ void async_send_work(void *arg)
     f.len = strlen(as->text);
     f.final = true;
 
-    if (as->fd >= 0) {
-        httpd_ws_send_frame_async(as->hd, as->fd, &f);
-    } else {
-        std::vector<int> fds;
-        {
-            std::lock_guard<std::mutex> lk(s_client_mutex);
-            fds = as->subs_only ? s_log_subs : s_clients;
-        }
-        for (int fd : fds) {
-            httpd_ws_send_frame_async(as->hd, fd, &f);
+    std::vector<int> dead;
+    {
+        SendGuard guard; /* 期间 esp_http_server 的发送告警不再触发新的 flush */
+        if (as->fd >= 0) {
+            const bool ok = httpd_ws_send_frame_async(as->hd, as->fd, &f) == ESP_OK;
+            if (note_send_result(as->fd, ok)) dead.push_back(as->fd);
+        } else {
+            std::vector<int> fds;
+            {
+                std::lock_guard<std::mutex> lk(s_client_mutex);
+                fds = as->subs_only ? s_log_subs : s_clients;
+            }
+            for (int fd : fds) {
+                const bool ok = httpd_ws_send_frame_async(as->hd, fd, &f) == ESP_OK;
+                if (note_send_result(fd, ok)) dead.push_back(fd);
+            }
         }
     }
+    reap_dead_fds(as->hd, dead);
     free(as->text);
     delete as;
 }
@@ -185,16 +293,23 @@ void log_flush_work(void *arg)
     if (subs.empty()) {
         return;
     }
-    for (auto &line : lines) {
-        httpd_ws_frame_t f = {};
-        f.type = HTTPD_WS_TYPE_TEXT;
-        f.payload = (uint8_t *)line.c_str();
-        f.len = line.size();
-        f.final = true;
-        for (int fd : subs) {
-            httpd_ws_send_frame_async(s_server, fd, &f);
+    std::vector<int> dead;
+    {
+        SendGuard guard; /* 期间 esp_http_server 的发送告警不再触发新的 flush */
+        for (auto &line : lines) {
+            httpd_ws_frame_t f = {};
+            f.type = HTTPD_WS_TYPE_TEXT;
+            f.payload = (uint8_t *)line.c_str();
+            f.len = line.size();
+            f.final = true;
+            for (int fd : subs) {
+                if (has_fd(dead, fd)) continue; /* 本轮已判死, 剩下的行不必再试 */
+                const bool ok = httpd_ws_send_frame_async(s_server, fd, &f) == ESP_OK;
+                if (note_send_result(fd, ok)) dead.push_back(fd);
+            }
         }
     }
+    reap_dead_fds(s_server, dead);
 }
 
 /** flush 定时器回调 (esp_timer 任务上下文): 转投 httpd 任务 */
@@ -219,6 +334,13 @@ esp_timer_handle_t s_flush_timer = nullptr;
 void on_new_log()
 {
     if (!s_server || !s_flush_timer) {
+        return;
+    }
+    /* 这条日志就是"正在发送"的那个任务自己打出来的 (典型: 往死 fd 发送失败,
+       esp_http_server 就地打 httpd_txrx/httpd_ws 告警) —— 若再调度一次 flush,
+       就会变成 失败→告警→广播→失败 的自我放大。日志已进环形缓冲, 不会丢,
+       下一条外部日志或 logs.subscribe 会把它带出去。 */
+    if (s_sending_task.load() == xTaskGetCurrentTaskHandle()) {
         return;
     }
     {
@@ -623,8 +745,11 @@ esp_err_t ws_handler(httpd_req_t *req)
         /* 握手完成 */
         int fd = httpd_req_to_sockfd(req);
         {
+            /* fd 号会被复用: 新客户端不得继承上一个客户端遗留的日志订阅与失败计数 */
             std::lock_guard<std::mutex> lk(s_client_mutex);
             remove_fd(s_clients, fd);
+            remove_fd(s_log_subs, fd);
+            forget_failures_locked(fd);
             s_clients.push_back(fd);
         }
         ESP_LOGI(TAG, "客户端接入 (fd=%d)", fd);
@@ -667,6 +792,7 @@ void on_close(httpd_handle_t hd, int sockfd)
         std::lock_guard<std::mutex> lk(s_client_mutex);
         remove_fd(s_clients, sockfd);
         remove_fd(s_log_subs, sockfd);
+        forget_failures_locked(sockfd);
     }
     ESP_LOGI(TAG, "客户端断开 (fd=%d)", sockfd);
     close(sockfd);

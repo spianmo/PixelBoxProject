@@ -15,6 +15,7 @@ GIF:      保留原文件、帧延时和网页裁剪框 -> 8 KiB 分块上传 ->
           -> 每帧边界连通去背景 -> 方形裁剪 -> 60 FPS 播放
 
 音乐:     Web 提交 HTTP(S) MP3 地址 -> ESP 流式下载和解码
+          -> NVS 保存 URL 与播放意图 -> 应用重启自动恢复
           -> 播放句柄控制暂停 / 继续 / 停止 -> Web 轮询播放状态
 ```
 
@@ -43,7 +44,7 @@ pixelbox dev
 - 媒体单文件上限为 2 MiB，上传块为 8 KiB。
 - `/data/perler-0.bin` 和 `/data/perler-1.bin` 交替写入；只有文件完整且解码成功后才会切换，上传中断不会破坏当前画面。
 - GIF 最多解码 256 帧，真机解码帧总内存以约 4 MiB 为保护界限；更长的动图只保留限制内的帧。
-- MP3 地址最多 1024 个字符；音乐通过网络流式播放，不会下载到 LittleFS，也不会在设备重启后自动恢复。
+- MP3 地址最多 1024 个字符；音乐文件不会下载到 LittleFS，只在 NVS 保存 URL 和播放/暂停状态。播放状态会在应用重启后从头自动连接；暂停状态保持静默，按继续时再从头连接；主动停止会清除恢复记录。
 - 局域网 HTTP 未提供公网鉴权，不要把设备的 `8080` 端口转发到互联网。
 
 ## 关键实现
@@ -56,6 +57,7 @@ pixelbox dev
 | `src/main.ts#appendMediaChunk` | 校验会话、偏移和分块大小后直接追加到 LittleFS |
 | `src/main.ts#activateMedia` | 先解码新媒体，成功后再持久化并切换屏幕模式 |
 | `src/main.ts#beginMusicPlayback` | 异步打开网络 MP3，以 generation 隔离较慢的旧播放请求 |
+| `src/pattern.ts#parseMusicPreference` | 校验 NVS 中持久化的 MP3 地址与播放/暂停状态 |
 | `src/main.ts#pauseMusicPlayback` | 通过同一 `PxPlayHandle` 暂停并继续流式音乐 |
 | `bindings_screen.cpp#remove_gif_exterior_background` | 在 GIF 每帧进入动画缓存前清黑外部连通背景 |
 | `bindings_screen.cpp#gif_frames_equal` | 比较解码后的完整首尾帧并删除重复末帧 |

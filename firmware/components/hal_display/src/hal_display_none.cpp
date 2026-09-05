@@ -34,6 +34,8 @@ void mark_dirty(int, int, int, int) {}
 
 esp_err_t flush() { return ESP_ERR_INVALID_STATE; }
 
+void set_overlay(const Overlay *) {}  // 无屏: 浮层无处可画
+
 esp_err_t set_brightness(int) { return ESP_ERR_INVALID_STATE; }
 int get_brightness() { return 0; }
 
