@@ -100,6 +100,11 @@ device-sim/
 
 ## 6. 已知简化(与真机的差异)
 
+- 3D 模拟器:左键拖外壳改变设备姿态;屏幕区域保留触摸,Shift+拖动屏幕可旋转整机。
+  空白处拖动只改变观察相机,滚轮只缩放。IMU 面板在旋转时保持打开,重置同时恢复平放姿态与零角速度。
+  `imuPose.ts` 按板卡坐标计算重力分量(g)与局部角速度(deg/s),经 `periphStore`
+  推送运行中程序的 `px.sensors.imu.start` / `onOrientation`;静止重力模长为 1g,
+  不模拟平移、碰撞或离心加速度。滑条仍允许手动注入非 1g 数据。
 - `setRotation` 仅旋转屏幕显示(CSS transform),`screen.width/height` 不随之交换;
 - `system.deepSleep` 仅熄屏(+定时重启),不模拟低功耗;`otaApply` 抛 ENOTSUP;
 - `wifi` 为模拟数据:scan 返回内置 AP 列表、connect 800ms 后成功、status 反映宿主联网状态;
@@ -108,6 +113,10 @@ device-sim/
 
 ## 7. 验证
 
+- `npm run check:imu`:姿态到六轴数据的坐标/单位、四元数跨角度边界、重置与会话隔离断言。
+- `npm run check:imu:browser`:需可解析的 `playwright` 和本机 Chrome;也可用
+  `PLAYWRIGHT_MODULE` 指定 Playwright 入口文件。60s 上限,真实 React/Three/引擎/沙箱
+  链路检查,覆盖桌面与窄视口,输出 WebGL 像素检查与截图目录。
 - `pnpm run build`(typecheck node+web + Rsbuild 三 environments 构建)通过;
 - `npm run selfcheck`:demo 构建 → 运行时打包 → shim 表面静态核对(16+13)→ srcdoc
   逃逸 → 语法解析,全绿;

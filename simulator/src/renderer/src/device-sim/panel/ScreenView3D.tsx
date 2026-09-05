@@ -16,6 +16,7 @@ import type { BoardSpec, Hardware3D, ScreenPlacement } from '../../../../shared/
 import { HardwareViewer } from '../../hardware/three/HardwareViewer'
 import { getAppSettings, subscribeSettings } from '../../settings/store'
 import type { SimEngine } from '../engine'
+import { bindImuPose } from '../imuPose'
 import type { ScreenSize } from './SimPanel'
 
 /** uiStore 亮度(0..100)→ 屏幕材质颜色系数(与 2D CSS filter 同款 5% 下限) */
@@ -77,6 +78,8 @@ export function ScreenView3D({
       background: null,
       // 重建时按当前设置恢复(与熄屏/亮度的「重建时恢复」约定一致)
       axes: getAppSettings().appearance.show3dAxes,
+      // 姿态采样与手动 IMU 面板共用外设 store,沿引擎原有 periph 事件进入运行中的沙箱。
+      onDeviceRotate: (pose, dt) => motion.update(pose, dt),
       // UV → 像素坐标夹取到 [0, W-1]/[0, H-1](契约同 2D:u=1 不得产生 x=W 越界)
       onScreenTouch: (type: 'down' | 'move' | 'up', u: number, v: number) =>
         engine.sendTouch(
@@ -88,6 +91,7 @@ export function ScreenView3D({
     viewerRef.current = viewer
     viewer.setHardware(hardware)
     viewer.attachScreenCanvas(hidden, hardware.screen ?? defaultPlacement(hardware.board, screen))
+    const motion = bindImuPose(engine.periphStore, (pose) => viewer.setDeviceRotation(pose))
     viewer.setExplode(explodeRef.current ? 1 : 0)
     // viewer 重建时恢复当前熄屏/亮度(下方订阅 effect 仅在状态变化时触发)
     const ui0 = engine.uiStore.get()
@@ -108,6 +112,7 @@ export function ScreenView3D({
       engine.attachScreen(null)
       viewerRef.current = null
       viewer.dispose()
+      motion.dispose()
     }
     // 依赖取 width/height 标量(与 ScreenView 约定一致,screen 对象经 SimHost useMemo 稳定)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -137,7 +142,7 @@ export function ScreenView3D({
   }, [])
 
   return (
-    <div ref={containerRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-ink-900">
+    <div ref={containerRef} data-sim-device-view="3d" className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-ink-900">
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       {/* 操作提示(拖动旋转/滚轮缩放),淡出后不挡交互 */}
       <span

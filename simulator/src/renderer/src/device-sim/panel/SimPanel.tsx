@@ -71,6 +71,7 @@ function Slider(props: {
   step?: number
   value: number
   suffix?: string
+  digits?: number
   onChange: (v: number) => void
 }): React.JSX.Element {
   return (
@@ -78,7 +79,7 @@ function Slider(props: {
       <div className="mb-0.5 flex justify-between">
         <span>{props.label}</span>
         <span className="font-mono text-jb-text">
-          {props.value}
+          {props.digits === undefined ? props.value : props.value.toFixed(props.digits)}
           {props.suffix ?? ''}
         </span>
       </div>
@@ -544,6 +545,8 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
     const onDown = (e: MouseEvent): void => {
       const target = e.target as Node
       if (stripRef.current?.contains(target) || popoverRef.current?.contains(target)) return
+      // 旋转设备时保留 IMU 读数面板,便于同时观察六轴数值和程序画面。
+      if (openGroup === 'imu' && target instanceof Element && target.closest('[data-sim-device-view="3d"]')) return
       setOpenGroup(null)
     }
     const onKey = (e: KeyboardEvent): void => {
@@ -622,12 +625,22 @@ export function SimPanel({ engine, screen }: { engine: SimEngine; screen: Screen
       case 'imu':
         return (
           <>
-            <Slider label="ax (g)" min={-2} max={2} step={0.05} value={periph.imu.ax} onChange={(v) => setImu('ax', v)} />
-            <Slider label="ay (g)" min={-2} max={2} step={0.05} value={periph.imu.ay} onChange={(v) => setImu('ay', v)} />
-            <Slider label="az (g)" min={-2} max={2} step={0.05} value={periph.imu.az} onChange={(v) => setImu('az', v)} />
+            <Slider label="ax (g)" min={-2} max={2} step={0.05} digits={2} value={periph.imu.ax} onChange={(v) => setImu('ax', v)} />
+            <Slider label="ay (g)" min={-2} max={2} step={0.05} digits={2} value={periph.imu.ay} onChange={(v) => setImu('ay', v)} />
+            <Slider label="az (g)" min={-2} max={2} step={0.05} digits={2} value={periph.imu.az} onChange={(v) => setImu('az', v)} />
+            <div className="grid grid-cols-3 gap-2 text-[11px] text-jb-muted">
+              {(['gx', 'gy', 'gz'] as const).map((axis) => (
+                <label key={axis} className="min-w-0">
+                  {axis} (deg/s)
+                  <output className="block truncate font-mono tabular-nums text-jb-text" title={String(periph.imu[axis])}>
+                    {periph.imu[axis].toFixed(1)}
+                  </output>
+                </label>
+              ))}
+            </div>
             <button
               className="w-full rounded border border-ink-600 bg-ink-800 px-2 py-1 text-[11px] text-jb-text hover:bg-ink-700"
-              onClick={() => engine.periphStore.set({ imu: { ...periph.imu, ax: 0, ay: 0, az: 1 } })}
+              onClick={() => engine.periphStore.set({ imu: { ax: 0, ay: 0, az: 1, gx: 0, gy: 0, gz: 0 } })}
             >
               {t('sim.imuReset')}
             </button>

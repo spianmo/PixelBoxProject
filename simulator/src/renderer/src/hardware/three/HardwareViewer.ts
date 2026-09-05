@@ -16,7 +16,7 @@
  *   - exportSTL:在克隆体上导出(不动活跃场景/爆炸态)→ 归零爆炸 → 绕 X +90°
  *     (three Y-up → 切片器 Z-up)→ 单部件落床(minZ=0)并 XY 居中 → STLExporter binary
  *     (display/battery 为**非打印部件**,'assembly' 导出时从克隆体剔除;
- *     屏幕贴片挂 display 组内亦随之剔除,无 display 时挂 scene 天然不导出)
+ *     屏幕贴片挂 display 组内亦随之剔除,无 display 时挂 poseRoot 天然不导出)
  *   - setEnclosureEditMode:「编辑外壳」交互 —— 在场景上叠加可拖拽手柄
  *     (enclosureGizmos;挂 scene 而非 root:不随爆炸位移、不进 STL 导出),
  *     pointerdown 命中手柄 → 暂停 OrbitControls → 指针 raycast 到约束平面、
@@ -62,6 +62,8 @@ export interface HardwareViewerOptions {
   onScreenTouch?: (type: 'down' | 'move' | 'up', u: number, v: number) => void
   /** 左下角坐标轴指示器初值(settings appearance.show3dAxes;默认 false,离屏导出/冒烟不受影响) */
   axes?: boolean
+  /** 模拟器设备旋转:局部板卡到世界的姿态,dt 为采样秒数;0 表示停止旋转。 */
+  onDeviceRotate?: (pose: THREE.Quaternion, dt: number) => void
 }
 
 /** 部件爆炸元数据(存于 Group.userData.explode) */
@@ -133,6 +135,12 @@ export class HardwareViewer {
   private readonly controls: OrbitControls | null
   /** 部件根组(name:'assembly',含 board/base/lid + 可选 display/battery) */
   private readonly root: THREE.Group
+  /** 模拟器姿态组,以装配体中心旋转;设计/导出仍使用原始 root 坐标。 */
+  private readonly poseRoot = new THREE.Group()
+  private readonly poseCenter = new THREE.Vector3()
+  private readonly lastPose = new THREE.Quaternion()
+  private poseMoving = false
+  private deviceDrag: { pointerId: number; x: number; y: number } | null = null
   private readonly grid: THREE.GridHelper
   private readonly exporter = new STLExporter()
   private readonly raycaster = new THREE.Raycaster()
@@ -196,7 +204,8 @@ export class HardwareViewer {
 
     this.root = new THREE.Group()
     this.root.name = 'assembly'
-    this.scene.add(this.root)
+    this.poseRoot.add(this.root)
+    this.scene.add(this.poseRoot)
 
     // 三点布光:环境 + 主光 + 补光
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6))
@@ -229,10 +238,14 @@ export class HardwareViewer {
 
     // 指针监听常驻:屏幕触摸(onScreenTouch)与外壳编辑手柄共用同一组入口,
     // 各自在处理器内部按模式分流(编辑模式优先且屏蔽屏幕触摸)
-    canvas.addEventListener('pointerdown', this.handlePointerDown)
+    // 捕获阶段先决定触摸/设备旋转,防止 OrbitControls 同一次按下先行移动相机。
+    canvas.addEventListener('pointerdown', this.handlePointerDown, true)
     canvas.addEventListener('pointermove', this.handlePointerMove)
     canvas.addEventListener('pointerup', this.handlePointerUp)
     canvas.addEventListener('pointercancel', this.handlePointerUp)
+    canvas.addEventListener('lostpointercapture', this.handlePointerUp)
+    window.addEventListener('blur', this.finishDeviceDrag)
+    document.addEventListener('visibilitychange', this.handleVisibilityChange)
 
     this.resize()
     this.lastTime = performance.now()
@@ -241,6 +254,8 @@ export class HardwareViewer {
 
   /** 重建 board/base/lid(+ display/battery)部件组 + 爆炸向量;多次调用会释放旧几何 */
   setHardware(hw: Hardware3D): void {
+    const pose = this.poseRoot.quaternion.clone()
+    this.setDeviceRotation(new THREE.Quaternion())
     this.hardware = hw
     this.clearParts() // 内部先把屏幕贴片撤回 scene,已 attach 的纹理在重建后原样复用
 
@@ -333,6 +348,7 @@ export class HardwareViewer {
     this.applyExplode()
     this.updateScreenTransform() // 已 attach 的贴片重新挂到新 display 组(或回退板顶)
     this.frameIfNeeded()
+    this.setDeviceRotation(pose)
     // 重建会清空部件组:编辑模式下按当前参数再生手柄(拖拽中以本地权威参数布局,
     // 迟到的 store 回声不会把手柄拽回旧位置)
     this.rebuildGizmos()
@@ -347,10 +363,19 @@ export class HardwareViewer {
     return this.explodeTarget
   }
 
+  /** 外部滑条/重置/切回 3D 时恢复姿态;不回调 IMU,不把程序赋值误算成角速度。 */
+  setDeviceRotation(pose: THREE.Quaternion): void {
+    this.poseRoot.quaternion.copy(pose).normalize()
+    this.poseRoot.position.copy(this.poseCenter).sub(this.poseCenter.clone().applyQuaternion(this.poseRoot.quaternion))
+    this.poseRoot.updateMatrixWorld(true)
+    this.lastPose.copy(this.poseRoot.quaternion)
+    this.poseMoving = false
+  }
+
   /**
    * 把模拟器屏幕画布贴到屏幕面。src=null 时移除。
    * 有前置显示模组时贴片挂 display 组内(顶面微抬 0.05,爆炸随模组抬升;
-   * STL 装配导出剔除 display 时一并排除);无顶盖开窗时回退挂 scene 的板顶薄面。
+   * STL 装配导出剔除 display 时一并排除);无顶盖开窗时回退挂 poseRoot 的板顶薄面。
    */
   attachScreenCanvas(src: HTMLCanvasElement | null, placement: ScreenPlacement): void {
     this.removeScreenMesh()
@@ -538,6 +563,12 @@ export class HardwareViewer {
     if (w <= 0 || h <= 0) return
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     this.renderer.setSize(w, h, false)
+    if (this.opts.onDeviceRotate && this.framedRadius > 0) {
+      // 模拟器面板变窄时按较短视场拉远,保留用户已有的缩放比例和观察方向。
+      const target = this.controls?.target ?? this.poseCenter
+      const scale = this.deviceFrameScale(w / h) / this.deviceFrameScale(this.camera.aspect)
+      this.camera.position.sub(target).multiplyScalar(scale).add(target)
+    }
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
   }
@@ -547,10 +578,14 @@ export class HardwareViewer {
     if (this.disposed) return
     this.disposed = true
     cancelAnimationFrame(this.rafId)
-    this.canvas.removeEventListener('pointerdown', this.handlePointerDown)
+    this.finishDeviceDrag()
+    this.canvas.removeEventListener('pointerdown', this.handlePointerDown, true)
     this.canvas.removeEventListener('pointermove', this.handlePointerMove)
     this.canvas.removeEventListener('pointerup', this.handlePointerUp)
     this.canvas.removeEventListener('pointercancel', this.handlePointerUp)
+    this.canvas.removeEventListener('lostpointercapture', this.handlePointerUp)
+    window.removeEventListener('blur', this.finishDeviceDrag)
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange)
     this.controls?.dispose()
     this.removeGizmos()
     this.readoutEl?.remove()
@@ -574,11 +609,19 @@ export class HardwareViewer {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this.tick)
     const now = performance.now()
-    const dt = Math.min((now - this.lastTime) / 1000, 0.1)
+    const elapsedSeconds = Math.max(0, (now - this.lastTime) / 1000)
+    const dt = Math.min(elapsedSeconds, 0.1)
     this.lastTime = now
     if (document.visibilityState === 'hidden') return
 
-    this.controls?.update()
+    if (!this.deviceDrag) this.controls?.update()
+    // 帧采样合并高频 pointermove;指针停住即补零角速度,即便鼠标尚未松开。
+    const rotated = 1 - Math.abs(this.lastPose.dot(this.poseRoot.quaternion)) > 1e-12
+    if (this.opts.onDeviceRotate && (rotated || this.poseMoving)) {
+      this.opts.onDeviceRotate(this.poseRoot.quaternion.clone(), rotated ? elapsedSeconds : 0)
+      this.lastPose.copy(this.poseRoot.quaternion)
+      this.poseMoving = rotated
+    }
 
     if (Math.abs(this.explodeTarget - this.explodeFactor) > EXPLODE_EPS) {
       this.explodeFactor = THREE.MathUtils.damp(this.explodeFactor, this.explodeTarget, EXPLODE_DAMP_LAMBDA, dt)
@@ -648,7 +691,7 @@ export class HardwareViewer {
 
   private removeScreenMesh(): void {
     if (this.screenMesh) {
-      this.screenMesh.removeFromParent() // 可能挂 scene(回退)或 display 组(前置)
+      this.screenMesh.removeFromParent() // 可能挂 poseRoot(回退)或 display 组(前置)
       this.screenMesh.geometry.dispose()
       ;(this.screenMesh.material as THREE.Material).dispose()
     }
@@ -671,7 +714,7 @@ export class HardwareViewer {
    * 屏幕贴片位姿与挂点(rotationDeg 直接旋转网格,UV 随几何旋转,触摸无需换算):
    * - 有前置显示模组:挂 display 组内、贴模组顶面微抬(组 home 为原点,合拢时局部
    *   坐标即世界坐标;爆炸时贴片随模组抬升,与实物 FPC 连接的成品屏一致)
-   * - 无顶盖开窗:回退挂 scene,板顶面 + 抬离量(设计态仍可预览屏幕内容)
+   * - 无顶盖开窗:回退挂 poseRoot,板顶面 + 抬离量(与整机姿态同步)
    */
   private updateScreenTransform(): void {
     const p = this.screenPlacement
@@ -680,7 +723,7 @@ export class HardwareViewer {
       if (this.screenMesh.parent !== this.displayPart) this.displayPart.add(this.screenMesh)
       this.screenMesh.position.set(p.x, this.displayFaceY + SCREEN_FACE_LIFT_MM, -p.y)
     } else {
-      if (this.screenMesh.parent !== this.scene) this.scene.add(this.screenMesh)
+      if (this.screenMesh.parent !== this.poseRoot) this.poseRoot.add(this.screenMesh)
       const enc = this.hardware?.enclosure
       // 板顶面:scad meta 优先(同 setHardware 的契约取法),再参数推导,再兜底
       const topY =
@@ -691,16 +734,24 @@ export class HardwareViewer {
     this.screenMesh.rotation.y = THREE.MathUtils.degToRad(p.rotationDeg ?? 0)
   }
 
+  /** 包围球按较短视场取景,预留 8% 边距供旋转。 */
+  private deviceFrameScale(aspect: number): number {
+    const halfFov = Math.atan(Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * Math.min(1, aspect))
+    return 1.08 / Math.sin(halfFov)
+  }
+
   /** 首次(或包围球变化 >50%)时取景:相机对准包围球中心并拉开合适距离 */
   private frameIfNeeded(): void {
     const box = new THREE.Box3().setFromObject(this.root)
     if (box.isEmpty()) return
     const sphere = box.getBoundingSphere(new THREE.Sphere())
+    this.poseCenter.copy(sphere.center)
     const r = Math.max(sphere.radius, 1)
     if (this.framedRadius > 0 && Math.abs(r - this.framedRadius) / this.framedRadius < 0.5) return
     this.framedRadius = r
     const dir = new THREE.Vector3(1, 0.85, 1).normalize()
-    this.camera.position.copy(sphere.center).addScaledVector(dir, r * 2.7)
+    const scale = this.opts.onDeviceRotate ? this.deviceFrameScale(this.camera.aspect) : 2.7
+    this.camera.position.copy(sphere.center).addScaledVector(dir, r * scale)
     this.camera.near = Math.max(r / 100, 0.1)
     this.camera.far = Math.max(r * 50, 500)
     this.camera.updateProjectionMatrix()
@@ -726,9 +777,8 @@ export class HardwareViewer {
       -((e.clientY - rect.top) / rect.height) * 2 + 1
     )
     this.raycaster.setFromCamera(this.pointerNdc, this.camera)
-    // 贴片挂 display 组内(root 之下)时 root 已覆盖;回退挂 scene 时需单独并入求交
-    const targets: THREE.Object3D[] =
-      this.screenMesh.parent === this.scene ? [this.root, this.screenMesh] : [this.root]
+    // poseRoot 同时包含装配体与回退屏幕贴片,姿态变化后仍按遮挡顺序判定。
+    const targets: THREE.Object3D[] = [this.poseRoot]
     const hit = this.raycaster.intersectObjects(targets, true)[0]
     if (!hit || hit.object !== this.screenMesh || !hit.uv) return null
     // PlaneGeometry v=1 一侧位于板"北"(屏幕顶);回调约定 v=0 为顶 → 取 1-uv.y
@@ -736,6 +786,7 @@ export class HardwareViewer {
   }
 
   private readonly handlePointerDown = (e: PointerEvent): void => {
+    if (this.deviceDrag || this.touchActive || e.button !== 0) return
     if (this.editMode) {
       // 编辑模式:手柄命中优先于一切(未命中时交给 OrbitControls 旋转);
       // 屏幕触摸整体挂起 —— 编辑外壳时点击屏幕面不得产生幽灵触摸
@@ -744,8 +795,22 @@ export class HardwareViewer {
       return
     }
     const cb = this.opts.onScreenTouch
-    if (!cb) return
     const hit = this.pickScreen(e)
+    if (this.interactive && this.opts.onDeviceRotate && (!hit || e.shiftKey || !cb)) {
+      const rect = this.canvas.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+      this.pointerNdc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
+      this.raycaster.setFromCamera(this.pointerNdc, this.camera)
+      if (this.raycaster.intersectObject(this.poseRoot, true).length > 0) {
+        this.deviceDrag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY }
+        if (this.controls) this.controls.enabled = false
+        this.canvas.setPointerCapture(e.pointerId)
+        this.canvas.style.cursor = 'grabbing'
+        e.stopImmediatePropagation()
+        return
+      }
+    }
+    if (!cb) return
     if (!hit) return
     this.touchActive = true
     this.lastTouch = hit
@@ -759,6 +824,23 @@ export class HardwareViewer {
   }
 
   private readonly handlePointerMove = (e: PointerEvent): void => {
+    const drag = this.deviceDrag
+    if (drag) {
+      if (e.pointerId !== drag.pointerId) return
+      const dx = e.clientX - drag.x
+      const dy = e.clientY - drag.y
+      drag.x = e.clientX
+      drag.y = e.clientY
+      const distance = Math.hypot(dx, dy)
+      if (!distance) return
+      // 屏幕平面位移转成世界旋转轴,四元数累乘可连续翻转,不受欧拉角极点限制。
+      const axis = new THREE.Vector3(dy, dx, 0).normalize().applyQuaternion(this.camera.quaternion)
+      const angle = distance * Math.PI * 2 / Math.max(1, Math.min(this.canvas.clientWidth, this.canvas.clientHeight))
+      this.poseRoot.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle)).normalize()
+      this.poseRoot.position.copy(this.poseCenter).sub(this.poseCenter.clone().applyQuaternion(this.poseRoot.quaternion))
+      this.poseRoot.updateMatrixWorld(true)
+      return
+    }
     if (this.editMode) {
       if (this.gizmoDrag) this.applyGizmoDrag(e)
       else this.updateGizmoHover(e)
@@ -773,6 +855,10 @@ export class HardwareViewer {
   }
 
   private readonly handlePointerUp = (e: PointerEvent): void => {
+    if (this.deviceDrag) {
+      if (e.pointerId === this.deviceDrag.pointerId) this.finishDeviceDrag()
+      return
+    }
     if (this.editMode) {
       this.finishGizmoDrag(e)
       return
@@ -783,6 +869,22 @@ export class HardwareViewer {
     if (this.controls) this.controls.enabled = this.interactive
     const hit = this.pickScreen(e) ?? this.lastTouch
     if (hit) cb('up', hit.u, hit.v)
+  }
+
+  private readonly finishDeviceDrag = (): void => {
+    const drag = this.deviceDrag
+    if (!drag) return
+    this.deviceDrag = null
+    this.lastPose.copy(this.poseRoot.quaternion)
+    this.poseMoving = false
+    this.opts.onDeviceRotate?.(this.poseRoot.quaternion.clone(), 0)
+    if (this.canvas.hasPointerCapture(drag.pointerId)) this.canvas.releasePointerCapture(drag.pointerId)
+    if (this.controls) this.controls.enabled = this.interactive
+    this.canvas.style.cursor = ''
+  }
+
+  private readonly handleVisibilityChange = (): void => {
+    if (document.visibilityState === 'hidden') this.finishDeviceDrag()
   }
 
   // ------------------------------------------------------------------
