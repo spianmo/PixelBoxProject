@@ -2,17 +2,20 @@ import { clamp } from '../../06-obeing-pixel/src/model';
 import { EnterpriseAuth, validateOrigin } from './auth';
 import { MexusConversation } from './conversation';
 import { defaultServer, HarnessController, userMessage, type SpeechPort } from './controller';
+import { projectSpeechConfig } from './project-config';
 import { drawHarness, keyboardKeyAt, type Field, type FormState, type Page } from './render';
 
 const info = px.system.info();
 const defaults = defaultServer(info.deviceId);
+const bundledSpeech = projectSpeechConfig();
 const saved = (key: string, fallback: string) => {
     const value = px.storage.kv.get(key);
     return typeof value === 'string' ? value : fallback;
 };
 const form: FormState = {
     page: 'login', returnPage: 'login', field: 'tenant', upper: true, symbols: false, busy: false, speechReady: false,
-    values: { tenant: saved('h.tenant', ''), account: saved('h.account', ''), password: '', region: saved('h.region', ''), key: '',
+    values: { tenant: saved('h.tenant', ''), account: saved('h.account', ''), password: '',
+        region: bundledSpeech?.region ?? saved('h.region', ''), key: bundledSpeech?.key ?? '',
         origin: saved('h.origin', defaults.origin), oem: saved('h.oem', ''), domain: saved('h.domain', ''), question: '' },
 };
 const speech: SpeechPort = px.speech;
@@ -35,6 +38,13 @@ function createController(): HarnessController {
     const auth = new EnterpriseAuth({ ...defaults, origin, oem: form.values.oem, domain: form.values.domain });
     const result = new HarnessController(auth, new MexusConversation(auth), speech, () => px.wifi.status().connected);
     result.view.theme = saved('h.theme', 'dark') === 'light' ? 'light' : 'dark';
+    // 工程配置优先；只有工程未同时提供 region/key 时，才采用本次运行在 PixelBox 输入的值。
+    const speechConfig = bundledSpeech ?? (form.values.region && form.values.key
+        ? { region: form.values.region, key: form.values.key } : null);
+    if (speechConfig) {
+        try { result.configureSpeech(speechConfig); }
+        catch (error) { result.view.errorText = userMessage(error, '工程语音配置不可用'); }
+    }
     return result;
 }
 
@@ -109,7 +119,6 @@ function saveForm(): void {
             controller.dispose();
             for (const field of ['origin', 'oem', 'domain'] as Field[]) px.storage.kv.set('h.' + field, form.values[field]);
             controller = createController();
-            if (form.values.key && form.values.region) controller.configureSpeech({ region: form.values.region, key: form.values.key });
             showPage('login');
         }
     } catch (error) { controller.view.errorText = userMessage(error, '设置未保存'); }

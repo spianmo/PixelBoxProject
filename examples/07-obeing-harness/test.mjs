@@ -13,8 +13,25 @@ const authModule = await source('auth.ts');
 const { EnterpriseAuth, validateOrigin } = authModule;
 const { MexusConversation, hello } = await source('conversation.ts');
 const { HarnessController, speechParts } = await source('controller.ts');
+const { projectSpeechConfig } = await source('project-config.ts');
 const { drawHarness, keyboardKeyAt } = await source('render.ts');
-const mainBundle = await build({ entryPoints: [join(root, 'src/main.ts')], bundle: true, write: false, format: 'iife', target: 'es2020' });
+async function mainWithSpeech(region, key) {
+    return build({
+        entryPoints: [join(root, 'src/main.ts')], bundle: true, write: false, format: 'iife', target: 'es2020',
+        plugins: [{
+            name: 'fixture-project-speech',
+            setup(builder) {
+                builder.onResolve({ filter: /^\.\/project-config$/ }, () => ({ path: 'project-config', namespace: 'fixture' }));
+                builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({
+                    contents: `export const projectSpeechConfig = () => (${region && key ? JSON.stringify({ region, key }) : 'null'});`,
+                    loader: 'js',
+                }));
+            },
+        }],
+    });
+}
+const mainBundle = await mainWithSpeech('', '');
+const configuredMainBundle = await mainWithSpeech('eastasia', 'fixture-project-key-1234567890');
 let passed = 0;
 async function test(name, fn) { await fn(); console.log('[OK]', name); passed++; }
 const config = { origin: 'https://v4.test.invalid', deviceId: 'test-pixelbox', oem: '', domain: '' };
@@ -47,6 +64,13 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 await test('HTTPS源校验拒绝明文、账号URL、路径和查询', () => {
     assert.equal(validateOrigin('https://v4.test.invalid/'), config.origin);
     for (const value of ['http://v4.test.invalid', 'https://user:pass@v4.test.invalid', 'https://v4.test.invalid/path', 'https://v4.test.invalid?x']) assert.throws(() => validateOrigin(value));
+});
+await test('工程语音配置必须同时包含区域和密钥', () => {
+    assert.equal(projectSpeechConfig({ region: 'eastasia', key: '' }), null);
+    assert.equal(projectSpeechConfig({ region: '', key: 'fixture-project-key-1234567890' }), null);
+    assert.deepEqual(projectSpeechConfig({ region: ' eastasia ', key: ' fixture-project-key-1234567890 ' }), {
+        region: 'eastasia', key: 'fixture-project-key-1234567890', language: undefined, voice: undefined,
+    });
 });
 await test('真实V4登录顺序、禁止重定向、64位数字ID无精度损失', async () => {
     const { auth, requests } = await loggedIn();
@@ -313,6 +337,49 @@ await test('真实main设置与键盘页gotIp和BOOT双击不开麦，返回和�
     assert.equal(wakeStarts, 3, '显式录音不先开启离线唤醒');
     assert.equal(recordings, 1);
     exit();
+});
+await test('真实main有工程Azure配置时启动即配置且登录后不要求PixelBox填写', async () => {
+    let touch;
+    let renderFrame;
+    let drawn = [];
+    const speechConfigs = [];
+    const fetcher = async (url) => {
+        if (url.endsWith('/ucenter/login') || url.endsWith('/token')) return response(token());
+        if (url.endsWith('/oauth/appid')) return response({ appid: 'fixture-app' });
+        if (url.endsWith('/authorize')) return response({ code: 'fixture-code' });
+        if (url.endsWith('/user/info')) return response({ nickname: '小川' });
+        throw new Error('unexpected fixture path');
+    };
+    const px = {
+        system: { info: () => ({ deviceId: 'test-box' }), now: () => 100, battery: () => ({ level: 86 }), ntpSync: async () => {} },
+        storage: { kv: { get: (name) => ({ 'h.tenant': 'ABC123', 'h.account': 'USR123', 'h.origin': config.origin })[name], set() {} } },
+        speech: { available: () => true, configure: (value) => speechConfigs.push(value), cancel() {},
+            wakeword: { stop() {}, start: async () => {} }, recognize: () => new Promise(() => {}), speak: async () => {} },
+        wifi: { status: () => ({ connected: true }), on: () => () => {} },
+        input: { onTouch(cb) { touch = cb; return () => {}; }, onButton: () => () => {} },
+        sensors: { imu: { available: () => false } },
+        screen: { width: 368, height: 448, setFps() {}, onFrame(cb) { renderFrame = cb; }, clear() {}, fillRect() {},
+            measureText(value) { return { width: Array.from(value).length * 8, height: 12 }; },
+            drawText(value) { drawn.push(value); } },
+        app: { onExit() {} },
+    };
+    runInNewContext(configuredMainBundle.outputFiles[0].text, { px, TextEncoder, Date, fetch: fetcher, WebSocket: class {},
+        setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {}, console: { log() {} } });
+    assert.equal(speechConfigs.length, 1);
+    assert.equal(speechConfigs[0].region, 'eastasia');
+    assert.equal(speechConfigs[0].key, 'fixture-project-key-1234567890');
+    assert.equal(speechConfigs[0].language, 'zh-CN');
+    assert.equal(speechConfigs[0].voice, 'zh-CN-XiaoxiaoNeural');
+    const tap = (x, y) => touch({ type: 'down', x, y });
+    tap(80, 251); for (let i = 0; i < 16; i++) tap(43, 287); tap(320, 407); tap(180, 335);
+    await tick(); await tick();
+    // 登录后处于 assistant，点击顶部设置区才会打开 settings；若落到 speech，此坐标不会进入 settings。
+    tap(335, 48);
+    drawn = [];
+    renderFrame(16);
+    assert.ok(drawn.includes('语音服务 · 已配置'), `实际页面文本: ${drawn.join('|')}`);
+    assert.ok(drawn.includes('企业服务器'), `实际页面文本: ${drawn.join('|')}`);
+    assert.ok(!drawn.includes('设备语音'), `不应进入设备语音页: ${drawn.join('|')}`);
 });
 await test('登录/语音/服务器/键盘/助手浅暗在368和320像素屏内', () => {
     for (const width of [368, 320]) for (const theme of ['light', 'dark']) for (const page of ['login', 'speech', 'server', 'settings', 'editor', 'assistant']) {
