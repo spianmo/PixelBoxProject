@@ -51,6 +51,7 @@ interface SimFetchRequest {
   body?: ArrayBuffer
   bodyText?: string
   timeoutMs: number
+  redirect?: 'follow' | 'error'
 }
 
 interface SimFetchResponse {
@@ -73,7 +74,7 @@ async function doFetch(req: SimFetchRequest): Promise<SimFetchResponse> {
       headers: req.headers,
       body,
       signal: ctrl.signal,
-      redirect: 'follow'
+      redirect: req.redirect ?? 'follow'
     })
     const headers: Record<string, string> = {}
     resp.headers.forEach((v, k) => {

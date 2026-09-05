@@ -2,7 +2,7 @@
  * px shim 表面完整性自检(验收红线守卫)
  *
  * 运行时在执行用户代码前调用 verifySurface():
- * 逐一核对 d.ts 契约要求的 16 个 px 命名空间与全部标准全局,缺一即抛错,
+ * 逐一核对 d.ts 契约要求的 px 命名空间与全部标准全局,缺一即抛错,
  * 应用不会在残缺的 shim 上启动。selfcheck 脚本亦以本清单做静态核对。
  */
 
@@ -15,6 +15,7 @@ export const PX_NAMESPACES = [
   'input',
   'audio',
   'voice',
+  'speech',
   'wifi',
   'net',
   'ble',

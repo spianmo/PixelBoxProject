@@ -554,7 +554,8 @@ export class SimEngine {
           headers: p.headers as Record<string, string>,
           body: p.body as ArrayBuffer | undefined,
           bodyText: p.bodyText as string | undefined,
-          timeoutMs: p.timeoutMs as number
+          timeoutMs: p.timeoutMs as number,
+          redirect: p.redirect as 'follow' | 'error' | undefined
         })
         return { data: r, transfer: [r.body] }
       }

@@ -48,6 +48,8 @@ interface PxRequestInit {
   body?: string | BinaryLike;
   /** 超时毫秒,默认 15000 */
   timeoutMs?: number;
+  /** 默认 follow；登录、密钥请求使用 error，拒绝重定向转发凭据。 */
+  redirect?: 'follow' | 'error';
 }
 interface PxResponse {
   readonly status: number;
@@ -107,6 +109,7 @@ interface PixelBox {
   readonly input: PxInput;
   readonly audio: PxAudio;
   readonly voice: PxVoice;
+  readonly speech: PxSpeech;
   readonly wifi: PxWifi;
   readonly net: PxNet;
   readonly ble: PxBle;
@@ -427,6 +430,25 @@ interface PxVoiceEvents {
   /** 麦克风实时音量 0-100 (用于 UI 律动) */
   level: (level: number) => void;
   error: (message: string) => void;
+}
+
+interface PxSpeech {
+  /** 原生独立语音是否已编译且16k音频硬件可用；模型缺失在wakeword.start时报告。 */
+  available(): boolean;
+  /** Azure配置仅在RAM保留；region=1..40小写字母数字；language/voice=1..80字母数字或连字符。仅官方HTTPS域名，校验CA且禁止重定向。 */
+  configure(opts: { region: string; key: string; language?: string; voice?: string }): void;
+  wakeword: {
+    /** MultiNet7中文命令持续检测，不是定制WakeNet；加载模型并启动拾音后resolve。 */
+    start(opts: { phrase?: '你好小川'; threshold?: number; onWake: () => void; onError?: (message: string) => void }): Promise<void>;
+    /** 立即停采音；原生worker退出后释放模型；旧回调失效。 */
+    stop(): void;
+  };
+  /** 本地VAD采集后Azure STT最终文字。maxMs默认15000/1000..30000；silenceMs默认800/300..3000；timeoutMs默认20000/5000..60000，超界钳制。 */
+  recognize(opts?: { maxMs?: number; silenceMs?: number; timeoutMs?: number; onLevel?: (level: number) => void }): Promise<string>;
+  /** 文本1..6000 UTF-8字节；Azure原始16k PCM流式播报，扬声器实际播完后resolve，最长120秒。 */
+  speak(text: string): Promise<void>;
+  /** 立即停采音/播放、拒绝进行中Promise；TLS读取在下一块或最多5秒socket超时后收尾。 */
+  cancel(): void;
 }
 
 interface PxVoice {

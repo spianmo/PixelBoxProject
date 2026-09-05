@@ -8,12 +8,19 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs",
-    "check": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs",
-    "test": "node scripts/test-electronic-perler.mjs"
+    "build": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node 07-obeing-harness/test.mjs",
+    "check": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node 07-obeing-harness/test.mjs",
+    "test": "node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node 07-obeing-harness/test.mjs",
+    "test:obeing": "node scripts/test-obeing-pixel.mjs",
+    "render:obeing": "node scripts/render-obeing-pixel.mjs",
+    "test:harness": "node 07-obeing-harness/test.mjs",
+    "render:harness": "node 07-obeing-harness/render-check.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.23.1",
     "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "lossless-json": "4.3.0"
   }
 }

@@ -133,8 +133,12 @@ void http_perform_blocking(const HttpParams& p, HttpResult& out) {
       break;
     }
     status = esp_http_client_get_status_code(client);
-    if ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) &&
-        redirects < 5) {
+    if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+      // 登录和密钥调用可禁止重定向，保证请求体与鉴权头不被转发至其它地址。
+      if (!p.follow_redirects || redirects == 5) {
+        out.error = p.follow_redirects ? "HTTP 重定向次数超限" : "HTTP 重定向已拒绝";
+        break;
+      }
       // 303 一律转 GET;301/302 对 POST 按惯例也转 GET
       if (status == 303 || ((status == 301 || status == 302) && method == "POST")) {
         method = "GET";
@@ -365,6 +369,10 @@ static JSValue js_fetch(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
     for (auto* m : kMethods) valid = valid || p->method == m;
     if (!valid) return pxjs::throw_msg(ctx, "不支持的 method: %s", p->method.c_str());
     p->timeout_ms = pxjs::opt_int_prop(ctx, init, "timeoutMs", 15000);
+    std::string redirect = pxjs::opt_str_prop(ctx, init, "redirect", "follow");
+    if (redirect != "follow" && redirect != "error")
+      return pxjs::throw_msg(ctx, "redirect 仅支持 follow / error");
+    p->follow_redirects = redirect == "follow";
     parse_headers(ctx, init, *p);
 
     JSValue bv = JS_GetPropertyStr(ctx, init, "body");

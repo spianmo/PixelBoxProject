@@ -1,0 +1,11 @@
+#pragma once
+
+// 构建时从当前 ESP-SR 依赖生成，不接受与本固件不匹配的模型内容。
+namespace speech {
+inline constexpr const char* kModelHashes[] = {
+    "@HASH_mn7_index@",
+    "@HASH_mn7_data@",
+    "@HASH_vocab@",
+    "@HASH__MODEL_INFO_@",
+};
+}

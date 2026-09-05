@@ -5,7 +5,7 @@
  * 覆盖:
  *   1. demo 工程按 builder.ts 同参数 esbuild 打包(dist/main.js,ES2020 单文件)
  *   2. 沙箱运行时按 scripts/sandboxRuntimeLoader.cjs 同参数打包(IIFE + woff2 base64 内嵌)
- *   3. px shim 表面静态核对:16 个命名空间 + 13 个标准全局逐一在 bundle 中存在
+ *   3. px shim 表面静态核对:17 个命名空间 + 13 个标准全局逐一在 bundle 中存在
  *      (运行期还有 verifySurface() 二次守卫,缺失即拒绝启动应用)
  *   4. srcdoc 组装:按 engine.ts 同逻辑做 </script 逃逸并核对
  *   5. 两个产物均通过 esbuild 语法解析
@@ -98,9 +98,9 @@ try {
 // ----------------------------------------------------------------
 // 3) px shim 表面静态核对(与 sdk/types/pixelbox.d.ts 契约对齐)
 // ----------------------------------------------------------------
-console.log('[3/7] px shim 表面核对(16 命名空间 + 13 标准全局)')
+console.log('[3/7] px shim 表面核对(17 命名空间 + 13 标准全局)')
 const NAMESPACES = [
-  'system', 'app', 'storage', 'screen', 'input', 'audio', 'voice', 'wifi',
+  'system', 'app', 'storage', 'screen', 'input', 'audio', 'voice', 'speech', 'wifi',
   'net', 'ble', 'camera', 'gps', 'sensors', 'led', 'util', 'color'
 ]
 const GLOBALS = [
@@ -111,7 +111,7 @@ const GLOBALS = [
 if (runtimeCode) {
   const missNs = NAMESPACES.filter((ns) => !new RegExp(`["']?${ns}["']?\\s*[:,]`).test(runtimeCode))
   if (missNs.length > 0) fail('命名空间', `bundle 中未找到: ${missNs.join(', ')}`)
-  else ok(`16 个 px 命名空间全部在 bundle 中`)
+  else ok(`${NAMESPACES.length} 个 px 命名空间全部在 bundle 中`)
   const missG = GLOBALS.filter((g) => !runtimeCode.includes(g))
   if (missG.length > 0) fail('标准全局', `bundle 中未找到: ${missG.join(', ')}`)
   else ok('13 个标准全局全部在 bundle 中')

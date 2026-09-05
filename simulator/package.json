@@ -15,6 +15,7 @@
     "start": "electron .",
     "selfcheck": "node scripts/selfcheck.mjs",
     "check:imu": "node scripts/imu-pose-check.mjs",
+    "check:speech": "node scripts/speech-check.mjs",
     "check:imu:browser": "node scripts/imu-browser-check.mjs",
     "check:toolchain": "node scripts/toolchain-check.mjs",
     "check:clangd": "node scripts/clangd-check.mjs",

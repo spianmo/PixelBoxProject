@@ -12,6 +12,7 @@ export interface SimFetchRequest {
   body?: ArrayBuffer
   bodyText?: string
   timeoutMs: number
+  redirect?: 'follow' | 'error'
 }
 export interface SimFetchResponse {
   status: number

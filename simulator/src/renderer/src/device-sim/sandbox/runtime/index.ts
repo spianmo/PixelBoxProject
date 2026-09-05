@@ -5,7 +5,7 @@
  *   1. 建立 HostLink,向宿主发 'hello'
  *   2. 等待宿主 'init'(manifest + bundleCode + /app 与 /data 预载 + 外设快照)
  *   3. 加载像素字体 → 组装 px 全命名空间 + 覆写标准全局
- *   4. verifySurface() 红线自检(16 命名空间 + 标准全局,缺一不启动)
+ *   4. verifySurface() 命名空间与标准全局自检,缺一不启动
  *   5. Blob 动态 import 执行用户 bundle(失败回退 eval),上报 app-started / app-error
  *
  * 错误处理:
@@ -19,6 +19,7 @@ import { ScreenImpl, createImageResolver } from './screen'
 import { createAudio } from './audio'
 import { VoiceImpl } from './voice'
 import { createFetch, createWebSocketClass, createNet, createWifi, primeHostname } from './net'
+import { SpeechImpl } from './speech'
 import {
   PeriphMirror,
   createInput,
@@ -140,6 +141,7 @@ async function boot(init: SandboxInitPayload): Promise<void> {
   // 4) 音频 / 语音
   const { audio, mic } = createAudio(link, vfs, logWarn)
   const voice = new VoiceImpl(link, mic, init.deviceId, logWarn, NativeWebSocket)
+  const speech = new SpeechImpl(link, mic, device.capabilities.mic && device.capabilities.speaker && device.wifi)
 
   // 5) 应用资产读取(readAsset 相对 assets/)
   const readAssetBytes = (path: string): ArrayBuffer => {
@@ -178,6 +180,7 @@ async function boot(init: SandboxInitPayload): Promise<void> {
     input: createInput(mirror),
     audio,
     voice,
+    speech,
     wifi: createWifi(logInfo, device.wifi),
     net: createNet(link, logWarn),
     ble: createBle(),
@@ -223,7 +226,7 @@ async function boot(init: SandboxInitPayload): Promise<void> {
   // setTimeout/clearTimeout/setInterval/clearInterval/queueMicrotask/TextEncoder/
   // TextDecoder/atob/btoa/performance 使用 iframe 原生实现(与契约一致)
 
-  // 8) 红线自检:16 个命名空间 + 标准全局缺一不可
+  // 8) 命名空间与标准全局缺一不可。
   verifySurface(px)
 
   // 9) 宿主 'stop' → 执行 onExit 收尾并应答
@@ -231,6 +234,7 @@ async function boot(init: SandboxInitPayload): Promise<void> {
     try {
       runExitCallbacks()
     } finally {
+      speech.dispose()
       link.emit('exit-done')
     }
   })

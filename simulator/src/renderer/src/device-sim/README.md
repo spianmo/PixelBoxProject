@@ -110,15 +110,18 @@ device-sim/
 - `wifi` 为模拟数据:scan 返回内置 AP 列表、connect 800ms 后成功、status 反映宿主联网状态;
 - PCM 流 `buffered()` 为 feed 回执 + 时间衰减的估算值;
 - 沙箱 `setTimezone` 不改变 Date 时区(沿用宿主)。
+- `px.speech` 的桌面 TTS 先读取整段 PCM，单段最多 2 MiB、播放等待最多 90 秒；固件采用 64 KiB 环缓冲流式播放，单段最多 4 MiB、含网络的总时限为 120 秒。本地 VAD 使用相同的能量判定思路，阈值和硬件拾音噪声不同，桌面测试不代表实机识别率。
 
 ## 7. 验证
 
+- `npm run check:speech`:独立助手的真实运行时模块测试，覆盖 WAV、VAD、取消、SSML、实际播放结束与拒绝重定向，不调用外部服务。
+- `px.speech` 支持宿主真实麦克风经 HTTPS 访问 Azure STT/TTS，用于 07 独立助手调试。先在 07 配置区域和密钥；密钥只保留于运行内存，退出释放。浏览器无 ESP-SR，`wakeword.start()` 报 ENOTSUP，可点击小猫手动提问；没有用浏览器云识别模拟本地唤醒。HTTP 取消立即终止本轮回调，宿主在途请求按其超时释放。
 - `npm run check:imu`:姿态到六轴数据的坐标/单位、四元数跨角度边界、重置与会话隔离断言。
 - `npm run check:imu:browser`:需可解析的 `playwright` 和本机 Chrome;也可用
   `PLAYWRIGHT_MODULE` 指定 Playwright 入口文件。60s 上限,真实 React/Three/引擎/沙箱
   链路检查,覆盖桌面与窄视口,输出 WebGL 像素检查与截图目录。
 - `pnpm run build`(typecheck node+web + Rsbuild 三 environments 构建)通过;
-- `npm run selfcheck`:demo 构建 → 运行时打包 → shim 表面静态核对(16+13)→ srcdoc
+- `npm run selfcheck`:demo 构建 → 运行时打包 → shim 表面静态核对(17+13)→ srcdoc
   逃逸 → 语法解析,全绿;
 - GUI 手测步骤见 `simulator/README.md`「验证」一节与 `simulator/demo/README.md`。
 

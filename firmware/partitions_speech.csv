@@ -1,0 +1,9 @@
+# 16MiB flash；MN7中文模型约2.6MiB。与默认6MiB OTA槽不同，不能直接OTA迁移。
+# Name, Type, SubType, Offset, Size
+nvs, data, nvs, 0x9000, 0x6000
+otadata, data, ota, 0xf000, 0x2000
+phy_init, data, phy, 0x11000, 0x1000
+ota_0, app, ota_0, 0x20000, 0x500000
+ota_1, app, ota_1, , 0x500000
+storage, data, littlefs, , 0x2e0000
+model, data, spiffs, , 0x300000

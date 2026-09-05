@@ -22,6 +22,7 @@ struct HttpParams {
   std::vector<std::pair<std::string, std::string>> headers;
   std::vector<uint8_t> body;  ///< 空表示无 body
   int timeout_ms = 15000;
+  bool follow_redirects = true;
 };
 
 void psram_free(void* p);  // 见 js_helpers.hpp

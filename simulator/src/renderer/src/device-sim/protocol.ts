@@ -225,6 +225,7 @@ export interface FetchRpcParams {
   body?: ArrayBuffer
   bodyText?: string
   timeoutMs: number
+  redirect?: 'follow' | 'error'
 }
 export interface FetchRpcResult {
   status: number

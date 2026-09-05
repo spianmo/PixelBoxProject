@@ -27,16 +27,21 @@ interface RequestInitLike {
   headers?: Record<string, string>
   body?: string | BinaryLike
   timeoutMs?: number
+  redirect?: 'follow' | 'error'
 }
 
 export function createFetch(link: HostLink): (url: string, init?: RequestInitLike) => Promise<unknown> {
   return async function pxFetch(url: string, init?: RequestInitLike): Promise<unknown> {
     if (typeof url !== 'string') throw new Error('fetch: url 必须是字符串')
+    if (init?.redirect !== undefined && init.redirect !== 'follow' && init.redirect !== 'error') {
+      throw new Error('redirect 仅支持 follow / error')
+    }
     const params: Record<string, unknown> = {
       url,
       method: init?.method ?? 'GET',
       headers: init?.headers ?? {},
-      timeoutMs: init?.timeoutMs ?? 15000
+      timeoutMs: init?.timeoutMs ?? 15000,
+      redirect: init?.redirect ?? 'follow'
     }
     const transfer: Transferable[] = []
     if (typeof init?.body === 'string') {
