@@ -8,23 +8,29 @@
 | 产物 | 来源字体 | 许可 | 字符集 | 规格 |
 |---|---|---|---|---|
 | `pixel8.pxf` | [unscii-16](http://viznut.fi/unscii/) | Public Domain | ASCII 95 字 | 8x16 |
-| `pixel12.pxf` | [缤纷像素 fusion-pixel](https://github.com/TakWolf/fusion-pixel-font) 12px 等宽 zh_hans | SIL OFL-1.1 | ASCII + GB2312 一级汉字 (3755) + 常用标点/全角段 | ASCII 6x12, 汉字 12x12 |
-| `pixel16.pxf` | fusion-pixel 8px 等宽 zh_hans, 2 倍放大 | SIL OFL-1.1 | 同 pixel12 | ASCII 8x16, 汉字 16x16 |
+| `pixel12.pxf` | [缤纷像素 fusion-pixel](https://github.com/TakWolf/fusion-pixel-font) 12px proportional zh_hans | SIL OFL-1.1 | 20108 字形，完整 GB2312 6763 汉字、来源字体已有的 CJK BMP、ASCII 与标点 | 汉字 12x12 |
+| `pixel16.pxf` | fusion-pixel 8px proportional zh_hans, 2 倍放大 | SIL OFL-1.1 | 同 pixel12 | 汉字 16x16 |
+
+两个尺寸的源字体缺字集合不同，使用另一个尺寸补齐缺失码点。原字号已有字形保持原像素，
+只有补充字形按目标字号栅格化。覆盖不包含源字体均没有的 1119 个请求码点或 BMP 以外字符。
+字库零拷贝映射 flash，不把全部字形加载到 JS 堆。源字体与 OFL 许可位于模拟器 `sandbox/fonts/`。
 
 ## 重新生成
 
 ```bash
-# 一键: 下载字体源 + 生成三个 .pxf (需要网络)
+# 使用仓库内已有字体源，不需要下载字体发行包
+python3 -m pip install -r requirements.txt
 ./fetch_and_gen.sh
+# Windows: python regenerate.py, then python check_fonts.py
 
 # 或手动:
 python3 fontgen.py --hex unscii-16.hex --charset ascii \
     --out ../../firmware/components/hal_display/fonts/pixel8.pxf
 python3 fontgen.py --bdf fusion-pixel-12px-monospaced-zh_hans.bdf \
-    --charset ascii,gb2312-l1,punct \
+    --charset ascii,gb2312,punct \
     --out ../../firmware/components/hal_display/fonts/pixel12.pxf
 python3 fontgen.py --bdf fusion-pixel-8px-monospaced-zh_hans.bdf \
-    --charset ascii,gb2312-l1,punct --scale 2 \
+    --charset ascii,gb2312,punct --scale 2 \
     --out ../../firmware/components/hal_display/fonts/pixel16.pxf
 ```
 

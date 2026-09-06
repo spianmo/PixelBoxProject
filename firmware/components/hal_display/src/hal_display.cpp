@@ -65,7 +65,7 @@ struct State {
     bool power = true;
 
     gfx::Surface fb;              // 逻辑帧缓冲 (PSRAM)
-    uint16_t *staging = nullptr;  // 物理方向中转缓冲 (PSRAM, 64B 对齐)
+    uint16_t *staging = nullptr;  // Internal DMA strip, 64-byte aligned
 
     Rect dirty[kMaxDirty];
     int dirty_count = 0;
@@ -74,6 +74,7 @@ struct State {
     esp_lcd_panel_handle_t panel = nullptr;
     spi_host_device_t spi_host = SPI2_HOST;
     SemaphoreHandle_t trans_done = nullptr;
+    bool transfer_pending = false;
 
     const Overlay *overlay = nullptr;  // 系统浮层 (错误卡片/横幅), 见 flush()
 };
@@ -401,6 +402,11 @@ void mark_dirty(int x, int y, int w, int h)
 esp_err_t flush()
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    // A timed-out DMA may still own staging. Do not reuse it until completion.
+    if (s.transfer_pending) {
+        if (xSemaphoreTake(s.trans_done, pdMS_TO_TICKS(250)) != pdTRUE) return ESP_ERR_TIMEOUT;
+        s.transfer_pending = false;
+    }
     if (!s.power) {  // 熄屏时丢弃推送, 保留脏区待亮屏 (浮层同样跳过)
         return ESP_OK;
     }
@@ -432,11 +438,17 @@ esp_err_t flush()
             err = esp_lcd_panel_draw_bitmap(s.panel, band.x, band.y, band.x + band.w,
                                             band.y + band.h, s.staging);
             if (err == ESP_OK) {
-                xSemaphoreTake(s.trans_done, portMAX_DELAY);
+                s.transfer_pending = true;
+                if (xSemaphoreTake(s.trans_done, pdMS_TO_TICKS(250)) == pdTRUE) {
+                    s.transfer_pending = false;
+                } else {
+                    err = ESP_ERR_TIMEOUT;
+                    ESP_LOGE(TAG, "Display DMA timeout; retaining dirty regions for retry");
+                }
             }
         }
     }
-    s.dirty_count = 0;
+    if (err == ESP_OK) s.dirty_count = 0;
 
     if (ov && ov->post) ov->post(s.fb, s.fb.w, s.fb.h);  // 恢复被浮层覆盖的像素
     return err;

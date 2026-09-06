@@ -5,20 +5,19 @@
  *   - px.screen 与 PxCanvas 共用一个 QuickJS class (共享全部绘图方法),
  *     以 opaque CanvasHandle 区分主屏/离屏画布;
  *   - 主屏绘图直接写 hal_display 的 PSRAM 逻辑帧缓冲并登记脏矩形;
- *   - onFrame: esp_timer 按 setFps 周期在定时器任务发起 tick, 经
- *     jsvm::post 投递到 JS 线程执行回调 (禁止跨线程直接调 JS_*),
+ *   - onFrame: JS event loop checks a monotonic deadline after input sources,
  *     回调返回后自动 hal_display::flush();
  *   - createAnimation / loadGif 的公开包装在 prelude_screen.js (纯 JS),
  *     依赖本文件的内部助手 __decodeImage / __loadGifFrames / __isCanvas。
  *
  * 内存: 画布像素与解码缓冲一律优先 PSRAM (gfx::create_surface 内部处理)。
  */
-#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <vector>
+#include <algorithm>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -90,57 +89,35 @@ struct FrameSub {
 
 std::vector<FrameSub> g_frame_subs;
 uint32_t g_next_sub_id = 1;
-esp_timer_handle_t g_frame_timer = nullptr;
-std::atomic<bool> g_tick_pending{false};
 int g_fps = 30;
 int64_t g_last_tick_us = 0;
+int64_t g_next_tick_us = -1;
 JSContext *g_ctx = nullptr;  // 当前 VM 的 ctx (init 时更新, teardown 清空)
 
-void frame_tick_js();  // 前置声明
-
-void frame_timer_cb(void *)
-{
-    // esp_timer 任务上下文: 只做投递; JS 忙时跳帧防事件队列堆积
-    if (g_tick_pending.exchange(true)) return;
-    jsvm::post([] { frame_tick_js(); });
-}
+int64_t frame_deadline() { return g_next_tick_us; }
 
 void ensure_timer_started()
 {
-    if (!g_frame_timer) {
-        const esp_timer_create_args_t args = {
-            .callback = frame_timer_cb,
-            .arg = nullptr,
-            .dispatch_method = ESP_TIMER_TASK,
-            .name = "px_frame",
-            .skip_unhandled_events = true,
-        };
-        if (esp_timer_create(&args, &g_frame_timer) != ESP_OK) {
-            ESP_LOGE(TAG, "帧定时器创建失败");
-            return;
-        }
-    }
-    if (!esp_timer_is_active(g_frame_timer)) {
+    if (g_next_tick_us < 0) {
         g_last_tick_us = esp_timer_get_time();
-        esp_timer_start_periodic(g_frame_timer, 1000000 / g_fps);
+        g_next_tick_us = g_last_tick_us + 1000000 / g_fps;
     }
 }
 
 void stop_timer_if_idle()
 {
-    if (g_frame_subs.empty() && g_frame_timer && esp_timer_is_active(g_frame_timer)) {
-        esp_timer_stop(g_frame_timer);
-    }
+    if (g_frame_subs.empty()) g_next_tick_us = -1;
 }
 
 /** JS 线程: 执行一帧回调并自动 flush */
-void frame_tick_js()
+void frame_tick_js(JSContext *ctx)
 {
-    g_tick_pending.store(false);
-    JSContext *ctx = g_ctx;
     if (!ctx || g_frame_subs.empty()) return;
 
     const int64_t now = esp_timer_get_time();
+    // Missed frames are skipped, never replayed from a FIFO.
+    const int64_t period = 1000000 / g_fps;
+    g_next_tick_us += ((now - g_next_tick_us) / period + 1) * period;
     double dt = static_cast<double>(now - g_last_tick_us) / 1000.0;
     g_last_tick_us = now;
     if (dt <= 0 || dt > 10000) dt = 1000.0 / g_fps;
@@ -151,14 +128,14 @@ void frame_tick_js()
     for (auto &sub : g_frame_subs) fns.push_back(JS_DupValue(ctx, sub.fn));
     for (JSValue fn : fns) {
         JSValue arg = JS_NewFloat64(ctx, dt);
-        JSValue ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, &arg);
+        JSValue ret = jsvm::stopping() ? JS_UNDEFINED : jsvm::call(ctx, fn, JS_UNDEFINED, 1, &arg);
         if (JS_IsException(ret)) jsvm::dump_error(ctx);
         JS_FreeValue(ctx, ret);
         JS_FreeValue(ctx, arg);
         JS_FreeValue(ctx, fn);
     }
     // 回调返回后自动提交 (d.ts onFrame 约定)
-    hal_display::flush();
+    if (!jsvm::stopping()) hal_display::flush();
 }
 
 /** VM 拆除: 释放全部回调引用并停表 (JS 线程内, ctx 仍有效) */
@@ -166,8 +143,8 @@ void screen_teardown(JSContext *ctx)
 {
     for (auto &sub : g_frame_subs) JS_FreeValue(ctx, sub.fn);
     g_frame_subs.clear();
-    if (g_frame_timer && esp_timer_is_active(g_frame_timer)) esp_timer_stop(g_frame_timer);
-    g_tick_pending.store(false);
+    g_next_tick_us = -1;
+    g_fps = 30;
     g_ctx = nullptr;
 }
 
@@ -499,6 +476,42 @@ JSValue js_circle_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
     return JS_UNDEFINED;
 }
 
+JSValue js_fill_rects(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    if (argc < 1 || JS_GetTypedArrayType(argv[0]) != JS_TYPED_ARRAY_INT32)
+        return JS_ThrowTypeError(ctx, "fillRects needs Int32Array [x,y,w,h,color,...]");
+    int32_t count = -1;
+    if (argc > 1 && !JS_IsUndefined(argv[1]) && JS_ToInt32(ctx, &count, argv[1]) != 0) return JS_EXCEPTION;
+    // Numeric coercion can execute JS; resolve handles and buffers afterwards.
+    CanvasHandle *handle = nullptr;
+    gfx::Surface *surface = target_of(ctx, this_val, &handle);
+    if (!surface) return JS_EXCEPTION;
+    size_t offset, bytes, element_bytes, buffer_bytes;
+    JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[0], &offset, &bytes, &element_bytes);
+    if (JS_IsException(buffer)) return buffer;
+    uint8_t *data = JS_GetArrayBuffer(ctx, &buffer_bytes, buffer);
+    if (argc < 2 || JS_IsUndefined(argv[1])) count = int32_t(bytes / (5 * sizeof(int32_t)));
+    if (bytes % (5 * sizeof(int32_t)) || count < 0 || count > 8192 ||
+        size_t(count) > bytes / (5 * sizeof(int32_t)) || offset > buffer_bytes || bytes > buffer_bytes - offset || (bytes && !data)) {
+        JS_FreeValue(ctx, buffer);
+        return JS_ThrowRangeError(ctx, "invalid rectangle buffer/count (max 8192)");
+    }
+    const auto *rects = reinterpret_cast<const int32_t *>(data ? data + offset : nullptr);
+    for (int32_t i = 0; i < count; ++i) {
+        const int32_t *r = rects + i * 5;
+        // Clip in 64 bits before calling the int-based rasterizer.
+        const int x0 = int(std::max<int64_t>(0, std::min<int64_t>(surface->w, r[0])));
+        const int y0 = int(std::max<int64_t>(0, std::min<int64_t>(surface->h, r[1])));
+        const int x1 = int(std::max<int64_t>(0, std::min<int64_t>(surface->w, int64_t(r[0]) + r[2])));
+        const int y1 = int(std::max<int64_t>(0, std::min<int64_t>(surface->h, int64_t(r[1]) + r[3])));
+        if (r[2] <= 0 || r[3] <= 0 || x1 <= x0 || y1 <= y0) continue;
+        gfx::fill_rect(*surface, x0, y0, x1 - x0, y1 - y0, gfx::to565(uint32_t(r[4])));
+        mark_if_screen(handle, x0, y0, x1 - x0, y1 - y0);
+    }
+    JS_FreeValue(ctx, buffer);
+    return JS_UNDEFINED;
+}
+
 JSValue js_draw_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
     CanvasHandle *h = nullptr;
@@ -699,10 +712,7 @@ JSValue js_set_fps(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
     int32_t fps = 30;
     if (argc < 1 || !pxscr::get_i32(ctx, argv[0], &fps)) return JS_EXCEPTION;
     g_fps = fps < 1 ? 1 : (fps > 60 ? 60 : fps);
-    if (g_frame_timer && esp_timer_is_active(g_frame_timer)) {
-        esp_timer_stop(g_frame_timer);
-        esp_timer_start_periodic(g_frame_timer, 1000000 / g_fps);
-    }
+    if (g_next_tick_us >= 0) g_next_tick_us = esp_timer_get_time() + 1000000 / g_fps;
     return JS_UNDEFINED;
 }
 
@@ -972,6 +982,7 @@ void register_draw_methods(JSContext *ctx, JSValue obj)
                       JS_NewCFunction(ctx, js_rect_op<gfx::draw_rect>, "drawRect", 5));
     JS_SetPropertyStr(ctx, obj, "fillRect",
                       JS_NewCFunction(ctx, js_rect_op<gfx::fill_rect>, "fillRect", 5));
+    JS_SetPropertyStr(ctx, obj, "fillRects", JS_NewCFunction(ctx, js_fill_rects, "fillRects", 2));
     JS_SetPropertyStr(ctx, obj, "drawCircle",
                       JS_NewCFunction(ctx, js_circle_op<gfx::draw_circle>, "drawCircle", 4));
     JS_SetPropertyStr(ctx, obj, "fillCircle",
@@ -987,6 +998,7 @@ void register_draw_methods(JSContext *ctx, JSValue obj)
 void screen_native_init(JSContext *ctx, JSValue px)
 {
     g_ctx = ctx;
+    jsvm::add_loop_source({100, frame_deadline, frame_tick_js});
 
     // 显示硬件初始化 (幂等; 首次 VM 启动时点亮)
     if (!hal_display::ready()) {

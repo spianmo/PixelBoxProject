@@ -10,12 +10,17 @@
  *     (三个方法返回已 settle 的 Promise;body 挂在不可枚举内部属性上)
  */
 #include <cctype>
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "mbedtls/ssl.h"
 #include "http_util.hpp"
 #include "js_helpers.hpp"
 #include "jsvm/jsvm.hpp"
@@ -86,6 +91,8 @@ static esp_err_t http_event_cb(esp_http_client_event_t* evt) {
 }
 
 void http_perform_blocking(const HttpParams& p, HttpResult& out) {
+  const int64_t started = esp_timer_get_time();
+  int64_t connected = started, uploaded = started, headers = started;
   out = HttpResult{};
   HeaderCollector col{&out.headers};
 
@@ -116,18 +123,38 @@ void http_perform_blocking(const HttpParams& p, HttpResult& out) {
 
   for (int redirects = 0; redirects <= 5; redirects++) {
     esp_err_t err = esp_http_client_open(client, (int)body_len);
+    connected = esp_timer_get_time();
     if (err != ESP_OK) {
-      out.error = std::string("连接失败: ") + esp_err_to_name(err);
+      int tls_error = 0, tls_flags = 0;
+      esp_err_t tls_status = esp_http_client_get_and_clear_last_tls_error(client, &tls_error, &tls_flags);
+      char detail[160];
+      snprintf(detail, sizeof(detail), "%s; esp_tls=%s; mbedtls=%d; verify_flags=0x%x",
+               esp_err_to_name(err), esp_err_to_name(tls_status), tls_error, (unsigned)tls_flags);
+      out.error = (tls_error == MBEDTLS_ERR_SSL_ALLOC_FAILED || err == ESP_ERR_NO_MEM)
+          ? std::string("TLS_ALLOC_FAILED: ") + detail
+          : std::string("连接失败: ") + detail;
+      ESP_LOGE(TAG, "HTTP open failed: %s; internal free=%u largest=%u; PSRAM free=%u",
+               detail,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
       break;
     }
     if (body_len > 0) {
-      int w = esp_http_client_write(client, reinterpret_cast<const char*>(body), (int)body_len);
-      if (w < 0 || (size_t)w != body_len) {
+      size_t offset = 0;
+      while (offset < body_len) {
+        int w = esp_http_client_write(client, reinterpret_cast<const char*>(body + offset), (int)std::min<size_t>(4096, body_len - offset));
+        if (w <= 0) break;
+        offset += size_t(w);
+      }
+      if (offset != body_len) {
         out.error = "请求体发送失败";
         break;
       }
     }
+    uploaded = esp_timer_get_time();
     int64_t clen = esp_http_client_fetch_headers(client);
+    headers = esp_timer_get_time();
     if (clen < 0) {
       out.error = "读取响应头失败";
       break;
@@ -228,6 +255,10 @@ void http_perform_blocking(const HttpParams& p, HttpResult& out) {
   }
 
   esp_http_client_close(client);
+  ESP_LOGI(TAG, "HTTP %s status=%d connect=%lld upload=%lld headers=%lld total=%lld ms, tx=%u rx=%u",
+           p.method.c_str(), status, (long long)((connected - started) / 1000),
+           (long long)((uploaded - connected) / 1000), (long long)((headers - uploaded) / 1000),
+           (long long)((esp_timer_get_time() - started) / 1000), unsigned(p.body.size()), unsigned(out.body_len));
   esp_http_client_cleanup(client);
 }
 
@@ -398,7 +429,7 @@ static JSValue js_fetch(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
   JSValue promv;
   auto prom = pxjs::Promise::create(ctx, &promv);
 
-  pxjs::worker_submit([p, prom]() {
+  if (!pxjs::worker_submit([p, prom]() {
     auto result = std::make_shared<HttpResult>();
     pxjs::http_perform_blocking(*p, *result);
     if (!result->ok) {
@@ -407,7 +438,7 @@ static JSValue js_fetch(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
     }
     prom->resolve_on_js([result](JSContext* c) { return build_response(c, *result); });
     // 若 VM 在 settle 前重启,body 由 HttpResult 析构释放
-  });
+  })) prom->reject_msg("NETWORK_WORKER_ALLOC_FAILED: 网络线程内存不足，请更新固件后重启");
   return promv;
 }
 

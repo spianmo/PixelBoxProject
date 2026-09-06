@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "quickjs.h"
+#include "jsvm/jsvm.hpp"
 
 namespace pxjs {
 
@@ -51,8 +52,8 @@ void psram_free(void* p);
 struct Promise : std::enable_shared_from_this<Promise> {
   JSContext* ctx = nullptr;
   uint32_t gen = 0;  /* 创建时的 jsvm::vm_generation() */
-  JSValue resolve = JS_UNDEFINED;
-  JSValue reject = JS_UNDEFINED;
+  jsvm::Value resolve;
+  jsvm::Value reject;
   bool settled = false;
 
   /** 创建 Promise,*out_promise 为要返回给 JS 的 promise 值 */
@@ -67,7 +68,7 @@ struct Promise : std::enable_shared_from_this<Promise> {
   /** 任意线程:以 Error(msg) reject */
   void reject_msg(std::string msg);
 
-  ~Promise();
+  ~Promise() = default;
 };
 using PromisePtr = std::shared_ptr<Promise>;
 
@@ -75,13 +76,13 @@ using PromisePtr = std::shared_ptr<Promise>;
 
 /**
  * 持有一个 dup 过的 JS 函数,只允许在 JS 线程调用;
- * 析构时经 run_on_js 释放引用(可在任意线程析构)。
+ * Destruction retires its jsvm::Value without using the event queue.
  */
 class JsFunc {
  public:
   /** 仅 JS 线程构造;内部 dup */
   JsFunc(JSContext* ctx, JSValueConst fn);
-  ~JsFunc();
+  ~JsFunc() = default;
   JsFunc(const JsFunc&) = delete;
   JsFunc& operator=(const JsFunc&) = delete;
 
@@ -91,13 +92,11 @@ class JsFunc {
   JSContext* ctx() const { return ctx_; }
   /** 仍属于当前 VM(generation 比对,见 Promise 注释) */
   bool alive() const;
-  /** 仅 VM teardown 钩子调用:立刻释放持有的函数引用 */
-  void teardown_release(JSContext* ctx);
 
  private:
   JSContext* ctx_;
   uint32_t gen_;
-  JSValue fn_;
+  jsvm::Value fn_;
 };
 using JsFuncPtr = std::shared_ptr<JsFunc>;
 
@@ -110,25 +109,13 @@ void call_func_on_js(JsFuncPtr fn, int argc, std::function<void(JSContext*, JSVa
 // ------------------------------------------------------------ native 保活引用
 
 /**
- * native 结构体长期持有的 JS 对象引用(socket/server 的"打开期间保活" self)。
- *
- * 必须用它而不是裸 JSValue —— 这条引用 GC 看不见(藏在 C++ 结构体里),
- * 一旦活到 JS_FreeRuntime,对象就仍留在 rt->gc_obj_list 上,quickjs 的
- * `assert(list_empty(&rt->gc_obj_list))` 当场 abort:表现是**整机 panic 重启**,
- * 不是"应用崩溃只重启 VM"。真机复现:电子拼豆(开着 listenTcp)运行时按键1
- * 切设置页,VM 拆除 → 服务器对象的 self 没人释放 → 芯片复位。
- *
- * 靠应用在 onExit 里 close() 兜不住:
- *   1. 多数应用不会写 close();
- *   2. 就算写了,close() 的释放是 run_on_js 投递的,而 teardown 之后事件循环
- *      再也不会跑这条队列;
- *   3. teardown_vm() 开头就递增了 generation,投递闭包里的 vm_stale 守卫必然为真。
- * 所以只能由 teardown 钩子同步扫表释放 —— 即本类的存在意义。
+ * Native self-reference for sockets/servers. jsvm::Value owns the retained
+ * JS value through shutdown; dropping its native owner cannot bypass cleanup.
  */
 class SelfRef {
  public:
   SelfRef() = default;
-  ~SelfRef();
+  ~SelfRef() = default;
   SelfRef(const SelfRef&) = delete;
   SelfRef& operator=(const SelfRef&) = delete;
 
@@ -136,17 +123,13 @@ class SelfRef {
   void hold(JSContext* ctx, JSValueConst obj);
   /** 仅 JS 线程:释放并注销;VM 已重启时只注销(旧值随旧 runtime 回收) */
   void release(JSContext* ctx);
-  /** 仅 VM teardown 钩子调用:无视 generation 守卫立刻释放 */
-  void teardown_release(JSContext* ctx);
 
-  bool empty() const { return JS_IsUndefined(v_); }
+  bool empty() const { return JS_IsUndefined(v_.get()); }
   /** 借出引用(不转移所有权),供 JS_GetPropertyStr / JS_Call 的 this 使用 */
-  JSValueConst get() const { return v_; }
+  JSValueConst get() const { return v_.get(); }
 
  private:
-  JSValue v_ = JS_UNDEFINED;
-  JSContext* ctx_ = nullptr;
-  uint32_t gen_ = 0;
+  jsvm::Value v_;
 };
 
 // ------------------------------------------------------------ 值转换

@@ -13,7 +13,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
-# ---- 自定义分区表 (OTA 双分区 + littlefs storage) ----
+# ---- 基础分区表; S3 默认由 sdkconfig.defaults.esp32s3 改为语音分区 ----
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
@@ -44,6 +44,8 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 # ---- mbedTLS: 内置 CA 证书包 (fetch https 用) ----
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# TLS buffers must not exhaust internal RAM while PSRAM is available.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
 # ---- esp_http_server: WebSocket 支持 (devd 开发服务必需) ----
 CONFIG_HTTPD_WS_SUPPORT=y

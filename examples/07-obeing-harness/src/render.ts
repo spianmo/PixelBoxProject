@@ -1,5 +1,6 @@
-import { drawCat, wrapText, type RenderInput, type Screen } from '../../06-obeing-pixel/src/render';
+import { companionBody, companionHeader, wrapText, type RenderInput, type Screen } from '../../06-obeing-pixel/src/render';
 import type { ViewState } from '../../06-obeing-pixel/src/state';
+import { layoutScreen, lineHeight, textHeight } from '../../06-obeing-pixel/src/layout';
 
 export type Field = 'tenant' | 'account' | 'password' | 'region' | 'key' | 'origin' | 'oem' | 'domain' | 'question';
 export type Page = 'assistant' | 'login' | 'speech' | 'server' | 'settings' | 'editor';
@@ -46,7 +47,8 @@ function icon(screen: Screen, name: 'back' | 'mute' | 'mic' | 'theme' | 'setting
         delete: ['0011111', '0100001', '1001011', '1010101', '1001011', '0100001', '0011111'],
         check: ['000001', '000010', '100100', '011000'],
     };
-    icons[name].forEach((row, y1) => { for (let x1 = 0; x1 < row.length; x1++) if (row[x1] === '1') screen.fillRect(x + x1 * 2, y + y1 * 2, 2, 2, color); });
+    const size = 2 * Math.max(1, textHeight(screen) / 12);
+    icons[name].forEach((row, y1) => { for (let x1 = 0; x1 < row.length; x1++) if (row[x1] === '1') screen.fillRect(x + x1 * size, y + y1 * size, size, size, color); });
 }
 
 export function keyboardRows(form: FormState): string[] {
@@ -74,41 +76,33 @@ export function keyboardKeyAt(form: FormState, x: number, y: number, width: numb
 function field(screen: Screen, view: ViewState, form: FormState, name: Field, y: number): void {
     const p = palette(view);
     text(screen, FIELD_LABELS[name], 22, y, p.quiet);
-    screen.fillRect(22, y + 21, screen.width - 44, 32, p.input);
+    screen.fillRect(22, y + 26, screen.width - 44, 32, p.input);
     const value = form.values[name];
     const visible = name === 'password' || name === 'key' ? '*'.repeat(Math.min(value.length, 40)) : value;
-    text(screen, short(screen, visible || '--', screen.width - 68), 32, y + 30, value ? p.fg : p.quiet);
+    text(screen, short(screen, visible || '--', screen.width - 68), 32, y + 26 + (32 - textHeight(screen)) / 2, value ? p.fg : p.quiet);
 }
 
-export function drawHarness(screen: Screen, view: ViewState, input: RenderInput, form: FormState): void {
+export function drawHarness(target: Screen, view: ViewState, input: RenderInput, form: FormState): void {
+    const screen = layoutScreen(target);
+    try { renderHarness(screen, view, input, form); } finally { screen.finish(); }
+}
+
+function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form: FormState): void {
     const p = palette(view);
     const W = screen.width;
     screen.clear(p.bg);
-    text(screen, 'ObeingHarness', 20, 19, p.fg);
-    if (input.battery >= 0) text(screen, `${input.battery}%`, W - 54, 19, p.quiet);
     if (form.page === 'assistant') {
-        screen.fillRect(20, 48, 5, 5, view.connected ? p.accent : 0xe8876b);
-        text(screen, short(screen, view.displayName || '小川', W - 172), 32, 43, p.quiet);
-        icon(screen, view.muted ? 'mute' : 'mic', W - 116, 43, p.accent);
-        icon(screen, 'theme', W - 78, 43, p.fg);
-        icon(screen, 'settings', W - 38, 43, p.fg);
-        for (let y = 82; y < 262; y += 12) for (let x = 34; x < W - 28; x += 12)
-            screen.fillRect(x + Math.round(input.tiltX * 3), y + Math.round(input.tiltY * 3), 1, 1, p.line);
-        drawCat(screen, view, input, 168, Math.min(7.8, (W - 116) / 29));
-        center(screen, LABELS[view.state] || '小川', 274, p.accent);
-        if (view.state === 'listening' || view.state === 'speaking') for (let i = 0; i < 24; i++) {
-            const h = 3 + Math.round(Math.abs(Math.sin(i * 1.5 + input.clock / 100)) * (view.level || 30) / 10);
-            screen.fillRect(W / 2 - 70 + i * 6, 302 - h / 2, 3, h, p.accent);
+        companionHeader(screen, 'ObeingHarness', view, input);
+        if (!input.fullscreen) {
+            icon(screen, view.muted ? 'mute' : 'mic', W - 116, 43, p.accent);
+            icon(screen, 'theme', W - 78, 43, p.fg);
+            icon(screen, 'settings', W - 38, 43, p.fg);
         }
-        screen.fillRect(20, 316, W - 40, 1, p.line);
-        if (view.userText) text(screen, short(screen, '你：' + view.userText, W - 44), 22, 332, p.fg);
-        const progress = view.errorText && view.assistantText ? view.errorText : view.thinkingText
-            || (view.state === 'thinking' ? '正在等待回答' : view.state === 'listening' ? '正在识别语音' : '');
-        if (progress) text(screen, short(screen, progress, W - 44), 22, 354, view.errorText ? 0xe47878 : p.accent);
-        const reply = view.assistantText || view.errorText;
-        wrapText(screen, reply, W - 44, 3).forEach((line, i) => text(screen, line, 22, 378 + i * 18, !view.assistantText && view.errorText ? 0xe47878 : p.fg));
+        companionBody(screen, view, input, LABELS[view.state] || '小川');
         return;
     }
+    text(screen, 'ObeingHarness', 20, 19, p.fg);
+    if (input.battery >= 0) text(screen, `${input.battery}%`, W - 54, 19, p.quiet);
     icon(screen, 'back', 23, 49, p.fg);
     icon(screen, 'theme', W - 43, 47, p.fg);
     if (form.page === 'editor') {
@@ -116,7 +110,7 @@ export function drawHarness(screen: Screen, view: ViewState, input: RenderInput,
         const value = form.values[form.field];
         const visible = form.field === 'password' || form.field === 'key' ? '*'.repeat(value.length) : value;
         screen.fillRect(18, 94, W - 36, 63, p.input);
-        wrapText(screen, visible, W - 94, 2).forEach((line, i) => text(screen, line, 27, 105 + i * 19, p.fg));
+        wrapText(screen, visible, W - 94, 2).forEach((line, i) => text(screen, line, 27, 101 + i * lineHeight(screen, 19), p.fg));
         icon(screen, 'delete', W - 45, 119, p.quiet);
         const rows = keyboardRows(form);
         const cell = (W - 16) / 10;
@@ -125,7 +119,7 @@ export function drawHarness(screen: Screen, view: ViewState, input: RenderInput,
             for (let i = 0; i < letters.length; i++) {
                 const x = left + i * cell;
                 screen.fillRect(Math.round(x + 2), 176 + row * 48, Math.floor(cell - 4), 40, p.input);
-                text(screen, letters[i], Math.round(x + cell / 2 - 3), 190 + row * 48, p.fg);
+                text(screen, letters[i], Math.round(x + (cell - screen.measureText(letters[i], { font: 'pixel12' }).width) / 2), 176 + row * 48 + (40 - textHeight(screen)) / 2, p.fg);
             }
         });
         text(screen, form.upper ? 'abc' : 'ABC', 22, 403, p.fg);
@@ -135,8 +129,8 @@ export function drawHarness(screen: Screen, view: ViewState, input: RenderInput,
         return;
     }
     if (form.page === 'settings') {
-        center(screen, view.displayName || '设备设置', 93, p.fg);
-        center(screen, view.enterpriseId ? `企业 ${view.enterpriseId}` : '独立联网', 118, p.quiet);
+        center(screen, short(screen, view.displayName || '设备设置', W - 44), 93, p.fg);
+        center(screen, short(screen, view.enterpriseId ? `企业 ${view.enterpriseId}` : '独立联网', W - 44), 118, p.quiet);
         const rows = [form.speechReady ? '语音服务 · 已配置' : '语音服务 · 未配置', '企业服务器',
             ...(view.authenticated ? ['文字提问', '退出登录'] : ['企业登录'])];
         rows.forEach((line, i) => {
@@ -151,8 +145,8 @@ export function drawHarness(screen: Screen, view: ViewState, input: RenderInput,
     fields.forEach((name, index) => field(screen, view, form, name, 94 + index * 65));
     const y = form.page === 'speech' ? 252 : 314;
     screen.fillRect(22, y, W - 44, 43, form.busy ? p.line : p.accent);
-    center(screen, form.busy ? '正在登录' : form.page === 'login' ? '登录' : '保存', y + 15, view.theme === 'dark' && !form.busy ? 0x17200f : p.bg);
+    center(screen, form.busy ? '正在登录' : form.page === 'login' ? '登录' : '保存', y + (43 - textHeight(screen)) / 2, view.theme === 'dark' && !form.busy ? 0x17200f : p.bg);
     const status = view.errorText || view.thinkingText;
-    if (status) wrapText(screen, status, W - 44, 2).forEach((line, i) => text(screen, line, 22, y + 54 + i * 17, 0xe47878));
+    if (status) wrapText(screen, status, W - 44, 2).forEach((line, i) => text(screen, line, 22, y + 50 + i * lineHeight(screen, 17), 0xe47878));
     if (form.page === 'login') text(screen, '服务设置', 22, 419, p.quiet);
 }

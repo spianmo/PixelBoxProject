@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <climits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -122,15 +123,18 @@ JSValue js_console_write(JSContext *ctx, JSValueConst this_val, int argc,
  * 定时器 (仅 JS 线程访问)
  * ------------------------------------------------------------ */
 
+using TimerSchedule = std::multimap<int64_t, int32_t>;
 struct TimerRec {
     JSValue fn;
     std::vector<JSValue> args;
     int64_t deadline_us;
     int64_t interval_us;
     bool repeat;
+    TimerSchedule::iterator scheduled;
 };
 
 std::map<int32_t, TimerRec> s_timers;
+TimerSchedule s_timer_schedule;
 int32_t s_next_timer_id = 1;
 
 JSValue js_set_timer(JSContext *ctx, JSValueConst this_val, int argc,
@@ -144,9 +148,8 @@ JSValue js_set_timer(JSContext *ctx, JSValueConst this_val, int argc,
     if (argc >= 2 && JS_ToFloat64(ctx, &ms, argv[1])) {
         return JS_EXCEPTION;
     }
-    if (!(ms >= 0) || std::isnan(ms)) {
-        ms = 0;
-    }
+    if (!std::isfinite(ms) || ms < 0) ms = 0;
+    if (ms > INT32_MAX) ms = INT32_MAX;
 
     TimerRec rec;
     rec.fn = JS_DupValue(ctx, argv[0]);
@@ -157,10 +160,11 @@ JSValue js_set_timer(JSContext *ctx, JSValueConst this_val, int argc,
     rec.deadline_us = esp_timer_get_time() + rec.interval_us;
     rec.repeat = (magic == 1);
 
-    int32_t id = s_next_timer_id++;
-    if (s_next_timer_id <= 0) {
-        s_next_timer_id = 1;
-    }
+    while (s_timers.count(s_next_timer_id))
+        s_next_timer_id = s_next_timer_id == INT32_MAX ? 1 : s_next_timer_id + 1;
+    const int32_t id = s_next_timer_id;
+    s_next_timer_id = id == INT32_MAX ? 1 : id + 1;
+    rec.scheduled = s_timer_schedule.emplace(rec.deadline_us, id);
     s_timers.emplace(id, std::move(rec));
     return JS_NewInt32(ctx, id);
 }
@@ -180,6 +184,7 @@ JSValue js_clear_timer(JSContext *ctx, JSValueConst this_val, int argc,
     }
     auto it = s_timers.find(id);
     if (it != s_timers.end()) {
+        s_timer_schedule.erase(it->second.scheduled);
         JS_FreeValue(ctx, it->second.fn);
         for (auto &a : it->second.args) {
             JS_FreeValue(ctx, a);
@@ -222,6 +227,20 @@ JSValue js_perf_now_ms(JSContext *ctx, JSValueConst this_val, int argc,
     return JS_NewFloat64(ctx, (double)esp_timer_get_time() / 1000.0);
 }
 
+JSValue js_runtime_stats(JSContext *ctx, JSValueConst, int, JSValueConst *)
+{
+    const auto stats = runtime_stats();
+    JSValue value = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, value, "queueDepth", JS_NewUint32(ctx, stats.queue_depth));
+    JS_SetPropertyStr(ctx, value, "queuePeak", JS_NewUint32(ctx, stats.queue_peak));
+    JS_SetPropertyStr(ctx, value, "droppedJobs", JS_NewUint32(ctx, stats.dropped_jobs));
+    JS_SetPropertyStr(ctx, value, "executionTimeouts", JS_NewUint32(ctx, stats.execution_timeouts));
+    JS_SetPropertyStr(ctx, value, "maxTurnMs", JS_NewFloat64(ctx, stats.max_turn_us / 1000.0));
+    JS_SetPropertyStr(ctx, value, "maxSourceMs", JS_NewFloat64(ctx, stats.max_source_us / 1000.0));
+    JS_SetPropertyStr(ctx, value, "maxJobMs", JS_NewFloat64(ctx, stats.max_job_us / 1000.0));
+    return value;
+}
+
 } // namespace
 
 /* ------------------------------------------------------------
@@ -261,6 +280,8 @@ void install_std_globals(JSContext *ctx)
                       JS_NewCFunction(ctx, js_queue_microtask, "queueMicrotask", 1));
     JS_SetPropertyStr(ctx, global, "__pxPerfNowMs",
                       JS_NewCFunction(ctx, js_perf_now_ms, "__pxPerfNowMs", 0));
+    JS_DefinePropertyValueStr(ctx, global, "__pxRuntimeStats",
+        JS_NewCFunction(ctx, js_runtime_stats, "__pxRuntimeStats", 0), 0);
 
     JS_FreeValue(ctx, global);
 }
@@ -274,17 +295,13 @@ void reset_std_state(JSContext *ctx)
         }
     }
     s_timers.clear();
+    s_timer_schedule.clear();
+    s_next_timer_id = 1;
 }
 
 int64_t next_timer_deadline_us()
 {
-    int64_t best = -1;
-    for (auto &kv : s_timers) {
-        if (best < 0 || kv.second.deadline_us < best) {
-            best = kv.second.deadline_us;
-        }
-    }
-    return best;
+    return s_timer_schedule.empty() ? -1 : s_timer_schedule.begin()->first;
 }
 
 void run_due_timers(JSContext *ctx)
@@ -294,20 +311,14 @@ void run_due_timers(JSContext *ctx)
     }
     int64_t now = esp_timer_get_time();
 
-    /* 先收集到期 id, 回调中增删定时器不影响本轮迭代 */
-    std::vector<int32_t> due;
-    for (auto &kv : s_timers) {
-        if (kv.second.deadline_us <= now) {
-            due.push_back(kv.first);
-        }
-    }
-
-    for (int32_t id : due) {
+    // Deadline order prevents short intervals with low IDs starving older timers.
+    // Bound both work and elapsed time; callbacks may schedule/cancel timers.
+    for (int fired = 0; fired < 8 && !stopping(); ++fired) {
+        if (s_timer_schedule.empty() || s_timer_schedule.begin()->first > now) break;
+        const int32_t id = s_timer_schedule.begin()->second;
         auto it = s_timers.find(id);
-        if (it == s_timers.end()) {
-            continue; /* 回调中已被 clear */
-        }
         TimerRec &t = it->second;
+        s_timer_schedule.erase(t.scheduled);
 
         /* dup 后调用, 防止回调中 clearTimeout 自身导致提前释放 */
         JSValue fn = JS_DupValue(ctx, t.fn);
@@ -319,7 +330,9 @@ void run_due_timers(JSContext *ctx)
 
         if (t.repeat) {
             int64_t iv = t.interval_us < 1000 ? 1000 : t.interval_us; /* interval 最小 1ms */
-            t.deadline_us = esp_timer_get_time() + iv;
+            const int64_t current = esp_timer_get_time();
+            t.deadline_us += ((current - t.deadline_us) / iv + 1) * iv;
+            t.scheduled = s_timer_schedule.emplace(t.deadline_us, id);
         } else {
             JS_FreeValue(ctx, t.fn);
             for (auto &a : t.args) {
@@ -328,7 +341,7 @@ void run_due_timers(JSContext *ctx)
             s_timers.erase(it);
         }
 
-        JSValue ret = JS_Call(ctx, fn, JS_UNDEFINED, (int)args.size(), args.data());
+        JSValue ret = call(ctx, fn, JS_UNDEFINED, (int)args.size(), args.data());
         if (JS_IsException(ret)) {
             dump_error(ctx);
         }
@@ -337,6 +350,7 @@ void run_due_timers(JSContext *ctx)
         for (auto &a : args) {
             JS_FreeValue(ctx, a);
         }
+        if (esp_timer_get_time() - now >= 2000) break;
     }
 }
 

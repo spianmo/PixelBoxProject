@@ -78,6 +78,12 @@ esp_err_t WifiManager::ensure_init() {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));  // 凭据由我们自己管
   ESP_ERROR_CHECK(esp_wifi_start());
+  // Interactive HTTP and streaming audio must not wait for AP DTIM beacons.
+#if CONFIG_PX_WIFI_POWER_SAVE
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+#else
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+#endif
 
   inited_ = true;
   load_and_autoconnect();

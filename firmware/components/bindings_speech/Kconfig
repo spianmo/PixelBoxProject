@@ -5,8 +5,8 @@ config PX_ENABLE_SPEECH
     depends on PX_ENABLE_AUDIO && IDF_TARGET_ESP32S3
     default n
     help
-        使用 sdkconfig.speech 独立构建：MultiNet7 中文模型检测你好小川，
+        S3 默认配置启用：MultiNet7 中文模型检测你好小川，
         原生 TLS 请求 Azure STT/TTS，不依赖手机。需要 16MB flash、8MB PSRAM。
-        分区布局与默认固件不同，不能通过旧布局单应用 OTA 安装。
+        使用 partitions_speech.csv，不能通过旧非语音布局单应用 OTA 安装。
 
 endmenu

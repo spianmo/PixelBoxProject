@@ -12,6 +12,7 @@ namespace internal {
 
 /** VM 启动时安装标准全局 */
 void install_std_globals(JSContext *ctx);
+void install_projection_util(JSContext *ctx, JSValue util);
 
 /** VM 拆除时释放标准全局持有的资源 (定时器 JSValue 等) */
 void reset_std_state(JSContext *ctx);
@@ -19,7 +20,7 @@ void reset_std_state(JSContext *ctx);
 /** 下一个定时器到期时刻 (esp_timer 微秒); 无定时器返回 -1 */
 int64_t next_timer_deadline_us();
 
-/** 执行所有到期定时器 (仅 JS 线程) */
+/** Run a bounded slice of due timers in deadline order (JS thread only). */
 void run_due_timers(JSContext *ctx);
 
 /** 日志分发: 输出 ESP_LOG 并转发给已注册 sink (level: 0..3) */

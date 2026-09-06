@@ -14,6 +14,7 @@ export interface Session {
 }
 
 export interface ServerConfig { origin: string; oem: string; domain: string; deviceId: string }
+export interface SessionStore { load(): Session | null; save(session: Session | null): void }
 export type Fetcher = (url: string, init?: PxRequestInit) => Promise<PxResponse>;
 export class AuthError extends Error {
     constructor(public readonly code: number, message: string) { super(message); }
@@ -31,12 +32,29 @@ function identity(value: unknown): string {
     return '';
 }
 
+function httpsOrigin(value: string): string | null {
+    // QuickJS firmware has no URL global. Limit authority syntax to the DNS/IPv4
+    // HTTPS origins accepted by server settings; never normalize userinfo or backslashes.
+    if (/[\u0000-\u0020\u007f\\]/.test(value)) return null;
+    const match = /^https:\/\/([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::(\d{1,5}))?(?=[/?#]|$)/i.exec(value);
+    if (!match) return null;
+    const port = match[2] === undefined ? 443 : Number(match[2]);
+    if (port < 1 || port > 65535) return null;
+    return `https://${match[1].toLowerCase()}${port === 443 ? '' : ':' + port}`;
+}
+
+export function isSameServiceOrigin(url: string, origin: string): boolean {
+    const actual = httpsOrigin(url);
+    return actual !== null && actual === httpsOrigin(origin);
+}
+
 export function validateOrigin(raw: string): string {
     const origin = raw.trim().replace(/\/+$/, '');
     // 仅配置 HTTPS 源，不接受用户信息、路径、查询串或不可见字符。
-    if (!/^https:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?(?::\d{1,5})?$/.test(origin))
+    const normalized = httpsOrigin(origin);
+    if (!/^https:\/\/[^/?#]+$/i.test(origin) || normalized === null)
         throw new AuthError(0, '服务地址须为 HTTPS 域名');
-    return origin;
+    return normalized;
 }
 
 export function parseSession(data: unknown, tenantCode: string, userCode: string, now: number, previous?: Session): Session {
@@ -61,12 +79,17 @@ export class EnterpriseAuth {
     private refreshing: Promise<Session> | null = null;
     readonly config: ServerConfig;
 
-    constructor(config: ServerConfig, private readonly request: Fetcher = fetch, private readonly now: () => number = () => Date.now()) {
+    constructor(config: ServerConfig, private readonly request: Fetcher = fetch, private readonly now: () => number = () => Date.now(),
+        private readonly store?: SessionStore) {
         this.config = { ...config, origin: validateOrigin(config.origin) };
+        this.session = store?.load() ?? null;
     }
 
     current(): Session | null { return this.session; }
-    clear(): void { this.epoch++; this.session = null; this.refreshing = null; }
+    clear(persist = true): void {
+        this.epoch++; this.session = null; this.refreshing = null;
+        if (persist) this.store?.save(null);
+    }
 
     private async api(path: string, body?: Record<string, unknown>, session?: Session): Promise<unknown> {
         const headers: Record<string, string> = {
@@ -79,8 +102,15 @@ export class EnterpriseAuth {
         try {
             response = await this.request(this.config.origin + path, { method: body ? 'POST' : 'GET', headers,
                 body: body ? JSON.stringify(body) : undefined, timeoutMs: 15000, redirect: 'error' });
-        } catch { throw new AuthError(0, '服务连接失败，请检查 Wi-Fi 和服务地址'); }
-        if (response.url && !response.url.startsWith(this.config.origin + '/')) throw new AuthError(0, '服务返回了其他地址');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes('NETWORK_WORKER_ALLOC_FAILED'))
+                throw new AuthError(0, '网络线程内存不足，请更新固件后重启');
+            if (/TLS_ALLOC_FAILED|(?:-0x7f00|mbedtls=-32512)\b/i.test(message))
+                throw new AuthError(0, '设备 TLS 内存不足，请更新固件');
+            throw new AuthError(0, '服务连接失败，请检查 Wi-Fi 和服务地址');
+        }
+        if (response.url && !isSameServiceOrigin(response.url, this.config.origin)) throw new AuthError(0, '服务返回了其他地址');
         // 反向代理可能用 HTML/空正文返回鉴权失败，HTTP 身份状态不能被 JSON 解析错误覆盖。
         if (response.status === 401 || response.status === 403) throw new AuthError(response.status, '登录已过期，请重新登录');
         const raw = await response.text();
@@ -131,6 +161,7 @@ export class EnterpriseAuth {
             tenantId: identity(profile.tenantId) || selected.tenantId,
             nickname: string(profile.nickname) || string(profile.name) || selected.nickname };
         if (!selected.userId || !selected.tenantId) throw new AuthError(0, '登录身份不完整');
+        this.store?.save(selected);
         this.session = selected;
         return selected;
     }
@@ -140,7 +171,7 @@ export class EnterpriseAuth {
         if (!current) throw new AuthError(401, '请先登录企业账号');
         const age = this.now() - current.issuedAt;
         if (current.refreshTokenExpiresIn > 0 && age >= current.refreshTokenExpiresIn * 1000) { this.clear(); throw new AuthError(401, '登录已过期，请重新登录'); }
-        if ((!rejectedToken || rejectedToken !== current.token) && (current.expiresIn === 0 || age < Math.max(0, current.expiresIn - 60) * 1000)) return current;
+        if (age >= 0 && (!rejectedToken || rejectedToken !== current.token) && (current.expiresIn === 0 || age < Math.max(0, current.expiresIn - 60) * 1000)) return current;
         if (this.refreshing) return this.refreshing;
         const epoch = this.epoch;
         const refresh = (async () => {
@@ -149,6 +180,7 @@ export class EnterpriseAuth {
                     current.tenantCode, current.userCode, this.now(), current);
                 if (epoch !== this.epoch) throw new AuthError(401, '登录已退出');
                 if (next.tenantId !== current.tenantId || next.userId !== current.userId) { this.clear(); throw new AuthError(401, '登录身份发生变化'); }
+                this.store?.save(next);
                 this.session = next;
                 return next;
             } catch (error) {

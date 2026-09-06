@@ -36,9 +36,13 @@ int int_prop(JSContext* ctx, JSValueConst options, const char* name, int fallbac
     return std::max(minimum, std::min(maximum, static_cast<int>(result)));
 }
 
-bool ensure_engine() {
-    if (!hal_audio::ready() || hal_audio::device_rate() != speech::kRate) return false;
+bool ensure_engine(JSContext* ctx) {
+    if (!hal_audio::ready() || hal_audio::device_rate() != speech::kRate) {
+        error(ctx, "语音音频硬件未就绪，请重启设备");
+        return false;
+    }
     if (!engine) engine = speech::Engine::create();
+    if (!engine) error(ctx, "语音线程内存不足，请更新固件后重启");
     return static_cast<bool>(engine);
 }
 
@@ -56,7 +60,7 @@ JSValue configure(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     const bool valid_key = config.key.size() >= 8 && config.key.size() <= 256
         && std::all_of(config.key.begin(), config.key.end(), [](unsigned char c) { return c > 32 && c < 127; });
     if (!speech::valid_region(config.region) || !speech::valid_name(config.language) || !speech::valid_name(config.voice) || !valid_key) return error(ctx, "Azure 区域、密钥或语言格式无效");
-    if (!ensure_engine()) return error(ctx, "ENOTSUP: 需要 speech 固件及 16 kHz 音频硬件");
+    if (!ensure_engine(ctx)) return JS_EXCEPTION;
     engine->cancel();
     std::fill(engine->config.key.begin(), engine->config.key.end(), '\0');
     engine->config = config;
@@ -79,7 +83,11 @@ JSValue wake_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     if (string_prop(ctx, argv[0], "phrase", speech::kWakePhrase) != speech::kWakePhrase) return error(ctx, "离线唤醒词固定为你好小川");
     JSValue callback = JS_GetPropertyStr(ctx, argv[0], "onWake");
     if (!JS_IsFunction(ctx, callback)) { JS_FreeValue(ctx, callback); return error(ctx, "onWake 必须是函数"); }
-    if (!ensure_engine()) { JS_FreeValue(ctx, callback); return error(ctx, "ENOTSUP: 需要 speech 固件及 16 kHz 音频硬件"); }
+    if (!ensure_engine(ctx)) { JS_FreeValue(ctx, callback); return JS_EXCEPTION; }
+    if (const char* message = speech::Engine::prepare_model_mapping()) {
+        JS_FreeValue(ctx, callback);
+        return error(ctx, message);
+    }
     auto job = std::make_shared<speech::Job>();
     job->kind = speech::Kind::Wake;
     JSValue threshold = JS_GetPropertyStr(ctx, argv[0], "threshold");
@@ -96,7 +104,7 @@ JSValue wake_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
 }
 
 JSValue recognize(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    if (!ensure_engine()) return error(ctx, "ENOTSUP: 需要 speech 固件及 16 kHz 音频硬件");
+    if (!ensure_engine(ctx)) return JS_EXCEPTION;
     if (engine->config.key.empty()) return error(ctx, "请先配置 Azure 语音区域和密钥");
     JSValue options = argc && JS_IsObject(argv[0]) ? JS_DupValue(ctx, argv[0]) : JS_NewObject(ctx);
     auto job = std::make_shared<speech::Job>();
@@ -112,7 +120,7 @@ JSValue recognize(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
 }
 
 JSValue speak(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    if (!ensure_engine()) return error(ctx, "ENOTSUP: 需要 speech 固件及 16 kHz 音频硬件");
+    if (!ensure_engine(ctx)) return JS_EXCEPTION;
     if (engine->config.key.empty()) return error(ctx, "请先配置 Azure 语音区域和密钥");
     if (argc < 1 || !JS_IsString(argv[0])) return error(ctx, "speak 需要文本");
     const char* text = JS_ToCString(ctx, argv[0]);

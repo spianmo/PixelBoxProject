@@ -1,0 +1,9 @@
+menu "PixelBox Network"
+    config PX_WIFI_POWER_SAVE
+        bool "Enable Wi-Fi modem sleep (higher interactive latency)"
+        default n
+        help
+            Disabling modem sleep avoids DTIM delays in TLS handshakes and
+            streaming uploads. Enable for battery-first workloads that can
+            tolerate increased network latency.
+endmenu

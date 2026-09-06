@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -120,6 +121,28 @@ inline void wav_header(uint8_t* header, uint32_t bytes) {
     std::memcpy(header + 36, "data", 4); u32(40, bytes);
 }
 
+// One microphone producer publishes an immutable PCM prefix for the VAD reader.
+// Capture continues into the final WAV storage even when the reader is delayed.
+class PcmCapture {
+public:
+    PcmCapture(int16_t* samples, size_t capacity) : samples_(samples), capacity_(capacity) {}
+    void feed(const int16_t* samples, size_t count) {
+        if (!enabled_.load() || !samples_) return;
+        const size_t used = used_.load(std::memory_order_relaxed);
+        const size_t copied = std::min(count, capacity_ - used);
+        if (!copied) return;
+        std::memcpy(samples_ + used, samples, copied * sizeof(int16_t));
+        used_.store(used + copied, std::memory_order_release);
+    }
+    size_t size() const { return used_.load(std::memory_order_acquire); }
+    void stop() { enabled_.store(false); }
+private:
+    int16_t* samples_;
+    size_t capacity_;
+    std::atomic<size_t> used_{0};
+    std::atomic<bool> enabled_{true};
+};
+
 /** 本地能量 VAD：要求连续有效语音后再按静音结束，不把环境底噪上传为一句话。 */
 class Vad {
 public:
@@ -130,20 +153,29 @@ public:
         const double rms = count ? std::sqrt(sum / count) : 0;
         level = static_cast<int>(std::min(100.0, rms * 400));
         const int ms = static_cast<int>(count * 1000 / kRate);
-        const bool voice = rms > std::max(0.012, noise_ * 3.5);
-        if (!heard && !voice) noise_ = noise_ * 0.97 + rms * 0.03;
-        if (voice) { voiced_ms_ += ms; quiet_ms_ = 0; }
+        // Normal desk-distance ES7210 speech can have RMS below 0.012.
+        // Do not learn candidate speech as noise; quieter syllables use hysteresis.
+        const bool voice = rms > (heard ? std::max(0.0025, noise_ * 1.8)
+                                       : std::max(0.004, noise_ * 2.5));
+        if (!heard && !voice) noise_ = noise_ * 0.97 + std::min(rms, 0.003) * 0.03;
+        if (voice) {
+            if (!heard && voiced_ms_ == 0) speech_start_ = processed_samples_;
+            voiced_ms_ += ms; quiet_ms_ = 0;
+        }
         else { quiet_ms_ += ms; if (!heard && quiet_ms_ > 120) voiced_ms_ = 0; }
+        processed_samples_ += count;
         if (voiced_ms_ >= 180) heard = true;
         return heard && quiet_ms_ >= silence_ms_;
     }
     bool heard = false;
     int level = 0;
+    size_t speech_start() const { return speech_start_; }
 private:
     int silence_ms_;
     int voiced_ms_ = 0;
     int quiet_ms_ = 0;
-    double noise_ = 0.002;
+    double noise_ = 0.001;
+    size_t processed_samples_ = 0, speech_start_ = 0;
 };
 
 }  // namespace speech

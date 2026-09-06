@@ -44,6 +44,16 @@ menu "PixelBox JSVM"
 
     config JSVM_QUEUE_DEPTH
         int "事件队列深度"
+        range 8 1024
         default 64
+
+    config JSVM_EXECUTION_TIMEOUT_MS
+        int "Maximum JS callback execution time (ms)"
+        range 50 10000
+        default 1000
+        help
+            Interrupt runaway callbacks so input, timers and hot reload recover.
+            Entry evaluation gets ten times this budget. Native blocking calls
+            cannot be interrupted by QuickJS and must enforce their own timeout.
 
 endmenu

@@ -15,7 +15,11 @@
 - 所有 JS_* 调用只发生在 JS 线程;HAL / esp_event / poll / worker 线程一律经
   `jsvm::post`(封装为 `pxjs::run_on_js`)投递(architecture.md §4.1)。
 - **worker 池**(`net_worker`,2 任务 × 12KB 栈):fetch、TLS 握手、mDNS 查询、
-  WS close 等阻塞操作。无顺序保证,顺序敏感操作勿提交。
+  WS close 等阻塞操作。S3 栈使用 PSRAM，TCB 保持内部 RAM；无 PSRAM 时使用内部栈。
+  无顺序保证，顺序敏感操作和 Flash 写入勿提交。所有 worker 创建失败时立即返回
+  `NETWORK_WORKER_ALLOC_FAILED`，不将请求留在无人处理的队列中，后续提交会重试创建。
+  普通请求最多排队 16 个；跨 VM 的旧请求在执行前丢弃，WebSocket 关闭/销毁任务保留。
+  排队超过 250 毫秒会记录等待时间；HTTP 记录连接、上传、响应头与总耗时，不输出请求头。
 - **poll 线程**(hal_net::NetPoll):TCP/UDP 的读、发送队列排空、accept;
   所有 `close(fd)` 经 `post_task` 在 poll 线程执行,避免 fd 复用竞态。
 - **OTA 独立任务**:otaApply 持续数分钟,单独 12KB 任务,进度回调
@@ -41,6 +45,10 @@
 
 WiFi 凭据存 NVS 命名空间 `px_wifi`(`connect(..., {save:false})` 可跳过);
 开机由 `hal_net::WifiManager::ensure_init()` 自动连接,断线 1s→30s 指数退避重连。
+
+默认关闭 Wi-Fi modem sleep，减少交互请求和语音上传的 DTIM 等待，代价是待机功耗增加。
+电池优先的项目可启用 `CONFIG_PX_WIFI_POWER_SAVE`。S3 speech 默认 TCP 收发窗口为 16 KiB，
+接收队列为 14；已有 sdkconfig 需同步配置并重新烧录，不能仅推送 JS 生效。
 
 ## 依赖
 

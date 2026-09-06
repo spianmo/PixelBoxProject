@@ -30,6 +30,7 @@ idf_component_register(
         src/js_std.cpp
         src/mod_system.cpp
         src/mod_util.cpp
+        src/project_points.cpp
         ${QJS_SRCS}
     INCLUDE_DIRS include ${QJS_DIR}
     PRIV_INCLUDE_DIRS src

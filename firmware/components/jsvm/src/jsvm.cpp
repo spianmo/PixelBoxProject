@@ -2,8 +2,8 @@
  * jsvm.cpp — JS 运行时核心: js_task 事件循环 / VM 生命周期 / 模块注册表 / Callback
  *
  * 设计要点 (architecture.md §4):
- *   - js_task 是唯一执行 JS 的线程 (pinned core, 栈在 PSRAM);
- *   - 循环 = 取事件队列 → 执行 → 泵 Promise jobs → 检查定时器;
+ *   - js_task is the only JS thread; its stack defaults to internal RAM;
+ *   - loop: latest input / due frames / bounded events, timers and Promise jobs;
  *   - JS 堆走 PSRAM 自定义分配器, 上限 4MB (Kconfig 可调);
  *   - VM 支持 stop/restart (热更新), 通过中断处理器可打断 JS 死循环;
  *   - OOM 打印诊断并自动重启 VM。
@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <unordered_set>
 #include <vector>
 
@@ -34,9 +35,10 @@ namespace jsvm {
  * 内部状态
  * ------------------------------------------------------------ */
 
-struct Callback::Ctrl {
+struct Value::Ctrl {
     JSValue fn;
     uint32_t gen;
+    Ctrl *release_next = nullptr;
 };
 
 namespace {
@@ -72,8 +74,30 @@ std::vector<Module> &module_registry()
     return v;
 }
 
-std::mutex s_cb_mutex;
+std::mutex s_release_mutex;
 std::unordered_set<Callback::Ctrl *> s_live_ctrls;
+Callback::Ctrl *s_pending_releases = nullptr;
+std::vector<LoopSource> s_loop_sources;
+int64_t s_execution_deadline_us = 0;
+bool s_timeout_counted = false;
+uint32_t s_execution_timeouts = 0;
+std::atomic<uint32_t> s_dropped_jobs{0};
+std::atomic<uint32_t> s_queue_peak{0};
+int64_t s_max_turn_us = 0, s_max_source_us = 0, s_max_job_us = 0;
+
+class ExecutionScope {
+public:
+    explicit ExecutionScope(int multiplier = 1) : outer_(s_execution_deadline_us == 0) {
+        if (outer_) {
+            s_timeout_counted = false;
+            s_execution_deadline_us = esp_timer_get_time() +
+                int64_t(CONFIG_JSVM_EXECUTION_TIMEOUT_MS) * 1000 * multiplier;
+        }
+    }
+    ~ExecutionScope() { if (outer_) s_execution_deadline_us = 0; }
+private:
+    bool outer_;
+};
 
 /* OOM 追踪 */
 int s_oom_count = 0;
@@ -276,6 +300,10 @@ int interrupt_handler(JSRuntime *rt, void *opaque)
     if (s_restart_req.load() || s_stop_req.load()) {
         return 1;
     }
+    if (s_execution_deadline_us && esp_timer_get_time() >= s_execution_deadline_us) {
+        if (!s_timeout_counted) { ++s_execution_timeouts; s_timeout_counted = true; }
+        return 1;
+    }
     return s_interrupt_req.exchange(false) ? 1 : 0;
 }
 
@@ -302,8 +330,9 @@ void pump_jobs()
         return;
     }
     JSContext *jctx = nullptr;
-    int guard = 0;
-    for (;;) {
+    const int64_t deadline = esp_timer_get_time() + 2000;
+    for (int guard = 0; guard < 32 && !stopping(); ++guard) {
+        ExecutionScope execution;
         int r = JS_ExecutePendingJob(s_rt, &jctx);
         if (r == 0) {
             break;
@@ -312,10 +341,7 @@ void pump_jobs()
             std::string msg = "微任务异常: " + format_exception(jctx ? jctx : s_ctx);
             report_js_error("微任务", msg);
         }
-        if (++guard > 1024) {
-            ESP_LOGW(TAG, "Promise job 连续执行超过 1024 次, 让出事件循环");
-            break;
-        }
+        if (esp_timer_get_time() >= deadline) break;
     }
 }
 
@@ -338,6 +364,7 @@ void teardown_vm(bool notify_stopped)
             hooks = s_teardown_hooks;
         }
         for (auto hook : hooks) {
+            ExecutionScope execution;
             hook(s_ctx);
             if (JS_HasException(s_ctx)) {
                 std::string msg = "onExit 收尾异常: " + format_exception(s_ctx);
@@ -351,7 +378,6 @@ void teardown_vm(bool notify_stopped)
 
     /* 3. 释放所有存活 Callback 持有的 JS 函数, 并标记失效 */
     {
-        std::lock_guard<std::mutex> lk(s_cb_mutex);
         for (auto *c : s_live_ctrls) {
             JS_FreeValue(s_ctx, c->fn);
             c->gen = kInvalidGen;
@@ -457,6 +483,7 @@ bool boot_vm()
     EntrySource es;
     if (s_entry_provider && s_entry_provider(es)) {
         ESP_LOGI(TAG, "执行入口: %s (%u 字节)", es.filename.c_str(), (unsigned)es.source.size());
+        ExecutionScope execution(10);
         JSValue r = JS_Eval(s_ctx, es.source.c_str(), es.source.size(),
                             es.filename.c_str(), JS_EVAL_TYPE_GLOBAL);
         if (JS_IsException(r)) {
@@ -477,79 +504,120 @@ bool boot_vm()
 
 void run_one_job(std::function<void()> *job)
 {
+    const int64_t start = esp_timer_get_time();
+    ExecutionScope execution;
     (*job)();
     delete job;
     if (s_ctx && JS_HasException(s_ctx)) {
         std::string msg = "事件回调异常: " + format_exception(s_ctx);
         report_js_error("事件回调", msg);
     }
+    s_max_job_us = std::max(s_max_job_us, esp_timer_get_time() - start);
+}
+
+void drain_callback_releases()
+{
+    Callback::Ctrl *pending;
+    {
+        std::lock_guard<std::mutex> lk(s_release_mutex);
+        pending = s_pending_releases;
+        s_pending_releases = nullptr;
+    }
+    while (pending) {
+        auto *c = pending;
+        pending = c->release_next;
+        if (s_live_ctrls.erase(c) && s_ctx && c->gen == s_generation.load()) {
+            JS_FreeValue(s_ctx, c->fn);
+        }
+        delete c;
+    }
+}
+
+void run_loop_turn()
+{
+    const int64_t start = esp_timer_get_time();
+    drain_callback_releases();
+    if (s_ctx && !stopping()) {
+        for (const auto &source : s_loop_sources) {
+            if (stopping()) break;
+            const int64_t due = source.deadline();
+            if (due >= 0 && due <= esp_timer_get_time()) {
+                const int64_t source_start = esp_timer_get_time();
+                ExecutionScope execution;
+                source.run(s_ctx);
+                dump_error(s_ctx);
+                s_max_source_us = std::max(s_max_source_us, esp_timer_get_time() - source_start);
+            }
+        }
+    }
+    const int64_t deadline = esp_timer_get_time() + 2000;
+    for (int i = 0; i < 4 && !stopping(); ++i) {
+        std::function<void()> *job = nullptr;
+        if (xQueueReceive(s_queue, &job, 0) != pdTRUE) break;
+        run_one_job(job);
+        pump_jobs();
+        if (esp_timer_get_time() >= deadline) break;
+    }
+    if (s_ctx && !stopping()) {
+        internal::run_due_timers(s_ctx);
+        pump_jobs();
+    }
+    s_max_turn_us = std::max(s_max_turn_us, esp_timer_get_time() - start);
+}
+
+TickType_t loop_wait_ticks()
+{
+    if (stopping() || s_boot_req.load() || uxQueueMessagesWaiting(s_queue)) return 0;
+    int64_t deadline = esp_timer_get_time() + 50000;
+    if (s_rt) {
+        if (JS_IsJobPending(s_rt)) return 0;
+        const int64_t timer = internal::next_timer_deadline_us();
+        if (timer >= 0) deadline = std::min(deadline, timer);
+        for (const auto &source : s_loop_sources) {
+            const int64_t due = source.deadline();
+            if (due >= 0) deadline = std::min(deadline, due);
+        }
+    }
+    const int64_t remaining = deadline - esp_timer_get_time();
+    // Round up: sub-tick waits must not turn into a busy loop.
+    return remaining <= 0 ? 0 : (remaining * configTICK_RATE_HZ + 999999) / 1000000;
 }
 
 void js_task_main(void *arg)
 {
     (void)arg;
     s_boot_req = true;
+    int64_t last_yield = esp_timer_get_time();
     for (;;) {
-        if (s_boot_req.exchange(false) && !s_rt) {
-            boot_vm();
-        }
-
-        /* 等待事件: 上限 50ms; 有更近的定时器/待执行 job 则相应缩短 */
-        TickType_t wait = pdMS_TO_TICKS(50);
-        if (s_rt) {
-            int64_t dl = internal::next_timer_deadline_us();
-            if (dl >= 0) {
-                int64_t ms = (dl - esp_timer_get_time()) / 1000;
-                if (ms < 0) {
-                    ms = 0;
-                } else if (ms > 50) {
-                    ms = 50;
-                }
-                wait = pdMS_TO_TICKS(ms);
-            }
-            if (JS_IsJobPending(s_rt)) {
-                wait = 0;
-            }
-        }
-
-        /* 每次迭代只处理一个投递任务: 不做"排空式"批量消费 —— 生产速度
-         * 高于消费时(如大屏帧 tick 渲染慢于投递周期)队列恒非空, 无界排水
-         * 会永久跳过下方的微任务/定时器轮转, Promise 与 setTimeout 全部饿死 */
-        std::function<void()> *job = nullptr;
-        if (xQueueReceive(s_queue, &job, wait) == pdTRUE) {
-            run_one_job(job);
-        }
-
-        if (s_rt) {
-            pump_jobs();
-            internal::run_due_timers(s_ctx);
-            pump_jobs();
-        }
-
         if (s_restart_req.exchange(false)) {
             s_stop_req = false;
             teardown_vm(false);
             s_boot_req = true;
         } else if (s_stop_req.exchange(false)) {
+            s_boot_req = false;
             teardown_vm(true);
         }
+        if (s_boot_req.exchange(false) && !s_rt) boot_vm();
+        run_loop_turn();
+        // A continuously busy app must still let the idle task feed its watchdog.
+        if (esp_timer_get_time() - last_yield >= 10000) {
+            vTaskDelay(1);
+            last_yield = esp_timer_get_time();
+        }
+        ulTaskNotifyTake(pdTRUE, loop_wait_ticks());
     }
 }
 
 void callback_ctrl_release(Callback::Ctrl *c)
 {
-    /* 可能在任意线程触发 (shared_ptr 归零), 投递到 JS 线程释放 JSValue */
-    post([c] {
-        bool owned;
-        {
-            std::lock_guard<std::mutex> lk(s_cb_mutex);
-            owned = s_live_ctrls.erase(c) > 0;
-        }
-        if (owned && s_ctx && c->gen == s_generation.load()) {
-            JS_FreeValue(s_ctx, c->fn);
-        }
-        delete c;
-    });
+    // Intrusive retire list: releasing a callback must never allocate, block on
+    // its own event queue, or leak when that queue is full.
+    {
+        std::lock_guard<std::mutex> lk(s_release_mutex);
+        c->release_next = s_pending_releases;
+        s_pending_releases = c;
+    }
+    wake();
 }
 
 } // namespace
@@ -605,13 +673,13 @@ esp_err_t start()
 void request_restart()
 {
     s_restart_req = true;
-    post([] {}); /* 唤醒事件循环 */
+    wake();
 }
 
 void request_stop()
 {
     s_stop_req = true;
-    post([] {});
+    wake();
 }
 
 bool vm_running()
@@ -629,17 +697,58 @@ void set_entry_provider(EntryProvider p)
     s_entry_provider = p;
 }
 
-void post(std::function<void()> fn)
+bool post(std::function<void()> fn, uint32_t timeout_ms)
 {
     if (!s_queue) {
         ESP_LOGE(TAG, "post: jsvm 尚未启动, 丢弃投递");
-        return;
+        return false;
     }
-    auto *job = new std::function<void()>(std::move(fn));
-    if (xQueueSend(s_queue, &job, pdMS_TO_TICKS(200)) != pdTRUE) {
-        ESP_LOGE(TAG, "事件队列已满, 丢弃投递");
+    auto *job = new (std::nothrow) std::function<void()>(std::move(fn));
+    if (!job) { s_dropped_jobs.fetch_add(1, std::memory_order_relaxed); return false; }
+    // The consumer cannot make room while blocked inside its own producer call.
+    const TickType_t wait = is_js_thread() ? 0 : pdMS_TO_TICKS(timeout_ms);
+    if (xQueueSend(s_queue, &job, wait) != pdTRUE) {
+        s_dropped_jobs.fetch_add(1, std::memory_order_relaxed);
+        if (timeout_ms) ESP_LOGE(TAG, "事件队列已满, 丢弃投递");
         delete job;
+        return false;
     }
+    const uint32_t depth = uxQueueMessagesWaiting(s_queue);
+    uint32_t peak = s_queue_peak.load(std::memory_order_relaxed);
+    while (depth > peak && !s_queue_peak.compare_exchange_weak(peak, depth, std::memory_order_relaxed)) {}
+    wake();
+    return true;
+}
+
+void wake()
+{
+    if (s_task) xTaskNotifyGive(s_task);
+}
+
+bool stopping() { return s_restart_req.load() || s_stop_req.load(); }
+
+RuntimeStats runtime_stats()
+{
+    return {s_queue ? uint32_t(uxQueueMessagesWaiting(s_queue)) : 0,
+        s_queue_peak.load(std::memory_order_relaxed), s_dropped_jobs.load(std::memory_order_relaxed),
+        s_execution_timeouts, s_max_turn_us, s_max_source_us, s_max_job_us};
+}
+
+void add_loop_source(const LoopSource &source)
+{
+    for (const auto &existing : s_loop_sources) {
+        if (existing.run == source.run) return;
+    }
+    s_loop_sources.push_back(source);
+    std::stable_sort(s_loop_sources.begin(), s_loop_sources.end(),
+        [](const LoopSource &a, const LoopSource &b) { return a.priority < b.priority; });
+}
+
+JSValue call(JSContext *ctx, JSValueConst fn, JSValueConst this_val,
+             int argc, JSValueConst *argv)
+{
+    ExecutionScope execution;
+    return JS_Call(ctx, fn, this_val, argc, argv);
 }
 
 bool is_js_thread()
@@ -757,58 +866,54 @@ void add_error_sink(ErrorSink sink)
  * Callback
  * ------------------------------------------------------------ */
 
+Value::Value(JSContext *ctx, JSValueConst fn)
+{
+    auto *c = new Ctrl{JS_DupValue(ctx, fn), s_generation.load()};
+    s_live_ctrls.insert(c);
+    ctrl_ = std::shared_ptr<Ctrl>(c, callback_ctrl_release);
+}
+
+JSValueConst Value::get() const
+{
+    return s_ctx && ctrl_ && ctrl_->gen == s_generation.load() ? ctrl_->fn : JS_UNDEFINED;
+}
+
 Callback::Callback(JSContext *ctx, JSValueConst fn)
 {
-    if (!JS_IsFunction(ctx, fn)) {
-        return;
-    }
-    auto *c = new Ctrl{JS_DupValue(ctx, fn), s_generation.load()};
-    {
-        std::lock_guard<std::mutex> lk(s_cb_mutex);
-        s_live_ctrls.insert(c);
-    }
-    ctrl_ = std::shared_ptr<Ctrl>(c, callback_ctrl_release);
+    if (JS_IsFunction(ctx, fn)) ctrl_ = Value(ctx, fn).ctrl_;
 }
 
 void Callback::invoke_with(ArgBuilder builder) const
 {
+    invoke_with_timeout(std::move(builder), 200);
+}
+
+bool Callback::try_invoke_with(ArgBuilder builder) const
+{
+    return invoke_with_timeout(std::move(builder), 0);
+}
+
+bool Callback::invoke_with_timeout(ArgBuilder builder, uint32_t timeout_ms) const
+{
     if (!ctrl_) {
-        return;
+        return false;
     }
-    auto c = ctrl_;
-    post([c, builder = std::move(builder)] {
-        if (!s_ctx) {
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lk(s_cb_mutex);
-            if (s_live_ctrls.count(c.get()) == 0) {
-                return; /* VM 已重启, 回调失效 */
-            }
-        }
-        if (c->gen != s_generation.load()) {
-            return;
-        }
-        JSValue argv[kMaxArgs];
-        int argc = 0;
-        if (builder) {
-            argc = builder(s_ctx, argv);
-            if (argc < 0) {
-                argc = 0;
-            }
-            if (argc > kMaxArgs) {
-                argc = kMaxArgs;
-            }
-        }
-        JSValue ret = JS_Call(s_ctx, c->fn, JS_UNDEFINED, argc, argv);
-        for (int i = 0; i < argc; i++) {
-            JS_FreeValue(s_ctx, argv[i]);
-        }
-        if (JS_IsException(ret)) {
-            dump_error(s_ctx);
-        }
-        JS_FreeValue(s_ctx, ret);
-    });
+    return post([cb = *this, builder = std::move(builder)] {
+        cb.invoke_now(builder);
+    }, timeout_ms);
+}
+
+void Callback::invoke_now(const ArgBuilder &builder) const
+{
+    auto c = ctrl_; // Keep the function alive if the callback unsubscribes itself.
+    if (!s_ctx || !c || c->gen != s_generation.load()) return;
+    JSValue argv[kMaxArgs] = {JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED};
+    int argc = builder ? std::clamp(builder(s_ctx, argv), 0, kMaxArgs) : 0;
+    JSValue ret = JS_HasException(s_ctx) ? JS_EXCEPTION :
+        call(s_ctx, c->fn, JS_UNDEFINED, argc, argv);
+    for (auto &arg : argv) JS_FreeValue(s_ctx, arg);
+    if (JS_IsException(ret)) dump_error(s_ctx);
+    JS_FreeValue(s_ctx, ret);
 }
 
 } // namespace jsvm

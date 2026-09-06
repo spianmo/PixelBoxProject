@@ -336,11 +336,42 @@ def preview(font: Font, text: str) -> None:
     print("\n".join(canvas_rows))
 
 
+def parse_outline(path: str, wanted: Set[int], height: int) -> Font:
+    """Rasterize the repository's pixel OTF/WOFF2 at its exact design height."""
+    from io import BytesIO
+    from fontTools.ttLib import TTFont
+    from PIL import Image, ImageDraw, ImageFont
+
+    source = TTFont(path)
+    cmap = source.getBestCmap()
+    source.flavor = None
+    binary = BytesIO()
+    source.save(binary)
+    binary.seek(0)
+    raster = ImageFont.truetype(binary, height)
+    # Fusion's OTF metrics include leading; design cells use 100 units per pixel.
+    design_height = source['head'].unitsPerEm / 100
+    baseline = round(height * (design_height - 2) / design_height)
+    font = Font(height=height, baseline=baseline)
+    for cp in sorted(wanted & set(cmap)):
+        advance = max(1, round(raster.getlength(chr(cp))))
+        image = Image.new('1', (advance, height))
+        draw = ImageDraw.Draw(image)
+        draw.text((0, baseline), chr(cp), font=raster, fill=1, anchor='ls')
+        rows = [sum(int(bool(image.getpixel((x, y)))) << (advance - 1 - x)
+                    for x in range(advance)) for y in range(height)]
+        font.glyphs[cp] = Glyph(cp=cp, width=advance, advance=advance, rows=rows)
+    return font
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="PixelBox pxfont 字表生成器")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--bdf", help="BDF 字体文件 (fusion-pixel 等)")
     src.add_argument("--hex", dest="hexfile", help="unscii .hex 字体文件")
+    src.add_argument("--otf", help="Pixel OTF/WOFF2 (requires fonttools, pillow, brotli)")
+    ap.add_argument("--fallback-otf", help="Optional pixel font for codepoints absent from --otf")
+    ap.add_argument("--height", type=int, help="Exact design height for --otf (8 or 12)")
     ap.add_argument("--charset", default="ascii",
                     help="逗号分隔: ascii | gb2312-l1 | gb2312 | punct | file:<路径> | range:4E00-9FA5")
     ap.add_argument("--scale", type=int, default=1, help="整数放大倍数 (默认 1)")
@@ -350,7 +381,14 @@ def main() -> int:
     args = ap.parse_args()
 
     wanted = parse_charset(args.charset)
-    if args.bdf:
+    if args.otf:
+        if args.height not in (8, 12):
+            ap.error('--otf requires --height 8 or 12')
+        font = parse_outline(args.otf, wanted, args.height)
+        if args.fallback_otf:
+            fallback = parse_outline(args.fallback_otf, wanted - set(font.glyphs), args.height)
+            font.glyphs.update(fallback.glyphs)
+    elif args.bdf:
         font = parse_bdf(args.bdf, wanted)
     else:
         font = parse_hex(args.hexfile, wanted)

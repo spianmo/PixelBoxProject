@@ -34,6 +34,8 @@ struct Job {
 
 class Engine : public std::enable_shared_from_this<Engine> {
 public:
+    // Called on the JS thread's internal stack before posting a wake job.
+    static const char* prepare_model_mapping();
     static std::shared_ptr<Engine> create();
     ~Engine();
     bool submit(const std::shared_ptr<Job>& job);

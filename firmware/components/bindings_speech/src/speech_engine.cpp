@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 #include <vector>
 
 #include "cJSON.h"
@@ -11,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_mn_iface.h"
 #include "esp_mn_models.h"
 #include "esp_mn_speech_commands.h"
@@ -18,6 +20,7 @@
 #include "esp_timer.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "model_path.h"
 #include "mbedtls/sha256.h"
 
@@ -26,12 +29,37 @@ namespace {
 constexpr const char* kTag = "px.speech";
 constexpr size_t kMinModelPsram = 4 * 1024 * 1024;
 std::mutex model_mutex;
+// One read-only mapping per boot. Keep it alive across jobs and VM hot reloads;
+// mapping and unmapping can freeze caches and must never run on a PSRAM stack.
+const void* model_root = nullptr;
+size_t model_size = 0;
+esp_partition_mmap_handle_t model_mapping = 0;
+bool model_verified = false;
+
+void log_memory(const char* stage) {
+    ESP_LOGI(kTag, "%s; internal free=%u largest=%u, PSRAM free=%u largest=%u", stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
 
 struct AudioQueue {
-    StreamBufferHandle_t stream = xStreamBufferCreate(16384, 1);
+    // Dynamic FreeRTOS stream buffers use internal RAM even with SPIRAM_USE_MALLOC.
+    // Static buffers need one extra byte to distinguish full from empty.
+    static constexpr size_t kCapacity = 16384;
+    uint8_t* storage = static_cast<uint8_t*>(heap_caps_malloc(kCapacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    StaticStreamBuffer_t control{};
+    StreamBufferHandle_t stream = storage ? xStreamBufferCreateStatic(kCapacity + 1, 1, storage, &control) : nullptr;
     std::atomic<bool> enabled{true};
     std::atomic<bool> overflow{false};
-    ~AudioQueue() { if (stream) vStreamBufferDelete(stream); }
+    AudioQueue() = default;
+    AudioQueue(const AudioQueue&) = delete;
+    AudioQueue& operator=(const AudioQueue&) = delete;
+    ~AudioQueue() {
+        if (stream) vStreamBufferDelete(stream);
+        heap_caps_free(storage);
+    }
     void feed(const int16_t* samples, size_t count) {
         if (!enabled.load() || !stream) return;
         const size_t bytes = count * sizeof(int16_t);
@@ -47,37 +75,80 @@ struct Buffer {
     uint8_t* data;
 };
 
+struct Recording {
+    explicit Recording(size_t samples)
+        : wav(44 + samples * sizeof(int16_t)),
+          pcm(wav.data ? reinterpret_cast<int16_t*>(wav.data + 44) : nullptr, samples) {}
+    Buffer wav;
+    PcmCapture pcm;
+};
+
+struct LevelUpdate {
+    std::atomic<int> latest{0};
+    std::atomic<bool> pending{false};
+};
+
+struct AudioPriority {
+    UBaseType_t previous = uxTaskPriorityGet(nullptr);
+    AudioPriority() {
+        // Live audio must preempt expensive JS frames on the same core.
+        vTaskPrioritySet(nullptr, std::max(previous,
+            std::min<UBaseType_t>(CONFIG_JSVM_TASK_PRIORITY + 1, configMAX_PRIORITIES - 1)));
+    }
+    ~AudioPriority() { vTaskPrioritySet(nullptr, previous); }
+};
+
 struct Http {
     esp_http_client_handle_t handle = nullptr;
+    std::string error;
     ~Http() { if (handle) esp_http_client_cleanup(handle); }
+    bool failed(const char* stage, esp_err_t code = ESP_FAIL) {
+        int tls = 0, flags = 0;
+        const esp_err_t tls_status = handle ? esp_http_client_get_and_clear_last_tls_error(handle, &tls, &flags) : ESP_OK;
+        char details[192];
+        snprintf(details, sizeof(details), "Azure %s: %s; tls=%s/%d; verify=0x%x", stage,
+                 esp_err_to_name(code), esp_err_to_name(tls_status), tls, unsigned(flags));
+        error = details;
+        ESP_LOGW(kTag, "%s", details);
+        return false;
+    }
     bool open(const Config& config, const std::string& url, const char* content_type, int body_size, int timeout_ms) {
+        const int64_t start = esp_timer_get_time();
         esp_http_client_config_t options{};
         options.url = url.c_str();
         options.method = HTTP_METHOD_POST;
-        options.timeout_ms = std::min(timeout_ms, 5000);
+        options.timeout_ms = std::min(timeout_ms, 15000);
         options.crt_bundle_attach = esp_crt_bundle_attach;
         options.disable_auto_redirect = true;
         options.buffer_size = 4096;
         options.buffer_size_tx = 2048;
         handle = esp_http_client_init(&options);
-        if (!handle) return false;
+        if (!handle) return failed("init", ESP_ERR_NO_MEM);
         esp_http_client_set_header(handle, "Ocp-Apim-Subscription-Key", config.key.c_str());
         esp_http_client_set_header(handle, "Content-Type", content_type);
         esp_http_client_set_header(handle, "User-Agent", "ObeingPixel/1.0");
-        return esp_http_client_open(handle, body_size) == ESP_OK;
+        esp_http_client_set_header(handle, "Accept", "application/json");
+        const esp_err_t err = esp_http_client_open(handle, body_size);
+        ESP_LOGI(kTag, "Azure connect: %lld ms, result=%s", (long long)((esp_timer_get_time() - start) / 1000), esp_err_to_name(err));
+        return err == ESP_OK || failed("connect", err);
     }
     bool write(const uint8_t* bytes, size_t count, const std::function<bool()>& active) {
+        const int64_t start = esp_timer_get_time();
         size_t offset = 0;
         while (offset < count && active()) {
-            const int n = esp_http_client_write(handle, reinterpret_cast<const char*>(bytes + offset), std::min<size_t>(2048, count - offset));
-            if (n <= 0) return false;
+            const int n = esp_http_client_write(handle, reinterpret_cast<const char*>(bytes + offset), std::min<size_t>(4096, count - offset));
+            if (n <= 0) return failed("upload");
             offset += static_cast<size_t>(n);
         }
-        return offset == count;
+        ESP_LOGI(kTag, "Azure upload: %u bytes in %lld ms", unsigned(offset), (long long)((esp_timer_get_time() - start) / 1000));
+        return offset == count || failed("upload timeout", ESP_ERR_TIMEOUT);
     }
     int status() {
-        if (esp_http_client_fetch_headers(handle) < 0) return -1;
-        return esp_http_client_get_status_code(handle);
+        const int64_t start = esp_timer_get_time();
+        if (esp_http_client_fetch_headers(handle) < 0) { failed("response headers"); return -1; }
+        const int code = esp_http_client_get_status_code(handle);
+        ESP_LOGI(kTag, "Azure response: HTTP %d in %lld ms", code, (long long)((esp_timer_get_time() - start) / 1000));
+        return code;
     }
 };
 
@@ -85,37 +156,41 @@ struct Model {
     srmodel_list_t* models = nullptr;
     const esp_mn_iface_t* iface = nullptr;
     model_iface_data_t* data = nullptr;
-    bool commands = false;
-    esp_partition_mmap_handle_t mapping = 0;
-    bool mapped = false;
     const char* load() {
+        const int64_t started = esp_timer_get_time();
         if (get_static_srmodels()) return "语音模型被其他任务占用";
-        const auto* partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "model");
-        if (!partition) return "未安装 speech 固件的 model 分区";
-        const void* root = nullptr;
-        // vendor esp_srmodel_init 内含 ESP_ERROR_CHECK；自己处理 mmap 失败，避免启动唤醒使整机重启。
-        if (esp_partition_mmap(partition, 0, partition->size, ESP_PARTITION_MMAP_DATA, &root, &mapping) != ESP_OK)
-            return "语音模型映射失败，请重启后重试";
-        mapped = true;
+        if (!model_root) return "语音模型尚未映射";
         ModelPayloads payloads;
-        if (!valid_model_archive(static_cast<const uint8_t*>(root), partition->size, &payloads))
+        if (!valid_model_archive(static_cast<const uint8_t*>(model_root), model_size, &payloads))
             return "语音模型分区缺失或目录损坏，请重新安装 speech 固件";
-        for (size_t i = 0; i < payloads.size(); i++) {
+        for (size_t i = 0; !model_verified && i < payloads.size(); i++) {
             uint8_t digest[32];
             if (mbedtls_sha256(payloads[i].data, payloads[i].size, digest, 0) != 0
                     || !digest_matches(digest, kModelHashes[i]))
                 return "语音模型内容校验失败，请安装与固件配套的模型";
         }
-        models = srmodel_load(root);
+        model_verified = true;
+        ESP_LOGI(kTag, "wake archive verified in %lld ms", (long long)((esp_timer_get_time() - started) / 1000));
+        models = srmodel_load(model_root);
         return models ? nullptr : "语音模型目录分配失败";
     }
     ~Model() {
-        if (commands) esp_mn_commands_free();
+        // ESP-SR MultiNet7 destroy() owns the global command table as well.
         if (data && iface) iface->destroy(data);
         if (models) esp_srmodel_deinit(models);
-        if (mapped) esp_partition_munmap(mapping);
+        log_memory("wake model released");
     }
 };
+// Retain weights and command table between speech turns. One detector is used
+// at a time, guarded by model_mutex, and released after 60 seconds idle.
+std::unique_ptr<Model> cached_model;
+int64_t model_last_used = 0;
+
+void release_idle_model(bool force = false) {
+    std::unique_lock<std::mutex> lock(model_mutex, std::try_to_lock);
+    if (lock.owns_lock() && cached_model &&
+        (force || esp_timer_get_time() - model_last_used > 60000000)) cached_model.reset();
+}
 }  // namespace
 
 void Job::done(const std::string& result, bool text_result) {
@@ -129,6 +204,7 @@ void Job::done(const std::string& result, bool text_result) {
 
 void Job::fail(const std::string& error) {
     if (settled.exchange(true)) return;
+    if (error != "语音操作已取消") ESP_LOGW(kTag, "job kind=%d failed: %s", int(kind), error.c_str());
     reject.invoke_with([error](JSContext* ctx, JSValue* args) {
         args[0] = JS_NewError(ctx);
         JS_SetPropertyStr(ctx, args[0], "message", JS_NewString(ctx, error.c_str()));
@@ -136,26 +212,56 @@ void Job::fail(const std::string& error) {
     });
 }
 
+const char* Engine::prepare_model_mapping() {
+    if (model_root) return nullptr;
+    int stack_probe;
+    if (!esp_ptr_internal(&stack_probe)) return "语音模型映射需要内部线程栈，请更新固件";
+    const auto* partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "model");
+    if (!partition) return "未安装 speech 固件的 model 分区";
+    const void* root = nullptr;
+    if (esp_partition_mmap(partition, 0, partition->size, ESP_PARTITION_MMAP_DATA, &root, &model_mapping) != ESP_OK)
+        return "语音模型映射失败，请重启后重试";
+    model_size = partition->size;
+    model_root = root;
+    ESP_LOGI(kTag, "model mapped on internal stack; size=%u", (unsigned)model_size);
+    return nullptr;
+}
+
 std::shared_ptr<Engine> Engine::create() {
     auto engine = std::make_shared<Engine>();
     engine->queue_ = xQueueCreate(2, sizeof(std::shared_ptr<Job>*));
-    if (!engine->queue_) return nullptr;
+    if (!engine->queue_) {
+        ESP_LOGE(kTag, "speech queue allocation failed; internal largest=%u",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        return nullptr;
+    }
     auto* owner = new std::shared_ptr<Engine>(engine);
 #if CONFIG_FREERTOS_UNICORE
     constexpr BaseType_t core = 0;
 #else
     constexpr BaseType_t core = 1 - CONFIG_PX_AUDIO_TASK_CORE;
 #endif
-    if (xTaskCreatePinnedToCore([](void* arg) {
+    // The worker uses mapped model data and network/audio I/O, never Flash writes.
+    // Keep the 16 KiB stack in PSRAM; FreeRTOS still places its TCB in internal RAM.
+#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+    constexpr uint32_t stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    constexpr uint32_t stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    if (xTaskCreatePinnedToCoreWithCaps([](void* arg) {
         auto owned = *static_cast<std::shared_ptr<Engine>*>(arg);
         delete static_cast<std::shared_ptr<Engine>*>(arg);
         owned->run();
         owned.reset();
-        vTaskDelete(nullptr);
-    }, "px_speech", 16384, owner, 4, nullptr, core) != pdPASS) {
+        vTaskDeleteWithCaps(nullptr);
+    }, "px_speech", 16384, owner, 4, nullptr, core, stack_caps) != pdPASS) {
+        ESP_LOGE(kTag, "speech worker allocation failed; internal largest=%u PSRAM largest=%u",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         delete owner;
         return nullptr;
     }
+    ESP_LOGI(kTag, "speech worker ready; stack=16384 caps=0x%x", (unsigned)stack_caps);
     return engine;
 }
 
@@ -188,7 +294,7 @@ void Engine::cancel(bool wake_only) {
         job = current_;
         current_.reset();
     }
-    // Promise 立即失败；网络 worker 自行在下一读块/5秒 socket 超时后收尾，不跨线程销毁 TLS。
+    // Reject immediately; the worker owns TLS until the next I/O boundary/timeout.
     if (job) job->fail("语音操作已取消");
     detach_audio();
 }
@@ -231,7 +337,10 @@ void Engine::detach_audio() {
 void Engine::run() {
     while (alive_.load()) {
         std::shared_ptr<Job>* queued = nullptr;
-        if (xQueueReceive(queue_, &queued, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        if (xQueueReceive(queue_, &queued, pdMS_TO_TICKS(100)) != pdTRUE) {
+            release_idle_model();
+            continue;
+        }
         auto job = *queued;
         delete queued;
         if (!active(*job)) { job->fail("语音操作已取消"); continue; }
@@ -245,37 +354,55 @@ void Engine::run() {
     }
     std::shared_ptr<Job>* queued = nullptr;
     while (xQueueReceive(queue_, &queued, 0) == pdTRUE) { (*queued)->fail("语音操作已取消"); delete queued; }
+    release_idle_model(true);
 }
 
 void Engine::wake(const std::shared_ptr<Job>& job) {
-    // MultiNet命令表是库内全局单例；跨VM重启的新worker须等旧模型完全销毁。
+    // MultiNet owns a global command table; serialize all detector use and cleanup.
     std::lock_guard<std::mutex> model_lock(model_mutex);
     if (!active(*job)) return;
-    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < kMinModelPsram) { job->fail("MultiNet7 需要至少 4 MiB 连续空闲 PSRAM"); return; }
-    Model model;
-    if (const char* error = model.load()) { job->fail(error); return; }
-    char* name = esp_srmodel_filter(model.models, ESP_MN_PREFIX, ESP_MN_CHINESE);
-    if (!name || !std::strstr(name, "mn7")) { job->fail("model 分区缺少 mn7_cn 中文模型"); return; }
-    model.iface = esp_mn_handle_from_name(name);
-    if (!has_required_multinet_api(model.iface)) { job->fail("MultiNet7 接口不可用"); return; }
-    model.data = model.iface->create(name, 3000);
-    if (!model.data) { job->fail("MultiNet7 工作区分配失败"); return; }
-    // ESP-SR 2.4.7 的 mn7 接口未实现 switch_loader_mode，使用该模型的默认加载方式。
-    if (model.iface->get_samp_rate(model.data) != kRate) { job->fail("MultiNet7 采样率不兼容"); return; }
-    if (esp_mn_commands_alloc(model.iface, model.data) != ESP_OK) { job->fail("本地语音命令注册被占用"); return; }
-    model.commands = true;
-    if (esp_mn_commands_add(1, kWakePinyin) != ESP_OK || esp_mn_commands_update() != nullptr) { job->fail("MultiNet7 无法解析你好小川拼音命令"); return; }
+    const int64_t started = esp_timer_get_time();
+    const bool reused = bool(cached_model);
+    log_memory("wake prepare");
+    // MultiNet allocates multiple buffers, not a single 4 MiB block.
+    if (!cached_model && heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < kMinModelPsram) { job->fail("MultiNet7 需要至少 4 MiB 空闲 PSRAM 总量"); return; }
+    std::unique_ptr<Model> fresh;
+    if (!cached_model) fresh = std::make_unique<Model>();
+    Model& model = cached_model ? *cached_model : *fresh;
+    if (!reused) {
+        AudioPriority initialization_priority;
+        if (const char* error = model.load()) { job->fail(error); return; }
+        if (!active(*job)) return;
+        char* name = esp_srmodel_filter(model.models, ESP_MN_PREFIX, ESP_MN_CHINESE);
+        if (!name || !std::strstr(name, "mn7")) { job->fail("model 分区缺少 mn7_cn 中文模型"); return; }
+        model.iface = esp_mn_handle_from_name(name);
+        if (!has_required_multinet_api(model.iface)) { job->fail("MultiNet7 接口不可用"); return; }
+        model.data = model.iface->create(name, 3000);
+        log_memory("wake model created");
+        if (!model.data) { job->fail("MultiNet7 工作区分配失败"); return; }
+        // ESP-SR 2.4.7 的 mn7 接口未实现 switch_loader_mode，使用该模型的默认加载方式。
+        if (model.iface->get_samp_rate(model.data) != kRate) { job->fail("MultiNet7 采样率不兼容"); return; }
+        if (esp_mn_commands_alloc(model.iface, model.data) != ESP_OK) { job->fail("本地语音命令注册被占用"); return; }
+        if (!active(*job)) return;
+        if (esp_mn_commands_add(1, kWakePinyin) != ESP_OK || esp_mn_commands_update() != nullptr) { job->fail("MultiNet7 无法解析你好小川拼音命令"); return; }
+        log_memory("wake commands ready");
+        cached_model = std::move(fresh);
+    }
+    model.iface->clean(model.data);
     model.iface->set_det_threshold(model.data, job->threshold);
     const int samples = model.iface->get_samp_chunksize(model.data);
     if (samples <= 0 || samples > 4096) { job->fail("MultiNet7 音频块异常"); return; }
     Buffer pcm(samples * 2);
     auto audio = std::make_shared<AudioQueue>();
     if (!pcm.data || !audio->stream) { job->fail("本地语音缓冲分配失败"); return; }
+    log_memory("wake audio ready");
     if (!active(*job)) return;
+    AudioPriority priority;
     const int sink = hal_audio::mic_subscribe([audio](const int16_t* data, size_t count) { audio->feed(data, count); });
     if (sink < 0) { job->fail("麦克风不可用"); return; }
     if (!set_mic(sink, *job)) return;
     job->done();
+    ESP_LOGI(kTag, "wake ready in %lld ms; cached=%d", (long long)((esp_timer_get_time() - started) / 1000), reused);
     ESP_LOGI(kTag, "离线命令检测已启动: mn7_cn / ni hao xiao chuan, PSRAM free=%u", static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
     size_t fill = 0;
     bool detected = false;
@@ -297,52 +424,88 @@ void Engine::wake(const std::shared_ptr<Job>& job) {
             if (matches && matches->num > 0 && matches->command_id[0] == 1 && matches->prob[0] >= job->threshold) { detected = true; break; }
         }
         if (result != ESP_MN_STATE_DETECTING) model.iface->clean(model.data);
+        // Give the UI and idle task time even if inference cannot keep up with input.
+        vTaskDelay(1);
     }
     audio->enabled.store(false);
     detach_audio();
+    model.iface->clean(model.data);
+    model_last_used = esp_timer_get_time();
     // 命中后停止本地拾音，JS 下一步开始云识别；回调由绑定层的代数包装过滤过期事件。
     if (detected && active(*job)) job->callback.invoke();
 }
 
 void Engine::recognize(const std::shared_ptr<Job>& job) {
     const size_t max_samples = static_cast<size_t>(job->max_ms) * kRate / 1000;
-    Buffer wav(44 + max_samples * 2);
-    auto audio = std::make_shared<AudioQueue>();
-    if (!wav.data || !audio->stream) { job->fail("录音缓冲分配失败"); return; }
-    const int sink = hal_audio::mic_subscribe([audio](const int16_t* data, size_t count) { audio->feed(data, count); });
+    auto recording = std::make_shared<Recording>(max_samples);
+    auto& wav = recording->wav;
+    if (!wav.data) { job->fail("录音缓冲分配失败"); return; }
+    if (!active(*job)) return;
+    const int sink = hal_audio::mic_subscribe([recording](const int16_t* data, size_t count) { recording->pcm.feed(data, count); });
     if (sink < 0) { job->fail("麦克风不可用"); return; }
     if (!set_mic(sink, *job)) return;
     Vad vad(job->silence_ms);
     size_t used = 0;
     int64_t last_level = 0;
+    auto level_update = std::make_shared<LevelUpdate>();
     const int64_t capture_deadline = esp_timer_get_time() + static_cast<int64_t>(job->max_ms + 1000) * 1000;
-    while (active(*job) && used < max_samples * 2 && esp_timer_get_time() < capture_deadline) {
-        const size_t got = xStreamBufferReceive(audio->stream, wav.data + 44 + used, std::min<size_t>(640, max_samples * 2 - used), pdMS_TO_TICKS(100));
-        if (got == 0) continue;
-        const bool finished = vad.feed(reinterpret_cast<int16_t*>(wav.data + 44 + used), got / 2);
-        used += got;
-        const int64_t now = esp_timer_get_time();
-        if (now - last_level > 100000 && job->callback) {
-            last_level = now;
-            const int level = vad.level;
-            job->callback.invoke_with([level](JSContext* ctx, JSValue* args) { args[0] = JS_NewInt32(ctx, level); return 1; });
+    {
+        AudioPriority priority;
+        while (active(*job) && used < max_samples * 2) {
+            const int64_t now = esp_timer_get_time();
+            if (now >= capture_deadline) recording->pcm.stop();
+            const size_t available = recording->pcm.size() * sizeof(int16_t) - used;
+            if (!available) {
+                if (now >= capture_deadline) break;
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            const size_t got = std::min<size_t>(640, available);
+            const bool finished = vad.feed(reinterpret_cast<int16_t*>(wav.data + 44 + used), got / sizeof(int16_t));
+            used += got;
+            level_update->latest.store(vad.level);
+            if (now - last_level > 100000 && job->callback) {
+                last_level = now;
+                if (!level_update->pending.exchange(true)) {
+                    const bool queued = job->callback.try_invoke_with([level_update](JSContext* ctx, JSValue* args) {
+                        args[0] = JS_NewInt32(ctx, level_update->latest.load());
+                        level_update->pending.store(false);
+                        return 1;
+                    });
+                    if (!queued) level_update->pending.store(false);
+                }
+            }
+            if (finished) break;
         }
-        if (finished) break;
     }
-    audio->enabled.store(false);
+    recording->pcm.stop();
     detach_audio();
     if (!active(*job)) return;
-    if (audio->overflow.load()) { job->fail("录音处理积压，请重试"); return; }
+    ESP_LOGI(kTag, "recording captured=%u processed=%u samples, speech=%d", (unsigned)recording->pcm.size(), (unsigned)(used / sizeof(int16_t)), vad.heard);
     if (!vad.heard) { job->fail("未检测到语音，请重试"); return; }
+    // Preserve 200 ms pre-roll, omit the long silence while waiting for speech.
+    const size_t preroll = kRate / 5;
+    const size_t trim = (vad.speech_start() > preroll ? vad.speech_start() - preroll : 0) * sizeof(int16_t);
+    if (trim && trim < used) {
+        std::memmove(wav.data + 44, wav.data + 44 + trim, used - trim);
+        used -= trim;
+    }
+    AudioPriority network_priority;
     wav_header(wav.data, static_cast<uint32_t>(used));
     const std::string url = "https://" + job->config.region + ".stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language=" + job->config.language + "&format=simple";
     Http request;
     const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(job->timeout_ms) * 1000;
     const auto valid = [&] { return active(*job) && esp_timer_get_time() < deadline; };
     if (!request.open(job->config, url, "audio/wav; codecs=audio/pcm; samplerate=16000", static_cast<int>(used + 44), job->timeout_ms)
-            || !request.write(wav.data, used + 44, valid)) { job->fail("Azure 语音连接失败或已超时"); return; }
+            || !request.write(wav.data, used + 44, valid)) { job->fail(request.error); return; }
+    if (!valid()) { job->fail("Azure 语音识别超时"); return; }
+    esp_http_client_set_timeout_ms(request.handle, std::max(1, int((deadline - esp_timer_get_time()) / 1000)));
     const int status = request.status();
-    if (status != 200) { job->fail(status == 401 || status == 403 ? "Azure 语音密钥或区域无效" : "Azure 语音识别请求失败"); return; }
+    if (status != 200) {
+        job->fail(status < 0 ? request.error : status == 401 || status == 403 ? "Azure 语音密钥或区域无效" :
+            "Azure 语音识别 HTTP " + std::to_string(status));
+        return;
+    }
     std::string response;
     char chunk[1024];
     while (valid()) {
@@ -359,11 +522,16 @@ void Engine::recognize(const std::shared_ptr<Job>& job) {
     const cJSON* status_json = json ? cJSON_GetObjectItemCaseSensitive(json, "RecognitionStatus") : nullptr;
     const cJSON* display = json ? cJSON_GetObjectItemCaseSensitive(json, "DisplayText") : nullptr;
     if (cJSON_IsString(status_json) && std::strcmp(status_json->valuestring, "Success") == 0 && cJSON_IsString(display) && display->valuestring[0]) job->done(display->valuestring, true);
-    else job->fail("Azure 未识别到有效文字");
+    else {
+        const char* reason = cJSON_IsString(status_json) ? status_json->valuestring : "InvalidResponse";
+        ESP_LOGI(kTag, "Azure recognition status: %s", reason);
+        job->fail(std::string("Azure 未识别到有效文字: ") + reason);
+    }
     if (json) cJSON_Delete(json);
 }
 
 void Engine::speak(const std::shared_ptr<Job>& job) {
+    AudioPriority network_priority;
     const std::string ssml = "<speak version='1.0' xml:lang='" + job->config.language + "'><voice name='" + job->config.voice + "'>" + xml_escape(job->text) + "</voice></speak>";
     const std::string url = "https://" + job->config.region + ".tts.speech.microsoft.com/cognitiveservices/v1";
     Http request;
@@ -371,7 +539,7 @@ void Engine::speak(const std::shared_ptr<Job>& job) {
     const auto valid = [&] { return active(*job) && esp_timer_get_time() < deadline; };
     // 输出格式头必须在 HTTP open 前设置；统一使用原始16k单声道PCM以避免容器误解码。
     esp_http_client_config_t options{};
-    options.url = url.c_str(); options.method = HTTP_METHOD_POST; options.timeout_ms = 5000;
+    options.url = url.c_str(); options.method = HTTP_METHOD_POST; options.timeout_ms = 15000;
     options.crt_bundle_attach = esp_crt_bundle_attach; options.disable_auto_redirect = true;
     options.buffer_size = 4096;
     request.handle = esp_http_client_init(&options);
@@ -380,9 +548,11 @@ void Engine::speak(const std::shared_ptr<Job>& job) {
     esp_http_client_set_header(request.handle, "Content-Type", "application/ssml+xml");
     esp_http_client_set_header(request.handle, "X-Microsoft-OutputFormat", "raw-16khz-16bit-mono-pcm");
     esp_http_client_set_header(request.handle, "User-Agent", "ObeingPixel/1.0");
-    if (esp_http_client_open(request.handle, ssml.size()) != ESP_OK || !request.write(reinterpret_cast<const uint8_t*>(ssml.data()), ssml.size(), valid)) { job->fail("Azure 语音合成连接失败"); return; }
+    const esp_err_t open_error = esp_http_client_open(request.handle, ssml.size());
+    if (open_error != ESP_OK) { request.failed("TTS connect", open_error); job->fail(request.error); return; }
+    if (!request.write(reinterpret_cast<const uint8_t*>(ssml.data()), ssml.size(), valid)) { job->fail(request.error); return; }
     const int status = request.status();
-    if (status != 200) { job->fail(status == 401 || status == 403 ? "Azure 语音密钥或区域无效" : "Azure 语音合成请求失败"); return; }
+    if (status != 200) { job->fail(status < 0 ? request.error : status == 401 || status == 403 ? "Azure 语音密钥或区域无效" : "Azure 语音合成 HTTP " + std::to_string(status)); return; }
     auto ring = hal_audio::PcmRingSource::create(kRate, 1, 65536);
     if (!ring) { job->fail("播报缓冲分配失败"); return; }
     auto completed = std::make_shared<std::atomic<bool>>(false);

@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const build = process.argv[2] || resolve(root, 'build_speech');
+const build = process.argv[2] || resolve(root, 'build');
 const archive = readFileSync(resolve(build, 'srmodels/srmodels.bin'));
 const header = readFileSync(resolve(build, 'esp-idf/bindings_speech/speech_model_hashes.hpp'), 'utf8');
 const hashes = [...header.matchAll(/"([0-9a-f]{64})"/g)].map((match) => match[1]);

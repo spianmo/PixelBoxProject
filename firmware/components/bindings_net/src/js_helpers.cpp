@@ -21,79 +21,10 @@ static const char* TAG = "px_netjs";
 /** 定义在文件末尾的 SubRegistry 退订表 (teardown 时作废) */
 static void unsub_actions_clear();
 
-/* ------------------------------------------------------------
- * 析构与 teardown 钩子的互斥约定 (三个析构函数都依赖它, 集中说明一次)
- *
- * teardown 钩子全程持有 s_live_mtx, 且只在持锁期间把 s_in_teardown 置真。
- * 于是有不变式:**持锁读到 s_in_teardown == true ⟺ 自己就是钩子所在的 JS 线程**
- * (跨线程析构必然阻塞在锁上, 等拿到锁时钩子已经收尾, 标志已复位)。
- *
- * 所以"出表"与"读标志"必须在同一个临界区里做完 —— 中间放锁会开一个窗口:
- * 析构先把自己从存活表摘走 → 钩子拿到锁跑完 (扫不到它) → 析构再看标志已是假 →
- * 走投递路径 → vm_stale 守卫拦下 → 这条引用永远不释放 → JS_FreeRuntime 断言炸。
- * ------------------------------------------------------------ */
-
-/* ------------------------------------------------------------
- * 存活注册表 (Promise / JsFunc / SelfRef)
- *
- * VM teardown 时必须释放所有 C++ 侧持有的 JSValue (未 settle Promise 的
- * resolve/reject、JsFunc 的函数引用、socket/server 的 self 保活引用)
- * —— 否则 JS_FreeRuntime 断言 gc_obj_list 非空直接 abort (真机 coredump
- * 实证: 在途 ntpSync/fetch 期间热重启 = "assert failed: JS_FreeRuntime
- * quickjs.c (list_empty)"; 开着 listenTcp 的应用按键1 切设置页 = 整机复位)。
- * 与 jsvm::Callback 的 live-ctrl 集合同款思路。
- * recursive_mutex: teardown 释放闭包可级联析构其他注册对象 (同线程重入)。
- * ------------------------------------------------------------ */
-static std::recursive_mutex s_live_mtx;
-/** 正处在 teardown 钩子里 (仅 JS 线程读写, 持 s_live_mtx): 见下方析构函数 */
-static bool s_in_teardown = false;
-static std::unordered_set<Promise*>& live_promises() {
-  static std::unordered_set<Promise*> s;
-  return s;
-}
-static std::unordered_set<JsFunc*>& live_funcs() {
-  static std::unordered_set<JsFunc*> s;
-  return s;
-}
-static std::unordered_set<SelfRef*>& live_selfrefs() {
-  static std::unordered_set<SelfRef*> s;
-  return s;
-}
-
-static void teardown_free_live(JSContext* ctx) {
-  /* 全程持锁 + 每轮摘取一个: JS_FreeValue 释放闭包可能级联析构注册表里的
-   * 其他对象 (同线程 recursive 重入, 自行出表), 也可能级联析构"当前"对象
-   * (故先把值挪到局部、标记 settled 后再 free, free 之后不再触碰对象)。
-   * 跨线程析构则阻塞在本锁上直到钩子完成, 对象内存在此期间必然有效。 */
-  std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-  s_in_teardown = true;
-  while (!live_promises().empty()) {
-    Promise* p = *live_promises().begin();
-    live_promises().erase(live_promises().begin());
-    if (p->settled) continue;
-    p->settled = true;
-    JSValue r1 = p->resolve, r2 = p->reject;
-    p->resolve = p->reject = JS_UNDEFINED;
-    JS_FreeValue(ctx, r1); /* p 可能在此被级联析构, 之后不再触碰 p */
-    JS_FreeValue(ctx, r2);
-  }
-  while (!live_funcs().empty()) {
-    JsFunc* f = *live_funcs().begin();
-    live_funcs().erase(live_funcs().begin());
-    f->teardown_release(ctx);
-  }
-  /* self 放最后: 释放它常常让 JS 对象引用归零, 当场跑 finalizer 级联析构
-     整个 socket 结构体 (含其中的 SubRegistry/JsFunc)。先清空 live_funcs
-     才能保证那些 JsFunc 的 fn_ 已经是 UNDEFINED, 析构时直接空转。 */
-  while (!live_selfrefs().empty()) {
-    SelfRef* r = *live_selfrefs().begin();
-    live_selfrefs().erase(live_selfrefs().begin());
-    r->teardown_release(ctx);
-  }
-  /* Unsubscribe 动作表按 VM 生命周期作废: 里面的闭包捕获的是旧 VM 的
-     SubRegistry 宿主, 留着既没用也会跨代累积 */
+static void teardown_free_live(JSContext*) {
+  // JS references stay registered in jsvm::Value after native owner destruction.
   unsub_actions_clear();
-  s_in_teardown = false;
+  g_ctx = nullptr;
 }
 
 JSContext* g_ctx = nullptr;
@@ -130,62 +61,49 @@ static void log_exception(JSContext* ctx) {
 
 PromisePtr Promise::create(JSContext* ctx, JSValue* out_promise) {
   auto p = std::make_shared<Promise>();
-  JSValue funcs[2];
-  JSValue prom = JS_NewPromiseCapability(ctx, funcs);
+  JSValue funcs[2] = {JS_UNDEFINED, JS_UNDEFINED};
+  *out_promise = JS_NewPromiseCapability(ctx, funcs);
   p->ctx = ctx;
   p->gen = jsvm::vm_generation();
-  p->resolve = funcs[0];
-  p->reject = funcs[1];
-  *out_promise = prom;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_promises().insert(p.get());
-  }
+  if (!JS_IsException(*out_promise)) {
+    p->resolve = jsvm::Value(ctx, funcs[0]);
+    p->reject = jsvm::Value(ctx, funcs[1]);
+  } else p->settled = true;
+  JS_FreeValue(ctx, funcs[0]);
+  JS_FreeValue(ctx, funcs[1]);
   return p;
 }
 
 bool vm_stale(uint32_t gen) {
-  /* 双重判定: generation 失配 = 对象属旧 VM; context()==nullptr = VM 停机中
-   * (teardown 已置空 s_ctx)。两者都在 JS 线程读写, 无竞态。 */
   return jsvm::context() == nullptr || gen != jsvm::vm_generation();
 }
 
 void Promise::resolve_now(JSValue v) {
-  if (settled) {
-    JS_FreeValue(ctx, v);
+  if (settled || vm_stale(gen)) {
+    if (auto *current = jsvm::context()) JS_FreeValue(current, v);
     return;
   }
   settled = true;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_promises().erase(this);
-  }
-  JSValue ret = JS_Call(ctx, resolve, JS_UNDEFINED, 1, &v);
+  JSValue ret = jsvm::call(ctx, resolve.get(), JS_UNDEFINED, 1, &v);
   if (JS_IsException(ret)) log_exception(ctx);
   JS_FreeValue(ctx, ret);
   JS_FreeValue(ctx, v);
-  JS_FreeValue(ctx, resolve);
-  JS_FreeValue(ctx, reject);
-  resolve = reject = JS_UNDEFINED;
+  resolve.reset();
+  reject.reset();
 }
 
 void Promise::reject_now(JSValue err) {
-  if (settled) {
-    JS_FreeValue(ctx, err);
+  if (settled || vm_stale(gen)) {
+    if (auto *current = jsvm::context()) JS_FreeValue(current, err);
     return;
   }
   settled = true;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_promises().erase(this);
-  }
-  JSValue ret = JS_Call(ctx, reject, JS_UNDEFINED, 1, &err);
+  JSValue ret = jsvm::call(ctx, reject.get(), JS_UNDEFINED, 1, &err);
   if (JS_IsException(ret)) log_exception(ctx);
   JS_FreeValue(ctx, ret);
   JS_FreeValue(ctx, err);
-  JS_FreeValue(ctx, resolve);
-  JS_FreeValue(ctx, reject);
-  resolve = reject = JS_UNDEFINED;
+  resolve.reset();
+  reject.reset();
 }
 
 void Promise::resolve_on_js(std::function<JSValue(JSContext*)> make) {
@@ -215,134 +133,22 @@ void Promise::reject_msg(std::string msg) {
   });
 }
 
-Promise::~Promise() {
-  // 出表、settled 判读、s_in_teardown 读取必须在同一临界区(见文件头互斥约定)
-  JSContext* c;
-  uint32_t g;
-  JSValue r1, r2;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_promises().erase(this);
-    if (settled) return;
-    settled = true;
-    c = ctx;
-    g = gen;
-    r1 = resolve;
-    r2 = reject;
-    resolve = reject = JS_UNDEFINED;
-    if (!c) return;
-    if (s_in_teardown) {  // 钩子内被级联析构:当场释放(投递出去就再也没人执行了)
-      JS_FreeValue(c, r1);
-      JS_FreeValue(c, r2);
-      return;
-    }
-  }
-  // 未 settle 就析构:把 resolve/reject 引用投递回 JS 线程释放
-  run_on_js([c, g, r1, r2]() {
-    if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
-    JS_FreeValue(c, r1);
-    JS_FreeValue(c, r2);
-  });
-}
-
-// ------------------------------------------------------------ JsFunc
-
+// JS lifetime is owned centrally, including release from a native finalizer.
 JsFunc::JsFunc(JSContext* ctx, JSValueConst fn)
-    : ctx_(ctx), gen_(jsvm::vm_generation()), fn_(JS_DupValue(ctx, fn)) {
-  std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-  live_funcs().insert(this);
-}
+    : ctx_(ctx), gen_(jsvm::vm_generation()), fn_(ctx, fn) {}
 
 bool JsFunc::alive() const { return !vm_stale(gen_); }
 
-void JsFunc::teardown_release(JSContext* ctx) {
-  // 仅 teardown 钩子调用 (JS 线程, 持 s_live_mtx);
-  // 先挪局部再 free: 释放闭包可能级联析构本对象
-  JSValue f = fn_;
-  fn_ = JS_UNDEFINED;
-  if (!JS_IsUndefined(f)) JS_FreeValue(ctx, f);
-}
-
-JsFunc::~JsFunc() {
-  JSContext* c;
-  uint32_t g;
-  JSValue f;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_funcs().erase(this);
-    f = fn_;
-    fn_ = JS_UNDEFINED;
-    c = ctx_;
-    g = gen_;
-    if (JS_IsUndefined(f)) return;  // teardown 已释放
-    if (s_in_teardown) {            // 钩子内被级联析构:当场释放
-      JS_FreeValue(c, f);
-      return;
-    }
-  }
-  run_on_js([c, g, f]() {
-    if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
-    JS_FreeValue(c, f);
-  });
-}
-
-// ------------------------------------------------------------ SelfRef
-
-void SelfRef::hold(JSContext* ctx, JSValueConst obj) {
-  if (!JS_IsUndefined(v_)) release(ctx);
-  ctx_ = ctx;
-  gen_ = jsvm::vm_generation();
-  v_ = JS_DupValue(ctx, obj);
-  std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-  live_selfrefs().insert(this);
-}
-
-void SelfRef::release(JSContext* ctx) {
-  JSValue v;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_selfrefs().erase(this);
-    v = v_;
-    v_ = JS_UNDEFINED;
-  }
-  if (JS_IsUndefined(v)) return;
-  if (vm_stale(gen_)) return;  // VM 已重启,旧值随旧 runtime 回收
-  JS_FreeValue(ctx ? ctx : ctx_, v);
-}
-
-void SelfRef::teardown_release(JSContext* ctx) {
-  // 仅 teardown 钩子调用 (JS 线程, 持 s_live_mtx);
-  // 先挪局部再 free: 释放常触发 finalizer 级联析构本对象所在的结构体
-  JSValue v = v_;
-  v_ = JS_UNDEFINED;
-  if (!JS_IsUndefined(v)) JS_FreeValue(ctx, v);
-}
-
-SelfRef::~SelfRef() {
-  JSContext* c;
-  uint32_t g;
-  JSValue v;
-  {
-    std::lock_guard<std::recursive_mutex> lk(s_live_mtx);
-    live_selfrefs().erase(this);
-    v = v_;
-    v_ = JS_UNDEFINED;
-    c = ctx_;
-    g = gen_;
-    if (JS_IsUndefined(v) || !c) return;  // 已释放 / 从未 hold 过
-    if (s_in_teardown) {                  // 钩子内被级联析构:当场释放
-      JS_FreeValue(c, v);
-      return;
-    }
-  }
-  run_on_js([c, g, v]() {
-    if (vm_stale(g)) return;  // VM 已重启,旧值随旧 runtime 回收
-    JS_FreeValue(c, v);
-  });
-}
+void SelfRef::hold(JSContext* ctx, JSValueConst obj) { v_ = jsvm::Value(ctx, obj); }
+void SelfRef::release(JSContext*) { v_.reset(); }
 
 void JsFunc::call_now(int argc, JSValue* argv) {
-  JSValue ret = JS_Call(ctx_, fn_, JS_UNDEFINED, argc, argv);
+  if (!alive()) {
+    if (auto *current = jsvm::context())
+      for (int i = 0; i < argc; i++) JS_FreeValue(current, argv[i]);
+    return;
+  }
+  JSValue ret = jsvm::call(ctx_, fn_.get(), JS_UNDEFINED, argc, argv);
   if (JS_IsException(ret)) log_exception(ctx_);
   JS_FreeValue(ctx_, ret);
   for (int i = 0; i < argc; i++) JS_FreeValue(ctx_, argv[i]);

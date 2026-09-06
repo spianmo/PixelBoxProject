@@ -5,11 +5,14 @@
  * - onShake / onOrientation:订阅列表, 由 hal 内部 50Hz 检测采样驱动
  */
 #include "esp_log.h"
+#include <algorithm>
+#include <cmath>
 
 #include "hal_periph/imu_qmi8658.hpp"
 
 #include "binding_util.hpp"
 #include "jsvm/jsvm.hpp"
+#include "jsvm/latest_value.hpp"
 #include "quickjs.h"
 
 static const char* TAG = "px.sensors";
@@ -19,18 +22,38 @@ namespace {
 pxb::CallbackRegistry s_shake_reg;
 pxb::CallbackRegistry s_orient_reg;
 
-// onData 单回调:JS 线程写(start/stop), 采样任务读 → 加锁
-std::mutex s_stream_mtx;
+// Callback ownership stays on the JS thread; only POD samples cross tasks.
 jsvm::Callback s_stream_cb;
+jsvm::LatestValue<hal_periph::ImuSample> s_latest;
 
-void set_stream_cb(jsvm::Callback cb) {
-    std::lock_guard<std::mutex> lk(s_stream_mtx);
-    s_stream_cb = std::move(cb);
+int64_t stream_deadline() { return s_latest.pending() ? 0 : -1; }
+
+void stream_poll(JSContext*) {
+    hal_periph::ImuSample sample;
+    if (!s_latest.take(sample) || !s_stream_cb) return;
+    s_stream_cb.invoke_now([&sample](JSContext* ctx, JSValue* argv) -> int {
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "ax", JS_NewFloat64(ctx, sample.ax));
+        JS_SetPropertyStr(ctx, o, "ay", JS_NewFloat64(ctx, sample.ay));
+        JS_SetPropertyStr(ctx, o, "az", JS_NewFloat64(ctx, sample.az));
+        JS_SetPropertyStr(ctx, o, "gx", JS_NewFloat64(ctx, sample.gx));
+        JS_SetPropertyStr(ctx, o, "gy", JS_NewFloat64(ctx, sample.gy));
+        JS_SetPropertyStr(ctx, o, "gz", JS_NewFloat64(ctx, sample.gz));
+        argv[0] = o;
+        return 1;
+    });
 }
 
-jsvm::Callback get_stream_cb() {
-    std::lock_guard<std::mutex> lk(s_stream_mtx);
-    return s_stream_cb;
+void stop_stream() {
+    s_latest.reset();
+    hal_periph::imu_stop_stream();
+    s_stream_cb.reset();
+}
+
+void sensors_teardown(JSContext*) {
+    stop_stream();
+    s_shake_reg.clear();
+    s_orient_reg.clear();
 }
 
 const char* orient_str(hal_periph::ImuOrientation o) {
@@ -57,34 +80,25 @@ JSValue js_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     jsvm::Callback on_data = pxb::opt_callback(ctx, argv[0], "onData");
     if (!on_data) return JS_ThrowTypeError(ctx, "opts.onData 须为函数");
     double rate = pxb::opt_number(ctx, argv[0], "rateHz", 50);
-
-    set_stream_cb(on_data);
+    if (JS_HasException(ctx)) return JS_EXCEPTION;
+    if (!std::isfinite(rate)) return JS_ThrowRangeError(ctx, "rateHz must be finite");
+    rate = std::max(5.0, std::min(500.0, rate));
+    const uint32_t epoch = s_latest.reset();
+    s_stream_cb = on_data;
     esp_err_t err = hal_periph::imu_start_stream(
-        static_cast<uint16_t>(rate), [](const hal_periph::ImuSample& s) {
-            // 采样任务 → JS 线程
-            jsvm::Callback cb = get_stream_cb();
-            if (!cb) return;
-            hal_periph::ImuSample sample = s;
-            cb.invoke_with([sample](JSContext* ctx, JSValue* argv) -> int {
-                JSValue o = JS_NewObject(ctx);
-                JS_SetPropertyStr(ctx, o, "ax", JS_NewFloat64(ctx, sample.ax));
-                JS_SetPropertyStr(ctx, o, "ay", JS_NewFloat64(ctx, sample.ay));
-                JS_SetPropertyStr(ctx, o, "az", JS_NewFloat64(ctx, sample.az));
-                JS_SetPropertyStr(ctx, o, "gx", JS_NewFloat64(ctx, sample.gx));
-                JS_SetPropertyStr(ctx, o, "gy", JS_NewFloat64(ctx, sample.gy));
-                JS_SetPropertyStr(ctx, o, "gz", JS_NewFloat64(ctx, sample.gz));
-                argv[0] = o;
-                return 1;
-            });
+        static_cast<uint16_t>(rate), [epoch](const hal_periph::ImuSample& sample) {
+            if (s_latest.publish(epoch, sample)) jsvm::wake();
         });
-    if (err != ESP_OK) return JS_ThrowInternalError(ctx, "IMU 启动失败");
+    if (err != ESP_OK) {
+        stop_stream();
+        return JS_ThrowInternalError(ctx, "IMU 启动失败");
+    }
     return JS_UNDEFINED;
 }
 
 JSValue js_stop(JSContext* ctx, JSValueConst, int, JSValueConst*) {
     (void)ctx;
-    hal_periph::imu_stop_stream();
-    set_stream_cb({});
+    stop_stream();
     return JS_UNDEFINED;
 }
 
@@ -118,10 +132,13 @@ JSValue js_on_orientation(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
 void sensors_init(JSContext* ctx, JSValue px) {
     s_shake_reg.clear();
     s_orient_reg.clear();
-    set_stream_cb({});
-
-    // VM 重启后停掉上一代应用的数据流
-    hal_periph::imu_stop_stream();
+    stop_stream();
+    jsvm::add_loop_source({0, stream_deadline, stream_poll});
+    static bool hooked = false;
+    if (!hooked) {
+        jsvm::add_teardown_hook(sensors_teardown);
+        hooked = true;
+    }
 
     esp_err_t err = hal_periph::imu_init();
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {

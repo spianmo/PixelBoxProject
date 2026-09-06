@@ -85,6 +85,7 @@ JSValue js_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 void util_init(JSContext *ctx, JSValue px)
 {
     JSValue util = JS_NewObject(ctx);
+    jsvm::internal::install_projection_util(ctx, util);
     JS_SetPropertyStr(ctx, util, "crc32", JS_NewCFunction(ctx, js_crc32, "crc32", 1));
     JS_SetPropertyStr(ctx, util, "sha256", JS_NewCFunction(ctx, js_sha256, "sha256", 1));
     JS_SetPropertyStr(ctx, util, "randomBytes",

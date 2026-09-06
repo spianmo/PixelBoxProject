@@ -44,10 +44,12 @@ std::atomic<bool> s_available{false};
 TaskHandle_t s_task = nullptr;
 
 std::mutex s_mtx;  // 保护下列回调与速率配置
+std::mutex s_io_mtx;
 std::function<void(const ImuSample&)> s_stream_cb;
 std::function<void()> s_shake_cb;
 std::function<void(ImuOrientation)> s_orient_cb;
 uint16_t s_stream_rate = 0;  // 0 = 数据流关闭
+uint32_t s_stream_generation = 0;
 
 // 检测状态(仅采样任务访问)
 float s_lp_ax = 0, s_lp_ay = 0, s_lp_az = 1.0f;  // 重力低通
@@ -67,6 +69,7 @@ void pick_acc_odr(uint16_t want, uint8_t& odr_bits, uint16_t& actual) {
 }
 
 esp_err_t configure_chip(uint16_t sample_hz) {
+    std::lock_guard<std::mutex> io_lock(s_io_mtx);
     uint8_t odr_bits;
     uint16_t actual;
     pick_acc_odr(sample_hz, odr_bits, actual);
@@ -86,6 +89,7 @@ esp_err_t configure_chip(uint16_t sample_hz) {
 }
 
 bool read_sample(ImuSample& out) {
+    std::lock_guard<std::mutex> io_lock(s_io_mtx);
     uint8_t raw[12];
     if (i2c_read_reg(s_dev, 0x35, raw, sizeof(raw)) != ESP_OK) return false;
     auto s16 = [&](int i) {
@@ -159,6 +163,9 @@ void detect_step(const ImuSample& s) {
 
 void imu_task(void*) {
     int64_t next_stream_us = 0;
+    int64_t next_detect_us = 0;
+    uint32_t stream_generation = 0;
+    TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
         uint16_t stream_rate;
         std::function<void(const ImuSample&)> stream_cb;
@@ -167,6 +174,10 @@ void imu_task(void*) {
             std::lock_guard<std::mutex> lk(s_mtx);
             stream_rate = s_stream_rate;
             stream_cb = s_stream_cb;
+            if (stream_generation != s_stream_generation) {
+                stream_generation = s_stream_generation;
+                next_stream_us = 0;
+            }
             detect_on = static_cast<bool>(s_shake_cb) || static_cast<bool>(s_orient_cb);
         }
 
@@ -175,21 +186,30 @@ void imu_task(void*) {
         if (rate == 0) {
             // 无消费者 → 挂起等待唤醒
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            last_wake = xTaskGetTickCount();
             continue;
         }
 
         ImuSample s;
         if (read_sample(s)) {
-            if (detect_on) detect_step(s);
+            const int64_t now = esp_timer_get_time();
+            if (detect_on && now >= next_detect_us) {
+                detect_step(s);
+                next_detect_us = now + 1000000 / DETECT_RATE_HZ;
+            }
             if (stream_cb && stream_rate > 0) {
-                int64_t now = esp_timer_get_time();
                 if (now >= next_stream_us) {
-                    next_stream_us = now + 1000000 / stream_rate;
+                    const int64_t period = 1000000 / stream_rate;
+                    if (next_stream_us == 0) next_stream_us = now;
+                    next_stream_us += ((now - next_stream_us) / period + 1) * period;
                     stream_cb(s);
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(1000 / rate > 0 ? 1000 / rate : 1));
+        const TickType_t ticks = (configTICK_RATE_HZ + rate - 1) / rate;
+        const TickType_t current_tick = xTaskGetTickCount();
+        if (current_tick - last_wake > ticks) last_wake = current_tick;
+        vTaskDelayUntil(&last_wake, ticks > 0 ? ticks : 1);
     }
 }
 
@@ -232,11 +252,13 @@ esp_err_t imu_start_stream(uint16_t rate_hz, std::function<void(const ImuSample&
     if (!s_available.load()) return ESP_ERR_INVALID_STATE;
     if (rate_hz < 5) rate_hz = 5;
     if (rate_hz > 500) rate_hz = 500;
-    configure_chip(rate_hz);
+    esp_err_t err = configure_chip(rate_hz < DETECT_RATE_HZ ? DETECT_RATE_HZ : rate_hz);
+    if (err != ESP_OK) return err;
     {
         std::lock_guard<std::mutex> lk(s_mtx);
         s_stream_rate = rate_hz;
         s_stream_cb = std::move(cb);
+        ++s_stream_generation;
     }
     wake_task();
     return ESP_OK;
@@ -246,6 +268,7 @@ void imu_stop_stream() {
     std::lock_guard<std::mutex> lk(s_mtx);
     s_stream_rate = 0;
     s_stream_cb = nullptr;
+    ++s_stream_generation;
 }
 
 void imu_set_shake_callback(std::function<void()> cb) {

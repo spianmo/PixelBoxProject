@@ -227,6 +227,18 @@ export class DrawSurface {
     this.markDirty()
   }
 
+  fillRects(rects: Int32Array, count?: number): void {
+    this.assertAlive()
+    if (!(rects instanceof Int32Array)) throw new TypeError('fillRects needs Int32Array')
+    const n = count === undefined ? rects.length / 5 : count | 0
+    if (rects.length % 5 || n < 0 || n > 8192 || n > rects.length / 5) throw new RangeError('invalid rectangle buffer/count')
+    for (let i = 0; i < n; i++) {
+      const at = i * 5
+      if (rects[at + 2] <= 0 || rects[at + 3] <= 0) continue
+      this.fillRect(rects[at], rects[at + 1], rects[at + 2], rects[at + 3], rects[at + 4])
+    }
+  }
+
   drawCircle(x: number, y: number, r: number, color: number): void {
     this.assertAlive()
     // 中点画圆

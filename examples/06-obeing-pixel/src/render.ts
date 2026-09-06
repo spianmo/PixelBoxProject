@@ -1,8 +1,9 @@
-import { facePoints, poseFor, projectCat, projectPoint, type AssistantState } from './model';
+import { facePoints, poseFor, rasterizeCat, projectPoint, posedShapePoint, type AssistantState, type Pose } from './model';
 import type { ViewState } from './state';
+import { layoutScreen, lineHeight, textHeight, type Screen } from './layout';
 
-export type Screen = Pick<PxScreen, 'width' | 'height' | 'clear' | 'fillRect' | 'drawText' | 'measureText'>;
-export interface RenderInput { clock: number; tiltX: number; tiltY: number; battery: number; settings: boolean }
+export type { Screen } from './layout';
+export interface RenderInput { clock: number; tiltX: number; tiltY: number; battery: number; settings: boolean; fullscreen?: boolean; pose?: Pose; shake?: number }
 
 const LABEL: Record<AssistantState, string> = {
     offline: '等待连接', pairing: '配对', login: '等待手机同步', idle: '你好小川', sleep: '在这里陪你', wake: '我在', listening: '正在聆听', thinking: '思考中', speaking: '小川正在回答', muted: '麦克风已关闭', error: '连接需恢复',
@@ -18,6 +19,7 @@ const ICONS: Record<string, string[]> = {
 };
 
 function icon(screen: Screen, name: string, x: number, y: number, color: number, scale = 2): void {
+    scale *= Math.max(1, textHeight(screen) / 12);
     for (const [row, cells] of ICONS[name].entries()) {
         for (let col = 0; col < cells.length; col++) if (cells[col] === '1') screen.fillRect(x + col * scale, y + row * scale, scale, scale, color);
     }
@@ -43,39 +45,128 @@ function center(screen: Screen, value: string, y: number, color: number): void {
     label(screen, value, Math.round((screen.width - screen.measureText(value, { font: 'pixel12' }).width) / 2), y, color);
 }
 
-export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy: number, scale: number): number {
-    const pose = poseFor(view.state, input.clock, input.tiltX, input.tiltY, view.level);
-    const projected = projectCat(pose, scale, screen.width / 2, cy);
-    const step = Math.max(2, Math.round(scale));
-    // 深度排序后落入显示网格，只保留每个像素粒子最近的一层，控制真机绘制调用量。
-    const grid = new Map<string, { x: number; y: number }>();
-    for (const p of projected) {
-        const x = Math.round(p.sx / step) * step;
-        const y = Math.round(p.sy / step) * step;
-        grid.set(`${x},${y}`, { x, y });
+export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy: number, scale: number, region?: { top: number; bottom: number }): number {
+    const pose = input.pose || poseFor(view.state, input.clock, input.tiltX, input.tiltY, view.level);
+    let runs = rasterizeCat(pose, scale, screen.width / 2, cy);
+    const bounds = () => {
+        let left = screen.width / 2 - 13 * scale, right = screen.width / 2 + 13 * scale;
+        let top = Infinity, bottom = -Infinity;
+        for (let i = 0; i < runs.count; i++) {
+            left = Math.min(left, runs.x[i] - runs.step);
+            right = Math.max(right, runs.x[i] + runs.width[i] + runs.step + 1);
+            top = Math.min(top, runs.y[i] - runs.step);
+            bottom = Math.max(bottom, runs.y[i] + 2 * runs.step + 1);
+        }
+        return { left, right, top, bottom };
+    };
+    let dx = 0, dy = 0;
+    if (region) {
+        let box = bounds();
+        const fit = Math.min(1, (screen.width - 32) / (box.right - box.left), (region.bottom - region.top) / (box.bottom - box.top));
+        if (fit < 1) { scale *= fit * 0.97; runs = rasterizeCat(pose, scale, screen.width / 2, cy); box = bounds(); }
+        dx = box.left < 12 ? 12 - box.left : box.right > screen.width - 12 ? screen.width - 12 - box.right : 0;
+        dy = box.top < region.top ? region.top - box.top : box.bottom > region.bottom ? region.bottom - box.bottom : 0;
     }
-    const pixels = Array.from(grid.values()).sort((a, b) => a.y - b.y || a.x - b.x);
-    const runs: Array<{ x: number; y: number; width: number }> = [];
-    for (const pixel of pixels) {
-        const previous = runs[runs.length - 1];
-        if (previous && previous.y === pixel.y && previous.x + previous.width === pixel.x) previous.width += step;
-        else runs.push({ x: pixel.x, y: pixel.y, width: step });
+    const step = runs.step;
+    // Close single-cell projection pinholes while retaining the gap between ears.
+    let count = 0;
+    for (let i = 0; i < runs.count; i++) {
+        const gap = count ? runs.x[i] - runs.x[count - 1] - runs.width[count - 1] : Infinity;
+        if (count && runs.y[i] === runs.y[count - 1] && gap <= step) runs.width[count - 1] = runs.x[i] + runs.width[i] - runs.x[count - 1];
+        else { runs.x[count] = runs.x[i]; runs.y[count] = runs.y[i]; runs.width[count++] = runs.width[i]; }
     }
+    runs.count = count;
+    const paint = (x: number, y: number, w: number, h: number, color: number) => screen.fillRect(x + dx, y + dy, w, h, color);
     for (const layer of [{ dx: step, dy: -step, color: 0x2050ef }, { dx: -step, dy: step, color: 0xe31c35 }, { dx: Math.ceil(step / 2), dy: 0, color: 0x17f5f5 }, { dx: -Math.ceil(step / 2), dy: 1, color: 0xf9fb54 }, { dx: 0, dy: 0, color: 0xffffff }]) {
-        for (const run of runs) screen.fillRect(run.x + layer.dx, run.y + layer.dy, run.width + 1, step + 1, layer.color);
+        for (let i = 0; i < runs.count; i++) paint(runs.x[i] + layer.dx, runs.y[i] + layer.dy, runs.width[i] + 1, step + 1, layer.color);
     }
     // 眼睛和嘴位于前表面，随同一视图矩阵旋转，不贴死在屏幕坐标。
     if (Math.cos(pose.yaw) > 0.15) {
         for (const voxel of facePoints(view.state, input.clock, view.level)) {
-            const p = projectPoint(voxel, pose, scale, screen.width / 2, cy);
-            screen.fillRect(Math.round(p.sx / step) * step, Math.round(p.sy / step) * step, step, step, 0x0d1210);
+            const p = projectPoint(posedShapePoint(voxel, pose), pose, scale, screen.width / 2, cy);
+            const x = Math.round(p.sx / step) * step, y = Math.round(p.sy / step) * step;
+            if (input.shake && voxel.y < 2) paint(x - Math.max(1, Math.floor(step / 2)), y, step, step, 0xf9fb54);
+            paint(x, y, step + 1, step + 1, 0x0d1210);
         }
     }
     // 参考素材中的离散色边在头部边缘形成短扫描线，线条亦跟随视差。
-    const offset = Math.round(input.tiltX * 8);
-    screen.fillRect(screen.width / 2 - 12 * scale + offset, cy - 4 * scale, 4 * scale, 2, 0xf9fb54);
-    screen.fillRect(screen.width / 2 + 8 * scale + offset, cy + 2 * scale, 4 * scale, 2, 0x17f5f5);
-    return pixels.length;
+    const scan = Math.floor(input.clock / 70) % 3;
+    for (let i = 0; i < (input.shake ? 3 : 0); i++) {
+        const y = cy + (i * 5 - 6 + scan) * scale;
+        const x = screen.width / 2 + (i % 2 ? 8 : -12) * scale;
+        paint(x, y, 4 * scale, Math.max(2, step - 1), i % 2 ? 0x17f5f5 : 0xf9fb54);
+        paint(x + scale, y, 2 * scale, Math.max(2, step - 1), 0xffffff);
+    }
+    return runs.pixels;
+}
+
+export function fullscreenAt(x: number, y: number, width: number): boolean {
+    return x >= width - 58 && x < width && y >= 4 && y < 42;
+}
+
+export function fullscreenIcon(screen: Screen, active: boolean, color: number): void {
+    const x = screen.width - 39, y = 15, size = 21, arm = 7, stroke = 2;
+    for (const sx of [0, 1]) for (const sy of [0, 1]) {
+        const left = x + sx * (size - arm), top = y + sy * (size - arm);
+        const vx = active ? left + (sx ? 0 : arm - stroke) : left + (sx ? arm - stroke : 0);
+        const hy = active ? top + (sy ? 0 : arm - stroke) : top + (sy ? arm - stroke : 0);
+        screen.fillRect(vx, top, stroke, arm, color);
+        screen.fillRect(left, hy, arm, stroke, color);
+    }
+}
+
+export function companionHeader(screen: Screen, brand: string, view: ViewState, input: RenderInput): void {
+    const fg = view.theme === 'dark' ? 0xeef2ee : 0x121714;
+    if (!input.fullscreen) {
+        label(screen, brand, 20, 18, fg);
+        const end = 20 + screen.measureText(brand, { font: 'pixel12' }).width;
+        screen.fillRect(end + 10, 18 + textHeight(screen) / 2 - 3, 6, 6, view.connected ? 0x9ae05b : 0xe8876b);
+        const batteryText = `${input.battery}%`;
+        const batteryX = screen.width - 65 - screen.measureText(batteryText, { font: 'pixel12' }).width;
+        if (input.battery >= 0 && batteryX > end + 28) label(screen, batteryText, batteryX, 18, view.theme === 'dark' ? 0x8b9791 : 0x59645e);
+    }
+    fullscreenIcon(screen, Boolean(input.fullscreen), fg);
+}
+
+function waveform(screen: Screen, view: ViewState, input: RenderInput, y: number, color: number): void {
+    const active = ['wake', 'listening', 'thinking', 'speaking'].includes(view.state);
+    const amplitude = active ? 3 + Math.min(10, view.level / 10) : view.state === 'sleep' || view.muted ? 1 : 2;
+    for (let i = 0; i < 27; i++) {
+        const phase = input.clock / (view.state === 'thinking' ? 270 : 130);
+        const h = Math.round(2 + Math.abs(Math.sin(i * 0.73 + phase)) * amplitude);
+        screen.fillRect(screen.width / 2 - 79 + i * 6, y - h / 2, 3, h, color);
+    }
+}
+
+export function companionBody(screen: Screen, view: ViewState, input: RenderInput, status: string, fallback = ''): void {
+    const dark = view.theme === 'dark', fg = dark ? 0xeef2ee : 0x121714;
+    const quiet = dark ? 0x8b9791 : 0x59645e, accent = dark ? 0xc4f27c : 0x477f18;
+    const line = lineHeight(screen, 17);
+    const progress = view.thinkingText;
+    const captionTop = screen.height - (line * 2 + textHeight(screen) + 12 + (input.fullscreen && progress ? line : 0));
+    const statusY = captionTop - 34;
+    const top = input.fullscreen ? 42 : 83, bottom = input.fullscreen ? captionTop - 38 : statusY - 8;
+    if (!input.fullscreen) {
+        const grid = dark ? 0x18201e : 0xdce2df;
+        for (let x = 24; x < screen.width - 20; x += 20) screen.fillRect(x, top, 1, bottom - top, grid);
+        for (let y = top; y < bottom; y += 20) screen.fillRect(24, y, screen.width - 48, 1, grid);
+    }
+    drawCat(screen, view, input, (top + bottom) / 2, input.fullscreen ? 14 : 11, { top, bottom });
+    if (input.fullscreen) waveform(screen, view, input, captionTop - 19, view.state === 'error' ? 0xf07979 : accent);
+    else center(screen, wrapText(screen, progress || status, screen.width - 40, 1)[0] || '', statusY, view.state === 'error' ? 0xf07979 : accent);
+    const reply = view.errorText || view.assistantText;
+    let y = captionTop;
+    if (input.fullscreen && progress) {
+        label(screen, wrapText(screen, progress, screen.width - 40, 1)[0] || '', 20, y, accent);
+        y += line;
+    }
+    if (view.userText && reply) {
+        label(screen, wrapText(screen, view.userText, screen.width - 40, 1)[0] || '', 20, y, quiet);
+        y += line;
+    }
+    const text = reply || view.userText || fallback;
+    const available = Math.max(1, Math.min(2, Math.floor((screen.height - y - 8) / line)));
+    wrapText(screen, text, screen.width - 40, available).forEach((value, i) => label(screen, value, 20, y + i * line, !view.assistantText && view.errorText ? 0xf07979 : fg));
 }
 
 export function pairingKeyAt(x: number, y: number, width: number): string | null {
@@ -85,7 +176,12 @@ export function pairingKeyAt(x: number, y: number, width: number): string | null
     return ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'back', '0', 'ok'][row * 3 + col] ?? null;
 }
 
-export function drawScene(screen: Screen, view: ViewState, input: RenderInput): void {
+export function drawScene(target: Screen, view: ViewState, input: RenderInput): void {
+    const screen = layoutScreen(target);
+    try { renderScene(screen, view, input); } finally { screen.finish(); }
+}
+
+function renderScene(screen: Screen, view: ViewState, input: RenderInput): void {
     const dark = view.theme === 'dark';
     const bg = dark ? 0x080b0b : 0xeff1f1;
     const fg = dark ? 0xeef2ee : 0x121714;
@@ -93,12 +189,9 @@ export function drawScene(screen: Screen, view: ViewState, input: RenderInput): 
     const line = dark ? 0x26302b : 0xd3d9d5;
     const accent = dark ? 0xc4f27c : 0x477f18;
     const W = screen.width;
-    const H = screen.height;
     screen.clear(bg);
-    label(screen, 'OBEING PIXEL', 20, 20, fg);
-    if (input.battery >= 0) label(screen, `${input.battery}%`, W - 58, 20, quiet);
-    screen.fillRect(20, 47, 5, 5, view.connected ? accent : 0xe8876b);
-    label(screen, wrapText(screen, view.connected ? (view.displayName || 'PIXELBOX') : 'PIXELBOX', W - 172, 1)[0] || '', 32, 43, quiet);
+    companionHeader(screen, 'OBEING PIXEL', view, input);
+    if (input.fullscreen) { companionBody(screen, view, input, '', view.authenticated ? '' : view.errorText); return; }
     icon(screen, view.muted ? 'mute' : 'mic', W - 116, 42, view.muted ? 0xf07979 : accent);
     icon(screen, 'theme', W - 78, 43, fg);
     icon(screen, 'link', W - 39, 44, fg);
@@ -141,40 +234,12 @@ export function drawScene(screen: Screen, view: ViewState, input: RenderInput): 
                 const y = 247 + row * 46;
                 if (key === 'back') icon(screen, 'back', x - 5, y, fg);
                 else if (key === 'ok') icon(screen, 'check', x - 5, y, view.pairingCode.length === 6 ? accent : quiet);
-                else label(screen, key, x - 3, y, fg);
+                else label(screen, key, x - screen.measureText(key, { font: 'pixel12' }).width / 2, y, fg);
             }
         }
         return;
     }
 
-    // 参考素材的规则点阵作为投影参照，背景位移仅为前景的四分之一。
-    const parallaxX = Math.round(input.tiltX * 3);
-    const parallaxY = Math.round(input.tiltY * 3);
-    for (let y = 82; y < 262; y += 12) for (let x = 34; x < W - 28; x += 12) screen.fillRect(x + parallaxX, y + parallaxY, 1, 1, line);
-    drawCat(screen, view, input, 170, Math.min(7.8, (W - 116) / 29));
-    center(screen, LABEL[view.state], 273, view.state === 'error' ? 0xf07979 : accent);
-    if (view.state === 'listening' || view.state === 'speaking') {
-        for (let i = 0; i < 24; i++) {
-            const h = 2 + Math.round((0.4 + Math.abs(Math.sin(i * 1.5 + input.clock / 100))) * view.level / 12);
-            screen.fillRect(W / 2 - 70 + i * 6, 300 - h / 2, 3, h, accent);
-        }
-    }
-    screen.fillRect(20, 313, W - 40, 1, line);
-
-    if (!view.authenticated) {
-        const message = view.errorText || (view.state === 'login' ? '请在手机登录' : '正在发现 Obeing Pixel 手机');
-        const lines = wrapText(screen, message, W - 44, 2);
-        lines.forEach((value, i) => label(screen, value, 22, 335 + i * 19, fg));
-        label(screen, view.state === 'login' ? '等待手机同步账号' : '同一 Wi-Fi', 22, H - 40, quiet);
-        return;
-    }
-    if (view.userText) {
-        const you = wrapText(screen, view.userText, W - 68, 1);
-        label(screen, '你', 22, 330, quiet);
-        label(screen, you[0] || '', 50, 330, fg);
-    }
-    const process = wrapText(screen, view.thinkingText || (view.state === 'listening' ? '正在识别语音' : view.state === 'thinking' ? '正在等待回答' : ''), W - 44, 1);
-    if (process[0]) label(screen, process[0], 22, 354, accent);
-    const reply = wrapText(screen, view.errorText || view.assistantText, W - 44, 3);
-    reply.forEach((value, i) => label(screen, value, 22, 377 + i * 18, view.errorText ? 0xf07979 : fg));
+    const fallback = view.authenticated ? '' : view.state === 'login' ? '请在手机登录' : '正在发现 Obeing Pixel 手机';
+    companionBody(screen, view, input, LABEL[view.state], fallback);
 }

@@ -269,6 +269,8 @@ interface PxDrawTarget {
   drawLine(x0: number, y0: number, x1: number, y1: number, color: Color): void;
   drawRect(x: number, y: number, w: number, h: number, color: Color): void;
   fillRect(x: number, y: number, w: number, h: number, color: Color): void;
+  /** Ordered batch of [x,y,w,h,color] Int32 records; count defaults to all, maximum 8192. */
+  fillRects(rects: Int32Array, count?: number): void;
   drawCircle(x: number, y: number, r: number, color: Color): void;
   fillCircle(x: number, y: number, r: number, color: Color): void;
   drawText(text: string, x: number, y: number, style?: PxTextStyle): void;
@@ -627,6 +629,8 @@ interface PxImuData { ax: number; ay: number; az: number; gx: number; gy: number
 interface PxSensors {
   imu: {
     available(): boolean;
+    /** rateHz is clamped to 5..500. Under load, firmware coalesces samples and
+     * delivers the latest available value before drawing, without replaying a backlog. */
     start(opts: { rateHz?: number; onData: (d: PxImuData) => void }): void;
     stop(): void;
     onShake(cb: () => void): Unsubscribe;
@@ -654,7 +658,31 @@ interface PxLed {
 // util / color 工具
 // ------------------------------------------------------------
 
+interface PxProjectionOptions {
+  /** Rotation in radians (defaults to 0). */
+  yaw?: number;
+  pitch?: number;
+  squash?: number;
+  lift?: number;
+  scale?: number;
+  cx?: number;
+  cy?: number;
+  /** Perspective distance (default 64, positive). Points must be in front of the camera. */
+  distance?: number;
+  /** Grid spacing >= 1 (default 1). Output contains grid indices, not pixel coordinates. */
+  grid?: number;
+}
+
 interface PxUtil {
+  /** Project packed xyz points into reusable xy grid indices, max 8192 points.
+   * Output must fit 2 integers per point and use a different backing buffer.
+   * Round to pixels, then round to the grid. Invalid values throw RangeError.
+   * Defaults: squash/scale=1, lift/cx/cy=0. Output may be partially written on error. */
+  projectPoints(points: Float32Array, options: PxProjectionOptions, output: Int32Array): void;
+  /** Project and merge occupied grid cells into horizontal runs, ordered by y then x.
+   * Returns run count; output packs [gridX, gridY, cellCount] and must fit 3 integers
+   * per input point. Max bounding grid area is 65536 cells. Same validation as projectPoints. */
+  projectPointRuns(points: Float32Array, options: PxProjectionOptions, output: Int32Array): number;
   b64encode(data: BinaryLike): string;
   b64decode(b64: string): ArrayBuffer;
   hexEncode(data: BinaryLike): string;

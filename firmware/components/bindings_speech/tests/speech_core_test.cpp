@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <iterator>
+#include <thread>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -79,5 +80,76 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 5; i++) impulse.feed(spoken.data(), spoken.size());
     for (int i = 0; i < 100; i++) impulse.feed(silent.data(), silent.size());
     assert(!impulse.heard);
+
+    // Desk-distance speech is quieter than the old 0.012 RMS onset threshold.
+    speech::Vad quiet_voice(800);
+    std::array<int16_t, 320> low_speech{}, noise{};
+    for (size_t i = 0; i < low_speech.size(); ++i) {
+        low_speech[i] = (i & 1) ? 220 : -220;
+        noise[i] = (i & 1) ? 40 : -40;
+    }
+    for (int i = 0; i < 100; i++) assert(!quiet_voice.feed(noise.data(), noise.size()));
+    assert(!quiet_voice.heard);
+    for (int i = 0; i < 10; i++) assert(!quiet_voice.feed(low_speech.data(), low_speech.size()));
+    assert(quiet_voice.heard);
+    assert(quiet_voice.speech_start() == 32000);
+    for (int i = 0; i < 39; i++) assert(!quiet_voice.feed(noise.data(), noise.size()));
+    assert(quiet_voice.feed(noise.data(), noise.size()));
+    if (argc > 2) {
+        std::ifstream wav_file(argv[2], std::ios::binary);
+        std::vector<uint8_t> recorded{std::istreambuf_iterator<char>(wav_file), std::istreambuf_iterator<char>()};
+        assert(recorded.size() > 44 && std::memcmp(recorded.data(), "RIFF", 4) == 0);
+        speech::Vad actual(800);
+        size_t end = 44;
+        for (; end + 640 <= recorded.size(); end += 640) {
+            std::array<int16_t, 320> block;
+            for (size_t i = 0; i < block.size(); i++) block[i] = int16_t(uint16_t(recorded[end + i * 2]) | uint16_t(recorded[end + i * 2 + 1]) << 8);
+            if (actual.feed(block.data(), block.size())) break;
+        }
+        assert(actual.heard);
+        std::cout << "device microphone fixture: speech detected, endpoint at " << (end - 44) / 32 << " ms\n";
+    }
+
+    // Reproduce a consumer stall longer than the old 16 KiB / 512 ms queue.
+    std::vector<int16_t> captured(speech::kRate * 3, -1);
+    speech::PcmCapture capture(captured.data(), captured.size());
+    for (int i = 0; i < 200; i++) capture.feed(spoken.data(), spoken.size());
+    for (int i = 0; i < 80; i++) capture.feed(silent.data(), silent.size());
+    assert(capture.size() == 44800);
+    assert(std::all_of(captured.begin(), captured.begin() + 32000, [](int16_t s) { return s == 6000; }));
+    assert(std::all_of(captured.begin() + 32000, captured.begin() + 44800, [](int16_t s) { return s == 0; }));
+    speech::Vad delayed(800);
+    for (size_t at = 0; at < capture.size(); at += 160)
+        assert(delayed.feed(captured.data() + at, 160) == (at + 160 == capture.size()));
+    assert(delayed.heard);
+    capture.stop();
+    capture.feed(spoken.data(), spoken.size());
+    assert(capture.size() == 44800 && captured[44800] == -1);
+
+    std::array<int16_t, 323> bounded{};
+    bounded.fill(-1);
+    speech::PcmCapture full(bounded.data() + 1, 321);
+    for (int i = 0; i < 4; i++) full.feed(spoken.data(), spoken.size());
+    assert(full.size() == 321 && bounded.front() == -1 && bounded.back() == -1);
+    assert(std::all_of(bounded.begin() + 1, bounded.end() - 1, [](int16_t s) { return s == 6000; }));
+    speech::PcmCapture missing_storage(nullptr, 160);
+    missing_storage.feed(spoken.data(), spoken.size());
+    assert(missing_storage.size() == 0);
+
+    // Published prefixes must be readable while later frames are being copied.
+    std::vector<int16_t> concurrent(speech::kRate * 15, -1);
+    speech::PcmCapture concurrent_capture(concurrent.data(), concurrent.size());
+    std::thread producer([&] {
+        for (size_t at = 0; at < concurrent.size(); at += spoken.size())
+            concurrent_capture.feed(spoken.data(), spoken.size());
+    });
+    size_t checked = 0;
+    while (checked < concurrent.size()) {
+        const size_t published = concurrent_capture.size();
+        while (checked < published) assert(concurrent[checked++] == 6000);
+        std::this_thread::yield();
+    }
+    producer.join();
+    std::cout << "speech capture: delayed VAD/no frame loss/capacity/cancel/concurrent publication checks passed\n";
     std::cout << "speech core: region/SSML/WAV/VAD/impulse checks passed\n";
 }

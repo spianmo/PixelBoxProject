@@ -10,9 +10,10 @@ async function source(name) {
     return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
 }
 const authModule = await source('auth.ts');
-const { EnterpriseAuth, validateOrigin } = authModule;
+const { EnterpriseAuth, validateOrigin, isSameServiceOrigin } = authModule;
+const { LocalAuthStore } = await source('persistence.ts');
 const { MexusConversation, hello } = await source('conversation.ts');
-const { HarnessController, speechParts } = await source('controller.ts');
+const { HarnessController, speechParts, userMessage } = await source('controller.ts');
 const { projectSpeechConfig } = await source('project-config.ts');
 const { drawHarness, keyboardKeyAt } = await source('render.ts');
 async function mainWithSpeech(region, key) {
@@ -40,7 +41,7 @@ function response(data, status = 200, code = status) {
 }
 const token = (extra = {}) => ({ token: 'fixture-access', refreshToken: 'fixture-refresh', expiresIn: 3600, refreshTokenExpiresIn: 7200,
     userSession: { userId: '9223372036854775001', tenantId: '9223372036854775002' }, ...extra });
-function fixtureAuth(overrides = {}) {
+function fixtureAuth(overrides = {}, store, now = () => 10000) {
     const requests = [];
     const fetcher = async (url, init) => {
         requests.push({ url, init });
@@ -56,10 +57,50 @@ function fixtureAuth(overrides = {}) {
         if (path.endsWith('/user/info')) return response({ userId: '9223372036854775001', tenantId: '9223372036854775002', nickname: '小川测试' });
         throw new Error('Unexpected fixture request: ' + path);
     };
-    return { auth: new EnterpriseAuth(config, fetcher, () => 10000), requests };
+    return { auth: new EnterpriseAuth(config, fetcher, now, store), requests };
 }
 async function loggedIn() { const fixture = fixtureAuth(); await fixture.auth.login('ABC123', 'USR123', 'fixture-password'); return fixture; }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+await test('会话与原样密码持久化按服务和账号隔离，损坏记录不建立身份', async () => {
+    const data = new Map(), kv = { get: key => data.get(key), set: (key, value) => data.set(key, value) };
+    const store = new LocalAuthStore(kv, config);
+    const { auth } = fixtureAuth({}, store);
+    store.remember(' abc123 ', 'usr123', ' exact password ');
+    await auth.login('ABC123', 'USR123', ' exact password ');
+    assert.deepEqual(new LocalAuthStore(kv, config).load(), auth.current());
+    assert.equal(store.password('ABC123', 'USR123'), ' exact password ');
+    assert.equal(store.password('ABC123', 'USR456'), '');
+    for (const changed of [{ origin: 'https://other.invalid' }, { oem: 'other' }, { domain: 'other' }, { deviceId: 'other' }]) {
+        const isolated = new LocalAuthStore(kv, { ...config, ...changed });
+        assert.equal(isolated.load(), null); assert.equal(isolated.password('ABC123', 'USR123'), '');
+    }
+    const raw = data.get('h.session');
+    for (const change of [{ userId: '0' }, { tenantId: '-1' }, { token: '' }, { issuedAt: -1 }, { expiresIn: '3600' }]) {
+        const value = JSON.parse(raw); Object.assign(value.session, change); data.set('h.session', JSON.stringify(value));
+        assert.equal(store.load(), null);
+    }
+    data.set('h.session', '{broken'); assert.equal(store.load(), null);
+    data.set('h.session', raw); auth.clear();
+    assert.equal(store.load(), null); assert.equal(store.password('ABC123', 'USR123'), ' exact password ');
+});
+await test('恢复有效会话不重复登录，刷新保存新token，退出使迟到刷新无法写回', async () => {
+    const data = new Map(), kv = { get: key => data.get(key), set: (key, value) => data.set(key, value) };
+    const store = new LocalAuthStore(kv, config);
+    const original = fixtureAuth({}, store); await original.auth.login('ABC123', 'USR123', 'fixture');
+    const warm = fixtureAuth({}, store);
+    assert.equal((await warm.auth.valid()).token, 'fixture-access'); assert.equal(warm.requests.length, 0);
+    const refreshed = fixtureAuth({ '/api/meeting/user/refreshToken': () => response(token({ token: 'new-access' })) }, store, () => 3600000);
+    assert.equal((await refreshed.auth.valid()).token, 'new-access'); assert.equal(store.load().token, 'new-access');
+    assert.equal(refreshed.requests.length, 1);
+    let release;
+    const late = fixtureAuth({ '/api/meeting/user/refreshToken': () => new Promise(resolve => { release = resolve; }) }, store);
+    const waiting = late.auth.valid('new-access'); late.auth.clear(); release(response(token({ token: 'late-access' })));
+    await assert.rejects(waiting); assert.equal(store.load(), null);
+    store.save(original.auth.current());
+    const expired = fixtureAuth({}, store, () => 8000000);
+    await assert.rejects(expired.auth.valid(), /过期/); assert.equal(store.load(), null); assert.equal(expired.requests.length, 0);
+});
 
 await test('HTTPS源校验拒绝明文、账号URL、路径和查询', () => {
     assert.equal(validateOrigin('https://v4.test.invalid/'), config.origin);
@@ -113,6 +154,50 @@ await test('错误登录和HTTP重定向绝不建立工作账号', async () => {
     const { auth } = fixtureAuth({ '/basestation/api/workbench/user/ucenter/login': () => response({}, 302, 302) });
     await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'));
     assert.equal(auth.current(), null);
+});
+await test('同源比较兼容ESP-IDF显式443和域名大小写，拒绝跨站及畸形地址', () => {
+    assert.equal(validateOrigin('HTTPS://V4.TEST.INVALID:00443/'), config.origin);
+    for (const url of [config.origin, config.origin + ':443/api', 'https://V4.TEST.INVALID:00443/api?q=1'])
+        assert.equal(isSameServiceOrigin(url, config.origin), true, url);
+    assert.equal(isSameServiceOrigin(config.origin + ':8443/api', config.origin + ':08443'), true);
+    for (const url of ['http://v4.test.invalid/api', config.origin + ':444/api', config.origin + '.evil/api',
+        config.origin + '@evil/api', 'https://user@v4.test.invalid/api', config.origin + '\\@evil/api',
+        config.origin + ':0/api', config.origin + ':65536/api', config.origin + ':443x/api',
+        config.origin + '\n/api', '//v4.test.invalid/api', '/api'])
+        assert.equal(isSameServiceOrigin(url, config.origin), false, url);
+    for (const origin of [config.origin + ':0', config.origin + ':65536', config.origin + '\\evil']) assert.throws(() => validateOrigin(origin));
+});
+await test('ESP-IDF响应URL包含443时完整登录成功，真正跨站在OAuth前终止', async () => {
+    const path = '/basestation/api/workbench/user/ucenter/login';
+    for (const url of [config.origin + ':443' + path, 'https://V4.TEST.INVALID:443' + path]) {
+        const { auth, requests } = fixtureAuth({ [path]: () => ({ ...response(token()), url }) });
+        await auth.login('ABC123', 'USR123', 'fixture-password');
+        assert.ok(auth.current());
+        assert.equal(requests.length, 5);
+    }
+    const { auth, requests } = fixtureAuth({ [path]: () => ({ ...response(token()), url: config.origin + '.evil' + path }) });
+    await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), /服务返回了其他地址/);
+    assert.equal(requests.length, 1);
+    assert.equal(auth.current(), null);
+});
+await test('TLS内存耗尽区别于网络和账号错误，失败不继续OAuth', async () => {
+    for (const message of ['TLS_ALLOC_FAILED: ESP_ERR_HTTP_CONNECT', 'mbedtls=-32512', 'mbedtls_ssl_setup returned -0x7F00', 'network offline']) {
+        const { auth, requests } = fixtureAuth({ '/basestation/api/workbench/user/ucenter/login': () => { throw new Error(message); } });
+        await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), message === 'network offline' ? /服务连接失败/ : /TLS 内存不足/);
+        assert.equal(auth.current(), null);
+        assert.equal(requests.length, 1);
+    }
+});
+await test('网络worker创建失败立即结束登录并显示内存原因', async () => {
+    const { auth, requests } = fixtureAuth({ '/basestation/api/workbench/user/ucenter/login': () => { throw new Error('NETWORK_WORKER_ALLOC_FAILED'); } });
+    await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), /网络线程内存不足/);
+    assert.equal(requests.length, 1);
+    assert.equal(auth.current(), null);
+});
+await test('语音初始化错误保留原因且不透出密钥', () => {
+    assert.equal(userMessage(new Error('ENOTSUP: 需要 speech 固件及 16 kHz 音频硬件'), '工程语音配置不可用'), '语音引擎启动失败，请更新固件后重启');
+    assert.equal(userMessage(new Error('语音线程内存不足，请更新固件后重启'), '工程语音配置不可用'), '语音线程内存不足，请更新固件后重启');
+    assert.equal(userMessage(new Error('key=fixture-secret'), '配置失败'), '配置失败');
 });
 await test('非JSON HTTP401/403保留鉴权状态并清除过期账号', async () => {
     for (const status of [401, 403]) {
@@ -172,11 +257,12 @@ await test('取消发送真实cancel并关闭socket，旧回调不能写入下�
 function runtime() {
     const speechCalls = [];
     let wake;
+    let wakeError;
     let transcriptResolve;
     let playbackResolve;
     const speech = {
         available: () => true, configure(value) { speechCalls.push(['configure', value]); },
-        wakeword: { start(opts) { wake = opts.onWake; speechCalls.push(['wake.start', opts.phrase]); return Promise.resolve(); }, stop() { speechCalls.push(['wake.stop']); } },
+        wakeword: { start(opts) { wake = opts.onWake; wakeError = opts.onError; speechCalls.push(['wake.start', opts.phrase]); return Promise.resolve(); }, stop() { speechCalls.push(['wake.stop']); } },
         recognize() { speechCalls.push(['recognize']); return new Promise((resolve) => { transcriptResolve = resolve; }); },
         speak(text) { speechCalls.push(['speak', text]); return new Promise((resolve) => { playbackResolve = resolve; }); },
         cancel() { speechCalls.push(['cancel']); },
@@ -187,8 +273,43 @@ function runtime() {
     const conversation = { cancel() {}, async ask(text, events) { events.answer('真实协议测试回复'); events.progress('查询完成'); return '真实协议测试回复'; } };
     const controller = new HarnessController(auth, conversation, speech, () => true);
     controller.setPaused(false);
-    return { controller, speechCalls, wake: () => wake(), recognized: (text) => transcriptResolve(text), played: () => playbackResolve() };
+    return { controller, speech, speechCalls, wake: () => wake(), wakeError: (message) => wakeError(message), recognized: (text) => transcriptResolve(text), played: () => playbackResolve() };
 }
+await test('唤醒初始化失败显示内存原因，仍可手动录音', async () => {
+    const r = runtime();
+    r.speech.wakeword.start = async () => { throw new Error('本地语音缓冲分配失败'); };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    assert.equal(r.controller.view.errorText, '本地语音缓冲分配失败');
+    assert.equal(r.controller.view.state, 'idle');
+    const listening = r.controller.listen();
+    assert.equal(r.controller.view.state, 'listening');
+    r.controller.dispose();
+    r.recognized('取消后返回');
+    await listening;
+});
+await test('唤醒运行错误保留原因，取消后旧错误无效', async () => {
+    const r = runtime();
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    r.wakeError('离线唤醒麦克风无数据');
+    assert.equal(r.controller.view.errorText, '离线唤醒麦克风无数据');
+    await r.controller.standby();
+    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2);
+    r.controller.logout();
+    const previous = r.controller.view.errorText;
+    r.wakeError('本地语音缓冲分配失败');
+    assert.equal(r.controller.view.errorText, previous);
+    r.controller.dispose();
+});
+await test('唤醒错误中的服务URL和密钥仍使用通用提示', async () => {
+    const r = runtime();
+    r.speech.wakeword.start = async () => { throw new Error('https://test.invalid?key=fixture-secret'); };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    assert.equal(r.controller.view.errorText, '本地唤醒不可用，点击小川开始');
+    r.controller.dispose();
+});
 await test('本地你好小川唤醒->单轮ASR->AI->实际播完才重新唤醒', async () => {
     const r = runtime();
     r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
@@ -254,7 +375,7 @@ await test('暂停页面阻止网络恢复和静音切换启动唤醒，返回�
     assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2);
     r.controller.dispose();
 });
-await test('真实main登录前等待NTP，返回取消后旧同步不能发密码，且不持久化秘密', async () => {
+await test('真实main登录前等待NTP，取消不发送密码，再次提交复用已保存密码', async () => {
     let touch;
     let exit;
     let releaseTime;
@@ -283,10 +404,12 @@ await test('真实main登录前等待NTP，返回取消后旧同步不能发密�
     tap(25, 52);
     releaseTime(); await tick();
     assert.equal(requestBodies.length, 0, '取消后旧登录不能继续');
-    password(); tap(180, 335); await tick();
+    tap(180, 335); await tick();
     assert.equal(requestBodies.length, 1);
     assert.equal(requestBodies[0].password, 'a'.repeat(16));
-    assert.equal(stored.some(([key]) => /password|token|key/.test(key)), false);
+    const credentials = JSON.parse(stored.find(([key]) => key === 'h.credentials')[1]);
+    assert.equal(credentials.password, 'a'.repeat(16));
+    assert.equal(stored.some(([key]) => key === 'h.key'), false);
     exit();
 });
 await test('真实main设置与键盘页gotIp和BOOT双击不开麦，返回和显式录音有独立入口', async () => {
@@ -338,12 +461,17 @@ await test('真实main设置与键盘页gotIp和BOOT双击不开麦，返回和�
     assert.equal(recordings, 1);
     exit();
 });
-await test('真实main有工程Azure配置时启动即配置且登录后不要求PixelBox填写', async () => {
+for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main ${width}屏工程Azure配置、键盘输入、登录和设置触摸`, async () => {
     let touch;
     let renderFrame;
     let drawn = [];
+    let exit;
+    let requests = 0;
+    let recordings = 0;
+    const data = new Map(Object.entries({ 'h.tenant': 'ABC123', 'h.account': 'USR123', 'h.origin': config.origin }));
     const speechConfigs = [];
     const fetcher = async (url) => {
+        requests++;
         if (url.endsWith('/ucenter/login') || url.endsWith('/token')) return response(token());
         if (url.endsWith('/oauth/appid')) return response({ appid: 'fixture-app' });
         if (url.endsWith('/authorize')) return response({ code: 'fixture-code' });
@@ -352,46 +480,72 @@ await test('真实main有工程Azure配置时启动即配置且登录后不要�
     };
     const px = {
         system: { info: () => ({ deviceId: 'test-box' }), now: () => 100, battery: () => ({ level: 86 }), ntpSync: async () => {} },
-        storage: { kv: { get: (name) => ({ 'h.tenant': 'ABC123', 'h.account': 'USR123', 'h.origin': config.origin })[name], set() {} } },
+        storage: { kv: { get: name => data.get(name), set: (key, value) => data.set(key, value) } },
         speech: { available: () => true, configure: (value) => speechConfigs.push(value), cancel() {},
-            wakeword: { stop() {}, start: async () => {} }, recognize: () => new Promise(() => {}), speak: async () => {} },
+            wakeword: { stop() {}, start: async () => {} }, recognize: () => { recordings++; return new Promise(() => {}); }, speak: async () => {} },
         wifi: { status: () => ({ connected: true }), on: () => () => {} },
         input: { onTouch(cb) { touch = cb; return () => {}; }, onButton: () => () => {} },
         sensors: { imu: { available: () => false } },
-        screen: { width: 368, height: 448, setFps() {}, onFrame(cb) { renderFrame = cb; }, clear() {}, fillRect() {},
-            measureText(value) { return { width: Array.from(value).length * 8, height: 12 }; },
+        screen: { width, height, setFps() {}, onFrame(cb) { renderFrame = cb; }, clear() {}, fillRect() {},
+            measureText(value, style) { return { width: Array.from(value).length * 8 * (style?.scale || 1), height: 12 * (style?.scale || 1) }; },
             drawText(value) { drawn.push(value); } },
-        app: { onExit() {} },
+        app: { onExit(cb) { exit = cb; } },
     };
-    runInNewContext(configuredMainBundle.outputFiles[0].text, { px, TextEncoder, Date, fetch: fetcher, WebSocket: class {},
+    const start = () => runInNewContext(configuredMainBundle.outputFiles[0].text, { px, TextEncoder, Date, fetch: fetcher, WebSocket: class {},
         setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {}, console: { log() {} } });
+    start();
     assert.equal(speechConfigs.length, 1);
     assert.equal(speechConfigs[0].region, 'eastasia');
     assert.equal(speechConfigs[0].key, 'fixture-project-key-1234567890');
     assert.equal(speechConfigs[0].language, 'zh-CN');
     assert.equal(speechConfigs[0].voice, 'zh-CN-XiaoxiaoNeural');
     const tap = (x, y) => touch({ type: 'down', x, y });
-    tap(80, 251); for (let i = 0; i < 16; i++) tap(43, 287); tap(320, 407); tap(180, 335);
+    if (width === 480) {
+        tap(86, 269); for (let i = 0; i < 16; i++) tap(46, 307); tap(420, 436); tap(240, 359);
+    } else {
+        tap(80, 251); for (let i = 0; i < 16; i++) tap(43, 287); tap(320, 407); tap(180, 335);
+    }
     await tick(); await tick();
     // 登录后处于 assistant，点击顶部设置区才会打开 settings；若落到 speech，此坐标不会进入 settings。
-    tap(335, 48);
+    const frame = () => { drawn = []; renderFrame(200); return drawn.join('|'); };
+    assert.ok(!drawn.includes('小川'), 'account name removed from assistant header');
+    tap(width - 33, 24); assert.equal(frame().includes('ObeingHarness'), false);
+    tap(20, 24); assert.equal(recordings, 0);
+    tap(width - 33, height === 480 ? 51 : 48);
+    assert.equal(recordings, 1); assert.equal(frame().includes('企业服务器'), false);
+    tap(width - 33, 24); assert.ok(frame().includes('ObeingHarness'));
+    exit();
+    const loginRequests = requests;
+    start(); await tick(); await tick();
+    assert.equal(requests, loginRequests, 'hot reload restores saved access token without login requests');
+    assert.ok(!frame().includes('企业登录'));
+    tap(width - 33, height === 480 ? 51 : 48);
     drawn = [];
     renderFrame(16);
     assert.ok(drawn.includes('语音服务 · 已配置'), `实际页面文本: ${drawn.join('|')}`);
     assert.ok(drawn.includes('企业服务器'), `实际页面文本: ${drawn.join('|')}`);
     assert.ok(!drawn.includes('设备语音'), `不应进入设备语音页: ${drawn.join('|')}`);
+    tap(width / 2, height === 480 ? 383 : 357);
+    assert.ok(frame().includes('企业登录'));
+    assert.equal(JSON.parse(data.get('h.session')).session, null);
+    assert.equal(JSON.parse(data.get('h.credentials')).password, 'a'.repeat(16));
+    exit(); start(); await tick();
+    assert.ok(frame().includes('企业登录'), 'explicit logout remains logged out after restart');
+    assert.equal(requests, loginRequests);
+    exit();
 });
-await test('登录/语音/服务器/键盘/助手浅暗在368和320像素屏内', () => {
-    for (const width of [368, 320]) for (const theme of ['light', 'dark']) for (const page of ['login', 'speech', 'server', 'settings', 'editor', 'assistant']) {
+await test('登录/语音/服务器/键盘/助手浅暗在368、320和480像素屏内', () => {
+    for (const width of [368, 320, 480]) for (const theme of ['light', 'dark']) for (const page of ['login', 'speech', 'server', 'settings', 'editor', 'assistant']) {
         const r = runtime();
         const view = { ...r.controller.view, theme, state: 'speaking', authenticated: true, displayName: '测试小川', enterpriseId: 'ABC123',
             userText: '今天适合去公园吗？', assistantText: '今天晴朗，很适合散步。', thinkingText: '天气查询完成' };
         const form = { page, returnPage: 'login', field: 'password', upper: true, symbols: false, busy: false, speechReady: true,
             values: { tenant: 'ABC123', account: 'USR123', password: 'fixture-password', region: 'eastasia', key: 'a'.repeat(32), origin: config.origin, oem: '', domain: '', question: '' } };
-        const screen = { width, height: 448, clear() {},
-            measureText(value) { return { width: Array.from(value).reduce((sum, ch) => sum + (ch.charCodeAt(0) > 127 ? 12 : 6), 0), height: 12 }; },
-            fillRect(x, y, w, h) { assert.ok(x >= 0 && y >= 0 && x + w <= width && y + h <= 448, `${page} rect ${x},${y},${w},${h}`); },
-            drawText(value, x, y) { assert.ok(x >= 0 && y >= 0 && x + this.measureText(value).width <= width && y + 12 <= 448, `${page} text ${value} ${x},${y}`); } };
+        const height = width === 480 ? 480 : 448;
+        const screen = { width, height, clear() {},
+            measureText(value, style) { const scale = style?.scale || 1; return { width: Array.from(value).reduce((sum, ch) => sum + (ch.charCodeAt(0) > 127 ? 12 : 6), 0) * scale, height: 12 * scale }; },
+            fillRect(x, y, w, h) { assert.ok(x >= 0 && y >= 0 && x + w <= width && y + h <= height, `${page} rect ${x},${y},${w},${h}`); },
+            drawText(value, x, y, style) { const size = this.measureText(value, style); assert.ok(x >= 0 && y >= 0 && x + size.width <= width && y + size.height <= height, `${page} text ${value} ${x},${y}`); assert.equal(style.scale, width === 480 ? 2 : 1); } };
         drawHarness(screen, view, { clock: 1234, tiltX: 0.8, tiltY: -0.8, battery: 86, settings: false }, form);
         r.controller.dispose();
     }

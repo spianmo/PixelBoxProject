@@ -9,6 +9,10 @@
 
 # ---- voicechat: 编译 wakenet 唤醒词支持(wakeword.cpp 条件编译) ----
 CONFIG_PX_ENABLE_WAKEWORD=y
+# Legacy px.voice profile uses WakeNet instead of standalone MultiNet speech.
+CONFIG_PX_ENABLE_SPEECH=n
+CONFIG_SR_MN_CN_NONE=y
+CONFIG_JSVM_MEM_LIMIT_KB=4096
 
 # ---- 分区表: 切换为含 model 分区的布局(app 分区不变,OTA 兼容) ----
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_wakeword.csv"

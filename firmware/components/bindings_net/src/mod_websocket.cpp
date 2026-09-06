@@ -64,7 +64,7 @@ static void ws_schedule_destroy(const WsPtr& ws) {
   pxjs::worker_submit([h, href]() {
     esp_websocket_client_destroy(h);  // 内部先 stop 事件任务,之后不会再有事件回调
     delete static_cast<WsPtr*>(href);
-  });
+  }, true);
 }
 
 /** JS 线程:取 obj.<prop> 若为函数则以 ev 为参调用(消费 ev) */
@@ -248,7 +248,7 @@ static JSValue js_ws_close(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     }
     // close 超时/失败也要保证终态派发(正常路径由 CLOSED/DISCONNECTED 事件触发,这里兜底)
     pxjs::run_on_js([ws]() { ws_dispatch_terminal(ws, ws->close_code, ws->close_reason); });
-  });
+  }, true);
   return JS_UNDEFINED;
 }
 
@@ -266,6 +266,8 @@ static JSValue js_ws_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSV
   if (url.rfind("ws://", 0) != 0 && url.rfind("wss://", 0) != 0) {
     return pxjs::throw_msg(ctx, "WebSocket 仅支持 ws:// 或 wss:// URL");
   }
+  // Reserve a consumer before owning a client that needs asynchronous close/destroy.
+  if (!pxjs::worker_submit([] {})) return pxjs::throw_msg(ctx, "NETWORK_WORKER_ALLOC_FAILED");
 
   // protocols: string | string[]
   std::string subprotocol;

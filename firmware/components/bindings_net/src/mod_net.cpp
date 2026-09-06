@@ -290,7 +290,7 @@ static JSValue js_connect_tcp(JSContext* ctx, JSValueConst, int argc, JSValueCon
   JSValue promv;
   auto prom = pxjs::Promise::create(ctx, &promv);
 
-  pxjs::worker_submit([host, port, use_tls, timeout_ms, prom]() {
+  if (!pxjs::worker_submit([host, port, use_tls, timeout_ms, prom]() {
     auto s = std::make_shared<TcpSock>();
     s->remote_host = host;
     s->remote_port = port;
@@ -362,7 +362,7 @@ static JSValue js_connect_tcp(JSContext* ctx, JSValueConst, int argc, JSValueCon
 
     // 连接成功 → JS 线程建对象 + resolve
     prom->resolve_on_js([s](JSContext* c) { return tcp_make_js(c, s); });
-  });
+  })) prom->reject_msg("NETWORK_WORKER_ALLOC_FAILED");
   return promv;
 }
 
@@ -569,7 +569,7 @@ static JSValue js_udp_send(JSContext* ctx, JSValueConst this_val, int argc, JSVa
   } else {
     // 域名:worker 解析后发送
     int fd = u->fd;
-    pxjs::worker_submit([fd, bytes, host, port]() {
+    if (!pxjs::worker_submit([fd, bytes, host, port]() {
       char portstr[8];
       snprintf(portstr, sizeof(portstr), "%d", port);
       struct addrinfo hints = {};
@@ -582,7 +582,7 @@ static JSValue js_udp_send(JSContext* ctx, JSValueConst this_val, int argc, JSVa
       } else {
         ESP_LOGW(TAG, "UDP 目标解析失败: %s", host.c_str());
       }
-    });
+    })) return pxjs::throw_msg(ctx, "NETWORK_WORKER_ALLOC_FAILED");
   }
   return JS_UNDEFINED;
 }
@@ -730,7 +730,7 @@ static JSValue js_mdns_discover(JSContext* ctx, JSValueConst, int argc, JSValueC
   JSValue promv;
   auto prom = pxjs::Promise::create(ctx, &promv);
 
-  pxjs::worker_submit([srv, proto, timeout_ms, prom]() {
+  if (!pxjs::worker_submit([srv, proto, timeout_ms, prom]() {
     mdns_result_t* results = nullptr;
     esp_err_t err = mdns_query_ptr(srv.c_str(), proto.c_str(), (uint32_t)timeout_ms, 20, &results);
     if (err != ESP_OK) {
@@ -776,7 +776,7 @@ static JSValue js_mdns_discover(JSContext* ctx, JSValueConst, int argc, JSValueC
       }
       return arr;
     });
-  });
+  })) prom->reject_msg("NETWORK_WORKER_ALLOC_FAILED");
   return promv;
 }
 

@@ -153,7 +153,7 @@ await test('全状态浅暗主题文字和绘制坐标不超屏，绘制开销�
     }
 });
 
-function runtime() {
+function runtime(width = 368, height = 448) {
     let touch;
     let button;
     let exit;
@@ -188,9 +188,9 @@ function runtime() {
         },
         sensors: { imu: { available: () => false } },
         screen: {
-            width: 368, height: 448, setFps() {}, onFrame(cb) { frame = cb; },
+            width, height, setFps() {}, onFrame(cb) { frame = cb; },
             clear() { screenText.length = 0; }, fillRect() {},
-            measureText: (text) => ({ width: text.length * 12, height: 12 }),
+            measureText: (text, style) => ({ width: text.length * 12 * (style?.scale || 1), height: 12 * (style?.scale || 1) }),
             drawText(text) { screenText.push(text); },
         },
         input: { onTouch(cb) { touch = cb; }, onButton(cb) { button = cb; } },
@@ -222,6 +222,20 @@ async function pairedRuntime() {
     r.open();
     return r;
 }
+await test('480真机坐标完成配对、打开连接页并断开', async () => {
+    const r = runtime(480, 480);
+    await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 6; i++) r.touch(96, 265);
+    r.touch(384, 413);
+    r.open();
+    assert.equal(r.sent[0].pairCode, '111111');
+    r.message({ type: 'hello.ok', authenticated: false, accountEpoch: 1 });
+    r.touch(447, 53);
+    assert.ok(r.frameText().includes('断开手机连接'));
+    r.touch(180, 381);
+    assert.equal(r.sockets[0].readyState, 3);
+    r.exit();
+});
 await test('真实入口仅在配对且手机同步有效账号后开启麦克风，hello不含账户密码', async () => {
     const r = await pairedRuntime();
     assert.equal(r.micStarts, 0);
@@ -263,7 +277,10 @@ await test('真实入口配对后等待手机登录，注销停音清字幕，�
     r.message({ type: 'account.state', authenticated: true, accountEpoch: 4, userDisplayName: '手机账号二', enterpriseId: '企业二' });
     assert.equal(r.micStarts, 2);
     assert.equal(r.sockets.length, 1);
+    assert.equal(r.frameText().includes('手机账号二'), false);
+    r.touch(340, 48);
     assert.ok(r.frameText().includes('手机账号二'));
+    r.touch(184, 409);
     for (const secret of ['手机账号一', '企业一', '旧问题', '旧回答', '旧任务']) assert.equal(r.frameText().includes(secret), false, secret);
     assert.equal(r.sent.filter((message) => message.type === 'hello').length, 1);
     assert.deepEqual(r.sent.filter((message) => message.type === 'account.ready'), [
@@ -289,7 +306,10 @@ await test('账号ACK先于采音，切账号后旧麦克风回调和重复旧�
     for (const epoch of [7, 8]) r.message({ type: 'account.state', authenticated: true, accountEpoch: epoch, userDisplayName: '过期账号' });
     assert.equal(r.sent.length, before);
     assert.equal(r.micStarts, 2);
+    assert.equal(r.frameText().includes('新账号'), false);
+    r.touch(340, 48);
     assert.ok(r.frameText().includes('新账号'));
+    r.touch(184, 409);
     r.pcm();
     assert.ok(r.sent.at(-1) instanceof ArrayBuffer);
     r.exit();
@@ -367,7 +387,9 @@ await test('真实入口断线或撤权后换账号重配，首轮前屏幕不�
         r.open();
         r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1, userDisplayName: '新账号', enterpriseId: '新企业' });
         const text = r.frameText();
-        assert.ok(text.includes('新账号'));
+        assert.equal(text.includes('新账号'), false);
+        r.touch(340, 48);
+        assert.ok(r.frameText().includes('新账号'));
         for (const secret of ['旧账号', '旧企业', '旧问题', '旧回答', '旧任务状态']) assert.equal(text.includes(secret), false, secret);
         r.exit();
     }
@@ -425,6 +447,85 @@ await test('撤销授权、本地/远程静音与心跳超时立即停麦，断�
         assert.equal(r.sent.length, previous, scenario);
         if (scenario === 'remote-mute') { r.touch(252, 48); assert.equal(r.micStarts, 2); }
         r.exit();
+    }
+});
+await test('待机随机轮换五种形态，语音打断过渡保持连续并在420ms内到位', () => {
+    const motion = new model.CatMotion(() => 0);
+    const shapes = new Set();
+    let previous;
+    for (let clock = 0; clock <= 25000; clock += 100) {
+        const pose = motion.sample('idle', clock, 0, 0, 0);
+        shapes.add(pose.shape);
+        if (pose.weights) assert.ok(Math.abs(pose.weights.reduce((sum, n) => sum + n, 0) - 1) < 1e-6);
+        previous = pose;
+    }
+    assert.equal(shapes.size, 5);
+    const point = { x: -5, y: -7, z: 6, material: 1 };
+    const before = model.posedShapePoint(point, previous);
+    let pose = motion.sample('listening', 25000, 0, 0, 0);
+    assert.deepEqual(model.posedShapePoint(point, pose), before);
+    pose = motion.sample('listening', 25180, 0, 0, 0);
+    const middle = model.posedShapePoint(point, pose);
+    pose = motion.sample('thinking', 25180, 0, 0, 0);
+    assert.deepEqual(model.posedShapePoint(point, pose), middle);
+    pose = motion.sample('thinking', 25600, 0, 0, 0);
+    assert.equal(pose.weights, undefined); assert.equal(pose.shape, 'think');
+    motion.sample('speaking', 26000, 0, 0, 60);
+    const neutral = motion.sample('speaking', 26100, 0, 0, 60);
+    const tilted = motion.sample('speaking', 26100, 1, -1, 60);
+    assert.ok(Math.abs(tilted.yaw - neutral.yaw - 0.9) < 1e-8, 'IMU bypasses in-progress morph');
+    assert.ok(Math.abs(tilted.pitch - neutral.pitch + 0.4) < 1e-8);
+    const signatures = ['idle', 'listening', 'thinking', 'speaking', 'sleep'].map(state =>
+        JSON.stringify(model.projectCat(model.poseFor(state, 1700, 0, 0, 55), 9, 184, 190).map(p => [p.sx, p.sy])));
+    assert.equal(new Set(signatures).size, signatures.length);
+});
+await test('全屏放大主体、只保留字幕，全部形态与极限倾角不侵入文字和按钮区', () => {
+    for (const width of [320, 368, 480]) for (const fullscreen of [false, true]) for (const shape of model.CAT_SHAPES) for (const tilt of [-1, 0, 1]) {
+        const height = width === 480 ? 480 : 448;
+        const boxes = [], texts = [];
+        const screen = { width, height, clear() {},
+            fillRect(x, y, w, h, color) { assert.ok(x >= 0 && y >= 0 && x + w <= width && y + h <= height); if (color === 0xffffff) boxes.push({ x, y, w, h }); },
+            measureText(value, style) { return { width: Array.from(value).length * 8 * (style?.scale || 1), height: 12 * (style?.scale || 1) }; },
+            drawText(value, x, y, style) { texts.push({ value, x, y, ...this.measureText(value, style) }); } };
+        const view = { ...state.initialState(), state: 'idle', connected: true, authenticated: true, displayName: 'HIDDEN_ACCOUNT', userText: '问题', assistantText: '回答'.repeat(40) };
+        const pose = { ...model.poseFor('idle', 1700, tilt, -tilt, 50, shape), shape };
+        render.drawScene(screen, view, { clock: 1700, tiltX: tilt, tiltY: -tilt, battery: 86, settings: false, fullscreen, pose });
+        const captionY = Math.min(...texts.filter(t => t.value !== 'OBEING PIXEL' && t.value !== '86%' && t.value !== '你好小川').map(t => t.y));
+        for (const box of boxes) assert.ok(box.y >= (fullscreen ? 41 : 80) && box.y + box.h < captionY - 15, `${width} ${shape} ${tilt}: ${JSON.stringify(box)}`);
+        assert.equal(texts.some(t => t.value.includes('HIDDEN_ACCOUNT')), false);
+        if (fullscreen) assert.ok(texts.every(t => t.y >= height - 110));
+        if (shape === 'idle' && tilt === 0) {
+            let pixels = 0;
+            render.drawCat({ ...screen, fillRect(x, y, w, h, color) { if (color === 0xffffff) pixels += w * h; } }, view,
+                { clock: 1700, tiltX: 0, tiltY: 0, battery: 86, settings: false }, 170, Math.min(7.8, (width - 116) / 29));
+            assert.ok(boxes.reduce((n, b) => n + b.w * b.h, 0) > pixels * 1.2);
+        }
+    }
+});
+await test('example6全屏按钮进出不触发隐藏设置，主体仍可请求聆听', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.touch(337, 24); assert.equal(r.frameText().includes('OBEING PIXEL'), false);
+    r.touch(337, 50); assert.equal(r.frameText().includes('断开手机连接'), false);
+    assert.ok(r.sent.some(m => m.type === 'listen'));
+    r.touch(337, 24); assert.ok(r.frameText().includes('OBEING PIXEL'));
+    r.touch(337, 24); r.button('longPress'); assert.ok(r.frameText().includes('断开手机连接'));
+    r.exit();
+});
+await test('批量绘制与回退逐条输出一致，中间过程在正常和全屏均可见', () => {
+    for (const fullscreen of [false, true]) {
+        const direct = [], batch = [];
+        const screenFor = log => ({ width: 480, height: 480,
+            clear(color) { log.push(['clear', color]); }, fillRect(...args) { log.push(['rect', ...args]); },
+            measureText(value, style) { return { width: value.length * 8 * (style?.scale || 1), height: 12 * (style?.scale || 1) }; },
+            drawText(value, x, y) { log.push(['text', value, x, y]); } });
+        const fast = screenFor(batch);
+        fast.fillRects = (buffer, count) => { for (let i = 0; i < count; i++) fast.fillRect(...buffer.subarray(i * 5, i * 5 + 5)); };
+        const view = { ...state.initialState(), state: 'thinking', authenticated: true, thinkingText: '正在查询天气', userText: '实际问题', assistantText: '实际回答' };
+        const input = { clock: 1000, tiltX: 0, tiltY: 0, battery: 86, settings: false, fullscreen };
+        render.drawScene(screenFor(direct), view, input); render.drawScene(fast, view, input);
+        assert.deepEqual(batch, direct);
+        assert.ok(batch.some(call => call[0] === 'text' && call[1] === '正在查询天气'));
     }
 });
 console.log(`\nObeing Pixel 验证通过：${passed} 项`);

@@ -1,5 +1,6 @@
-import { clamp } from './model';
-import { drawScene, pairingKeyAt } from './render';
+import { CatMotion, clamp } from './model';
+import { drawScene, fullscreenAt, pairingKeyAt } from './render';
+import { layoutPoint } from './layout';
 import { applyMessage, disconnect, initialState, parseMessage, rmsLevel, SAMPLE_RATE, SERVICE_TYPE, WAKE_WORD } from './state';
 
 const view = initialState();
@@ -10,6 +11,8 @@ let phone: PxMdnsService | null = null;
 let discovering = false;
 let running = true;
 let settings = false;
+let fullscreen = false;
+const motion = new CatMotion();
 let micActive = false;
 let micGeneration = 0;
 let accountEpoch = -1;
@@ -18,6 +21,7 @@ let tiltX = 0;
 let tiltY = 0;
 let targetX = 0;
 let targetY = 0;
+let shakeUntil = 0;
 let battery = px.system.battery().level;
 let lastMessageAt = 0;
 let lastActivityAt = 0;
@@ -271,23 +275,26 @@ function listen(): void {
     send({ type: 'listen' });
 }
 
-px.input.onTouch((event) => {
-    if (event.type !== 'down') return;
+px.input.onTouch((touch) => {
+    if (touch.type !== 'down') return;
+    const event = layoutPoint(px.screen, touch.x, touch.y);
     lastActivityAt = px.system.now();
+    if (fullscreenAt(event.x, event.y, event.width)) { fullscreen = !fullscreen; return; }
+    if (fullscreen) { if (event.y >= 42) listen(); return; }
     if (settings) {
         if (event.y >= 338 && event.y <= 388) {
             closeConnection();
         } else if (event.y > 395) settings = false;
         return;
     }
-    if (event.y >= 35 && event.y < 73) {
-        if (event.x >= px.screen.width - 52) { settings = true; return; }
-        if (event.x >= px.screen.width - 90) { view.theme = view.theme === 'dark' ? 'light' : 'dark'; px.storage.kv.set('ob.theme', view.theme); return; }
-        if (event.x >= px.screen.width - 132) { toggleMute(); return; }
+    if (event.y >= 35 && event.y < 80) {
+        if (event.x >= event.width - 52) { settings = true; return; }
+        if (event.x >= event.width - 90) { view.theme = view.theme === 'dark' ? 'light' : 'dark'; px.storage.kv.set('ob.theme', view.theme); return; }
+        if (event.x >= event.width - 132) { toggleMute(); return; }
     }
     if (view.state === 'pairing' || (view.state === 'error' && !view.authenticated && phone)) {
         if (view.pairingPending) { if (event.y > 370) closeConnection(); return; }
-        const key = pairingKeyAt(event.x, event.y, px.screen.width);
+        const key = pairingKeyAt(event.x, event.y, event.width);
         if (key === 'back') view.pairingCode = view.pairingCode.slice(0, -1);
         else if (key === 'ok') pair();
         else if (key && view.pairingCode.length < 6) view.pairingCode += key;
@@ -301,12 +308,12 @@ px.input.onButton((event) => {
     if (event.id !== 'boot') return;
     if (event.type === 'click') listen();
     else if (event.type === 'doubleClick') toggleMute();
-    else if (event.type === 'longPress') settings = !settings;
+    else if (event.type === 'longPress') { fullscreen = false; settings = !settings; }
 });
 
 if (px.sensors.imu.available()) {
-    px.sensors.imu.start({ rateHz: 30, onData(data) {
-        // QMI8658 单位 g。低通滤波抑制手抖，倾角上限防止模型出界。
+    px.sensors.imu.start({ rateHz: 50, onData(data) {
+        if (Math.abs(data.ax + targetX) + Math.abs(data.ay - targetY) > 0.35) shakeUntil = px.system.now() + 180;
         targetX = clamp(-data.ax, -1, 1);
         targetY = clamp(data.ay, -1, 1);
     } });
@@ -314,13 +321,13 @@ if (px.sensors.imu.available()) {
 
 px.screen.setFps(24);
 px.screen.onFrame((dt) => {
-    const step = Math.min(100, dt);
+    const step = Math.max(0, dt);
     clock += step;
-    const smoothing = 1 - Math.exp(-step / 160);
-    tiltX += (targetX - tiltX) * smoothing;
-    tiltY += (targetY - tiltY) * smoothing;
+    tiltX = targetX;
+    tiltY = targetY;
     if (view.state === 'idle' && px.system.now() - lastActivityAt > 45000) view.state = 'sleep';
-    drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings });
+    drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings, fullscreen, shake: px.system.now() < shakeUntil ? 1 : 0,
+        pose: motion.sample(view.state, clock, tiltX, tiltY, view.level) });
 });
 
 const discoverTimer = setInterval(() => { void discover(); }, 5000);

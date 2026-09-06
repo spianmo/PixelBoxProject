@@ -170,7 +170,7 @@ static JSValue js_ota_check(JSContext* ctx, JSValueConst, int argc, JSValueConst
   JSValue promv;
   auto prom = pxjs::Promise::create(ctx, &promv);
 
-  pxjs::worker_submit([url, prom]() {
+  if (!pxjs::worker_submit([url, prom]() {
     pxjs::HttpParams p;
     p.url = *url;
     p.timeout_ms = 10000;
@@ -214,7 +214,7 @@ static JSValue js_ota_check(JSContext* ctx, JSValueConst, int argc, JSValueConst
       if (!notes.empty()) JS_SetPropertyStr(c, o, "notes", JS_NewString(c, notes.c_str()));
       prom->resolve_now(o);
     });
-  });
+  })) prom->reject_msg("NETWORK_WORKER_ALLOC_FAILED");
   return promv;
 }
 

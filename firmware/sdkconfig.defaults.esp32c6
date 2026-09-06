@@ -19,6 +19,10 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
 # ---- 板型: 通用 SPI 屏 (ST7789 240x240, 引脚见 menuconfig PixelBox Board) ----
 CONFIG_BOARD_GENERIC_SPI=y
 
+# C6 has no PSRAM; retain internal TLS allocation.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=n
+CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y
+
 # 说明 (无需显式配置, 由 Kconfig 按目标自动取默认):
 #   - 无 PSRAM: JSVM_MEM_LIMIT_KB 默认 256 (KB, 内部堆);
 #   - 音频栈: PX_ENABLE_AUDIO 默认 n (C6), px.audio/px.voice 为 ENOTSUP 桩;

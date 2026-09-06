@@ -61,8 +61,37 @@ void set_entry_provider(EntryProvider p);
  * 线程模型
  * ------------------------------------------------------------ */
 
-/** 线程安全: 把 fn 投递到 JS 线程执行 (队列满时丢弃并打印错误) */
-void post(std::function<void()> fn);
+/** Thread-safe delivery; zero timeout drops replaceable events without blocking or logging. */
+bool post(std::function<void()> fn, uint32_t timeout_ms = 200);
+
+/** Wake the event loop without allocating or using the event queue (task context). */
+void wake();
+
+/** JS-thread sources, registered once. Lower priority runs first (input before frames).
+ * deadline returns absolute monotonic microseconds, or -1 when idle. */
+struct LoopSource {
+    int priority;
+    int64_t (*deadline)();
+    void (*run)(JSContext *ctx);
+};
+void add_loop_source(const LoopSource &source);
+
+/** JS-thread call with a bounded execution time; caller owns result/exception. */
+JSValue call(JSContext *ctx, JSValueConst fn, JSValueConst this_val,
+             int argc, JSValueConst *argv);
+bool stopping();
+
+struct RuntimeStats {
+    uint32_t queue_depth;
+    uint32_t queue_peak;
+    uint32_t dropped_jobs;
+    uint32_t execution_timeouts;
+    int64_t max_turn_us;
+    int64_t max_source_us;
+    int64_t max_job_us;
+};
+/** JS thread only; cumulative counters since firmware startup. */
+RuntimeStats runtime_stats();
 
 /** 当前是否处于 JS 线程 */
 bool is_js_thread();
@@ -79,6 +108,21 @@ uint32_t vm_generation();
  * 构造时 (JS 线程) dup 持有 JS 函数; 可从任意线程 invoke,
  * 内部经 post() 投递到 JS 线程; VM 重启后自动失效 (静默跳过)。
  * ------------------------------------------------------------ */
+
+/** VM-owned JS value. Construct/read on the JS thread; release on any task.
+ * Registered references are released before runtime destruction, including
+ * values whose C++ owner was destroyed while the event queue was full. */
+class Value {
+public:
+    Value() = default;
+    Value(JSContext *ctx, JSValueConst value);
+    JSValueConst get() const;
+    void reset() { ctrl_.reset(); }
+    struct Ctrl;
+private:
+    friend class Callback;
+    std::shared_ptr<Ctrl> ctrl_;
+};
 
 class Callback {
 public:
@@ -97,6 +141,10 @@ public:
 
     /** 任意线程: 投递调用, builder 在 JS 线程内构造参数 (可为空 = 无参) */
     void invoke_with(ArgBuilder builder) const;
+    /** Nonblocking delivery for replaceable telemetry; false means no call was queued. */
+    bool try_invoke_with(ArgBuilder builder) const;
+    /** JS thread only: invoke immediately, with the same generation/ownership checks. */
+    void invoke_now(const ArgBuilder &builder) const;
     /** 任意线程: 无参调用 */
     void invoke() const { invoke_with(nullptr); }
 
@@ -105,9 +153,10 @@ public:
     /** 释放引用 (任意线程; 实际 JSValue 释放会投递回 JS 线程) */
     void reset() { ctrl_.reset(); }
 
-    struct Ctrl; /* 内部控制块 */
+    using Ctrl = Value::Ctrl;
 
 private:
+    bool invoke_with_timeout(ArgBuilder builder, uint32_t timeout_ms) const;
     std::shared_ptr<Ctrl> ctrl_;
 };
 
