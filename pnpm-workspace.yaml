@@ -19,6 +19,9 @@ allowBuilds:
   electron: true
   esbuild: true
   node-pty: true
+  # - sharp       looks-same(tscircuit 链路深层传递依赖)的图像比对后端,IDE 运行期不加载;
+  #               不放行其 install 脚本(否则 pnpm 以 ERR_PNPM_IGNORED_BUILDS 让每次 pnpm run 预检失败)
+  sharp: false
 
 minimumReleaseAgeExclude:
   - '@tscircuit/circuit-json-util@0.0.105'

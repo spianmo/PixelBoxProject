@@ -454,10 +454,10 @@
       "busy": "已有固件任务在进行中,请等待完成或先取消",
       "badTarget": "目标芯片名无效",
       "badPort": "串口路径无效",
-      "idfNotFound": "未检测到 ESP-IDF:请安装到 ~/esp/esp-idf、设置 $IDF_PATH,或在设置页覆盖路径",
-      "exportMissing": "ESP-IDF 目录缺少 export.sh",
+      "idfNotFound": "未检测到 ESP-IDF:请安装 ESP-IDF、设置 IDF_PATH,或在设置页覆盖路径",
+      "exportMissing": "ESP-IDF 目录缺少环境脚本(export.ps1 / export.sh)",
       "firmwareMissing": "未找到仓库 firmware/ 工程目录",
-      "unsupportedPlatform": "当前平台暂不支持 IDE 内固件构建(需 macOS / Linux)",
+      "unsupportedPlatform": "当前平台暂不支持 IDE 内固件构建(需 Windows / macOS / Linux)",
       "notFirmwareProject": "当前工作区不是固件工程(缺少 CMakeLists.txt)",
       "startFailed": "固件任务启动失败"
     },
@@ -473,7 +473,7 @@
     "settings": {
       "groupToolchain": "固件工具链",
       "idfPath": "ESP-IDF 路径",
-      "idfPathPlaceholder": "留空自动检测($IDF_PATH 或 ~/esp/esp-idf)",
+      "idfPathPlaceholder": "留空自动检测(IDF_PATH、~/esp/esp-idf 或 C:/D:/Espressif)",
       "detecting": "正在检测 ESP-IDF…",
       "detected": "已检测到 ESP-IDF {{version}}:{{path}}",
       "defaultTarget": "默认目标芯片",

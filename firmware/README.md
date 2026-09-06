@@ -12,6 +12,7 @@ firmware/
 ├── partitions.csv         # 分区表: OTA 双分区 + littlefs storage
 ├── partitions_wakeword.csv# 唤醒词构建分区表 (storage 压缩, 尾部加 model 分区)
 ├── sdkconfig.defaults     # esp32s3 / 16MB Flash / Octal PSRAM 默认配置
+├── sdkconfig.defaults.esp32s3 # S3 默认独立语音、MultiNet7 模型与语音分区
 ├── sdkconfig.wakeword     # 唤醒词叠加配置 (见「启用唤醒词」)
 ├── main/                  # app_main: 板级初始化 → appmgr → devd → jsvm
 └── components/
@@ -34,6 +35,42 @@ firmware/
 
 ## 构建与烧录
 
+ESP32-S3 默认构建为独立语音版：`sdkconfig.defaults.esp32s3` 自动启用
+`PX_ENABLE_SPEECH`、MultiNet7 中文模型和 `partitions_speech.csv`，JS 堆上限为 2 MiB。
+命令行 `idf.py build` 和 IDE 默认构建使用同一配置，产物为 `build/pixelbox.bin`
+及 `build/srmodels/srmodels.bin`；打包 merged.bin 自动包含模型，无需额外传 `sdkconfig.speech`。
+C6/P4 不启用独立语音。
+
+已有旧 `sdkconfig` 不会被默认值覆盖：本机配置已同步；其他旧工作区可先备份
+`sdkconfig`，用 `idf.py set-target esp32s3` 重建默认配置，再运行 `idf.py build`。
+语音分区与旧 `partitions.csv` 不同，首次升级需完整烧录分区表、固件和模型，不能单 app OTA；
+旧 storage 数据需提前备份。
+
+### Windows PowerShell
+
+Windows 可直接在 IDE 内构建、打包和取消任务，烧录端口使用 `COM3` 等名称。
+工具链设置中的 ESP-IDF 路径应指向含 `export.ps1` 的根目录。
+自动检测支持 `IDF_PATH`、`~/esp/esp-idf` 以及 `C:/Espressif`、`D:/Espressif`
+下的 `esp-idf*` 目录；工具目录使用 `IDF_TOOLS_PATH`，也支持 IDF 同级的 `tools/python_env`。
+
+本机安装位置为 `D:/Espressif/esp-idf-v5.5`，编译工具和 Python 环境位于
+`D:/Espressif/tools`。从仓库根目录运行：
+
+```powershell
+. ./tools/esp-idf.ps1
+cd firmware
+idf.py build
+# 按实际串口烧录：
+idf.py -p COM3 flash monitor
+```
+
+若 PowerShell 阻止运行本地脚本，可仅对当前终端执行
+`Set-ExecutionPolicy -Scope Process Bypass`。首次设置目标使用 `idf.py set-target esp32s3`；
+已有配置直接 `build`，避免重置 `sdkconfig`。首次安装时需执行 ESP-IDF 的
+`install.ps1 esp32s3,esp32c6,esp32p4`，并准备前述 QuickJS v0.10.1 源码。
+
+### macOS / Linux
+
 ```bash
 cd firmware
 idf.py set-target esp32s3
@@ -51,11 +88,23 @@ pixelbox push            # 自动 mDNS 发现设备
 pixelbox dev             # watch 构建 + 自动推送 + 日志
 ```
 
+### HTTPS 内存配置
+
+S3/P4 的默认配置使用 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`，让 TLS 握手和记录缓冲
+分配到 PSRAM；无 PSRAM 的 C6 使用内部 RAM。`mbedtls_ssl_setup returned -0x7F00`
+表示 TLS 分配失败，可能出现在内部堆不足而 PSRAM 仍有大量空闲时。
+
+已有构建的 `sdkconfig` 不会被 `sdkconfig.defaults` 覆盖。升级时，对正在使用的构建目录
+运行 `idf.py menuconfig`，在 `Component config -> mbedTLS -> Memory allocation strategy`
+选择 `External SPIRAM`，然后重新构建、烧录固件；仅热更新示例 JS 不会修改 TLS 分配策略。
+使用 `-B` / `-D SDKCONFIG=...` 的语音构建应沿用相同参数。CA 证书校验和 NTP 同步仍需保留。
+
 ## 板型选择
 
 `idf.py menuconfig` → `PixelBox Board`:
 
-- `BOARD_WAVESHARE_AMOLED_18`(esp32s3 默认):微雪 ESP32-S3-Touch-AMOLED-1.8
+- `BOARD_WAVESHARE_AMOLED_216`(esp32s3 默认):微雪 ESP32-S3-Touch-AMOLED-2.16
+- `BOARD_WAVESHARE_AMOLED_18`:微雪 ESP32-S3-Touch-AMOLED-1.8
 - `BOARD_CUSTOM_V1`:定制 PCB(Stage B,引脚在 Kconfig 中配置;仅 esp32s3)
 - `BOARD_GENERIC_SPI`(esp32c6 默认):通用 SPI 屏(ST7789 240x240,
   引脚全 Kconfig;无触摸/IMU/PMU,能力位如实 false)
@@ -93,7 +142,7 @@ idf.py -B build_p4 -D SDKCONFIG=build_p4/sdkconfig set-target esp32p4 build
   hal_net/bindings_net 切换 ENOTSUP 桩(px.wifi/px.net/fetch/WebSocket
   按 d.ts 契约注册,status() 如实返回未连接),devd/mDNS 跳过启动不报错;
   联网需 esp_hosted(P4+C6 组合)——TODO 见 docs/hardware/multi-target.md §3.3。
-- **S3 零回归**:默认 `idf.py build` 产物与改造前一致(见下表)。
+- **S3**:当前默认构建为语音版；下表保留的是此前非语音固件的历史数据。
 
 ### 多目标实测 (2026-08-06, ESP-IDF v5.5, 整包编译)
 
@@ -119,9 +168,9 @@ wifi_manager strncpy→memcpy 修正所致)。
 
 ## 启用唤醒词 (esp-sr WakeNet)
 
-默认构建不含唤醒词:esp-sr 为 voicechat 的常驻依赖,但无符号被引用时被
-链接器整库裁剪(已复核 map,esp-sr/esp-dsp/dl_fft 对默认镜像贡献为零字节)。
-启用需用独立构建目录 + 叠加配置(以下命令均已实测):
+当前默认语音版通过 MultiNet7 检测“你好小川”。本节为旧 `px.voice` 手机中继的
+WakeNet 可选配置，会关闭独立语音并选用另一套分区；不用于 example07。
+该配置使用独立构建目录 + 叠加配置：
 
 ```bash
 cd firmware
@@ -140,8 +189,8 @@ idf.py -B build_wakeword -p /dev/cu.usbmodem* flash monitor
   构建共用的 `./sdkconfig`;两套构建目录互不干扰,可并存。
 - `sdkconfig.wakeword` 做三件事:`PX_ENABLE_WAKEWORD=y`(编译 wakeword.cpp
   的 wakenet 路径)、切换 `partitions_wakeword.csv`、选择 wn9 模型。
-- 分区表差异仅为 `storage` 压缩 352KB 腾出 `model` 分区;app/nvs/otadata
-  布局与默认表一致,**两种固件可互相 OTA**(见 docs/architecture.md §4.2)。
+- 此 WakeNet 配置与旧 `partitions.csv` 的 app/nvs/otadata 布局一致，但与当前默认
+  `partitions_speech.csv` 不同；不能通过单 app OTA 在当前语音版与 WakeNet 配置间切换。
 - 模型打包走 esp-sr 官方机制:分区表存在名为 `model` 的分区时,esp-sr 构建
   系统自动把 menuconfig 所选模型打包为 `srmodels.bin` 并挂入 flash 目标,
   无需手工烧录。
@@ -168,7 +217,7 @@ idf.py -B build_wakeword -p /dev/cu.usbmodem* flash monitor
 | `model` 分区 | — | 352KB @0xF98000, 余 69,299 B (23.8%) |
 | `storage` 分区 | 3904KB | 3552KB |
 
-默认构建加入 esp-sr 常驻依赖后体积不受影响(与启用依赖前基线 2,728,416 B
+当时非语音默认构建加入 esp-sr 常驻依赖后体积不受影响(与启用依赖前基线 2,728,416 B
 相比 +64 B ≈ 0.002%,map 中无任何 esp-sr 贡献);唤醒词构建的 wakenet 运行
 时工作区走 PSRAM(初始化失败自动降级),`rm -rf build_wakeword` 后按上述
 命令重建已验证可复现(产物字节数一致)。
@@ -226,3 +275,9 @@ idf.py -B build_wakeword -p /dev/cu.usbmodem* flash monitor
 结论: 开启 BLE (NimBLE) 后整包 2.60 MB, 6 MB OTA 分区仍有 57% 余量,
 `-O2` 无需降级; IRAM 为固定大小段, DIRAM 余量充足 (约 159 KB), JS 堆
 与大缓冲均走 8 MB Octal PSRAM, 无 iram/flash 压力。
+
+## JSVM Performance Validation
+
+The [2026-09-06 review and device measurements](../docs/jsvm-performance.md)
+describe the event-loop refactor, latest-sample IMU delivery, native projection
+helpers, regression checks, measured gains and remaining frame-rate limits.

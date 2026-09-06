@@ -339,7 +339,7 @@ export type FirmwareTaskKind = 'build' | 'merge' | 'flash' | 'clean'
 
 /** ESP-IDF 环境检测结果 */
 export interface ToolchainInfo {
-  /** 环境可用(IDF 存在且 export.sh / firmware 目录齐备) */
+  /** 环境可用(IDF 存在且 export.ps1 或 export.sh / firmware 目录齐备) */
   ok: boolean
   /** 实际选用的 ESP-IDF 根目录(设置覆盖 > $IDF_PATH > ~/esp/esp-idf) */
   idfPath: string

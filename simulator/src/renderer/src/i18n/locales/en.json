@@ -454,10 +454,10 @@
       "busy": "A firmware task is already running; wait or cancel it first",
       "badTarget": "Invalid target chip",
       "badPort": "Invalid serial port path",
-      "idfNotFound": "ESP-IDF not found: install to ~/esp/esp-idf, set $IDF_PATH, or override the path in Settings",
-      "exportMissing": "export.sh is missing from the ESP-IDF directory",
+      "idfNotFound": "ESP-IDF not found: install ESP-IDF, set IDF_PATH, or override the path in Settings",
+      "exportMissing": "The ESP-IDF environment script (export.ps1 / export.sh) is missing",
       "firmwareMissing": "Repository firmware/ project directory not found",
-      "unsupportedPlatform": "In-IDE firmware builds are not supported on this platform (macOS / Linux only)",
+      "unsupportedPlatform": "In-IDE firmware builds require Windows, macOS, or Linux",
       "notFirmwareProject": "Current workspace is not a firmware project (CMakeLists.txt missing)",
       "startFailed": "Failed to start the firmware task"
     },
@@ -473,7 +473,7 @@
     "settings": {
       "groupToolchain": "Firmware toolchain",
       "idfPath": "ESP-IDF path",
-      "idfPathPlaceholder": "Leave empty to auto-detect ($IDF_PATH or ~/esp/esp-idf)",
+      "idfPathPlaceholder": "Auto-detect: IDF_PATH, ~/esp/esp-idf, or C:/D:/Espressif",
       "detecting": "Detecting ESP-IDF…",
       "detected": "Detected ESP-IDF {{version}}: {{path}}",
       "defaultTarget": "Default target chip",

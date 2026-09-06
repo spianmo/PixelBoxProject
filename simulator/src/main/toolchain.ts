@@ -2,13 +2,13 @@
  * ToolchainService(main 进程)—— IDE 内多芯片固件 编译 / 打包 / 烧录(阶段 3)
  *
  * - 检测 ESP-IDF:设置覆盖 > $IDF_PATH > ~/esp/esp-idf,解析 esp_idf_version.h 报版本
- * - 构建:以 login shell($SHELL -lc)运行 `source export.sh && idf.py … build`,
+ * - 构建:POSIX 使用 login shell + export.sh,Windows 使用 PowerShell + export.ps1,
  *   cwd = StartTaskOptions.cwd 指定的固件工程目录(IDE v3:作用于当前工作区,
  *   须含 CMakeLists.txt,否则 toolchain:notFirmwareProject);未传 cwd 保持旧行为
  *   (仓库 firmware/);多目标独立构建目录防止污染默认 sdkconfig
  *   (与 firmware/README.md 约定一致:esp32s3 沿用默认 build/,其余
  *    `-B build_<后缀> -D SDKCONFIG=build_<后缀>/sdkconfig`;set-target 仅在
- *    构建目录目标缺失/不匹配时插入 —— set-target 会清空构建目录并重生成 sdkconfig,
+ *    已配置目标不匹配时插入,首次配置仅传 IDF_TARGET —— set-target 会清空构建目录并重生成 sdkconfig,
  *    无脑执行会毁掉增量缓存)
  * - 打包:构建成功后接 `idf.py merge-bin`(内部调 esptool merge_bin @flash_args)
  *   合成单文件 firmware/dist/<target>-merged.bin
@@ -18,7 +18,8 @@
  *   已由 SettingsService 首启迁移并标记弃用),变更即时生效无需重启
  */
 import { app, ipcMain, BrowserWindow } from 'electron'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { promisify } from 'node:util'
 import { promises as fsp } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -75,8 +76,14 @@ async function readIdfVersion(idfPath: string): Promise<string | null> {
  * $IDF_TOOLS_PATH/python_env 下与 IDF 主次版本匹配的既有 env,
  * 构建脚本经 IDF_PYTHON_ENV_PATH 显式固定(idf_tools.py 优先使用该变量)。
  */
-async function findPythonEnv(version: string | null): Promise<string | null> {
-  const toolsPath = process.env.IDF_TOOLS_PATH ?? join(homedir(), '.espressif')
+function idfToolsPath(idfPath: string): string {
+  if (process.env.IDF_TOOLS_PATH) return process.env.IDF_TOOLS_PATH
+  const adjacent = join(dirname(idfPath), 'tools')
+  return existsSync(join(adjacent, 'python_env')) ? adjacent : join(homedir(), '.espressif')
+}
+
+async function findPythonEnv(version: string | null, toolsPath: string): Promise<string | null> {
+  if (process.env.IDF_PYTHON_ENV_PATH) return process.env.IDF_PYTHON_ENV_PATH
   const envRoot = join(toolsPath, 'python_env')
   try {
     const names = await fsp.readdir(envRoot)
@@ -84,13 +91,30 @@ async function findPythonEnv(version: string | null): Promise<string | null> {
     const m = version ? /^v(\d+)\.(\d+)/.exec(version) : null
     const prefix = m ? `idf${m[1]}.${m[2]}_py` : 'idf'
     const hit = names
-      .filter((n) => n.startsWith(prefix) && existsSync(join(envRoot, n, 'bin', 'python')))
+      .filter((n) => n.startsWith(prefix) && existsSync(join(envRoot, n, ...pythonRelativePath())))
       .sort()
       .pop()
     return hit ? join(envRoot, hit) : null
   } catch {
     return null
   }
+}
+
+function pythonRelativePath(): string[] {
+  return process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']
+}
+
+async function windowsIdfCandidates(): Promise<string[]> {
+  if (process.platform !== 'win32') return []
+  const roots = [join(process.env.SystemDrive || 'C:', 'Espressif'), 'D:\\Espressif', join(homedir(), 'esp')]
+  const paths: string[] = []
+  for (const root of roots) {
+    try {
+      const names = await fsp.readdir(root)
+      paths.push(...names.filter((name) => name.startsWith('esp-idf')).sort().reverse().map((name) => join(root, name)))
+    } catch { /* Optional installation directory. */ }
+  }
+  return paths
 }
 
 /**
@@ -105,17 +129,18 @@ export async function detectToolchain(overridePath?: string): Promise<ToolchainI
     version: null,
     firmwareDir: fw
   }
-  if (process.platform === 'win32') {
-    // 本阶段仅支持 POSIX(login shell + export.sh);Windows 走 IDF 命令行自行构建
+  if (!['win32', 'darwin', 'linux'].includes(process.platform)) {
     return { ...base, ok: false, error: 'unsupportedPlatform' }
   }
   const settings = await loadSettings()
   const candidates = [
     overridePath !== undefined ? overridePath.trim() : settings.idfPathOverride,
     process.env.IDF_PATH ?? '',
-    join(homedir(), 'esp', 'esp-idf')
+    join(homedir(), 'esp', 'esp-idf'),
+    ...await windowsIdfCandidates()
   ].filter((p) => p.length > 0)
-  const idfPath = candidates.find((p) => existsSync(join(p, 'export.sh'))) ?? ''
+  const exportFile = process.platform === 'win32' ? 'export.ps1' : 'export.sh'
+  const idfPath = candidates.find((p) => existsSync(join(p, exportFile))) ?? ''
   if (!idfPath) {
     // 报告首个候选路径便于用户在设置页排错
     return { ...base, idfPath: candidates[0] ?? '', ok: false, error: 'idfNotFound' }
@@ -145,6 +170,19 @@ export function buildDirOf(target: string): string {
 /** shell 双引号安全转义 */
 function q(s: string): string {
   return `"${s.replace(/(["\\$`])/g, '\\$1')}"`
+}
+
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+function powershellArgs(script: string): string[] {
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass',
+    '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
+}
+
+function powershellPath(): string {
+  return join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 }
 
 /** 读取构建目录当前已配置的目标(未配置返回 null) */
@@ -325,9 +363,10 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
   let mergedPath: string | null = null
   const actions: string[] = []
   // set-target 会清空构建目录并按 sdkconfig.defaults(.<target>) 重生成配置,
-  // 仅在目录未配置或目标不匹配时插入,保住增量缓存
+  // 首次配置传 IDF_TARGET,也允许网络中断后重试不完整的 CMake 目录。
   const configured = await configuredTarget(fw, buildDir)
-  if (configured !== target) actions.push('set-target', target)
+  if (configured && configured !== target) actions.push('set-target', target)
+  else if (!configured) idfArgs.push('-D', `IDF_TARGET=${target}`)
 
   if (opts.kind === 'build' || opts.kind === 'merge') actions.push('build')
   if (opts.kind === 'merge') {
@@ -338,7 +377,8 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
   }
   if (opts.kind === 'flash') {
     const port = opts.port ?? ''
-    if (!/^\/dev\/[\w.-]+$/.test(port)) throw new Error('toolchain:badPort')
+    const validPort = process.platform === 'win32' ? /^COM[1-9]\d*$/i.test(port) : /^\/dev\/[\w.-]+$/.test(port)
+    if (!validPort) throw new Error('toolchain:badPort')
     const baud = typeof opts.baud === 'number' && opts.baud >= 9600 ? opts.baud : settings.baudRate
     idfArgs.push('-p', port, '-b', String(baud))
     actions.push('flash') // idf.py flash 依赖 build,过期时自动增量重建
@@ -347,8 +387,9 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
   // login shell 脚本:组件注册表镜像兜底 + 固定 Python venv + 加载 export.sh
   // (export.sh 输出收进临时日志保持「构建」tab 干净,失败时原样倒出便于排错;
   //  export.sh 可能 rc=0 但未导出 PATH,故额外用 command -v idf.py 守卫)
-  const pyEnv = await findPythonEnv(info.version)
-  const script = [
+  const toolsPath = idfToolsPath(info.idfPath)
+  const pyEnv = await findPythonEnv(info.version, toolsPath)
+  const posixScript = [
     `export IDF_COMPONENT_STORAGE_URL="\${IDF_COMPONENT_STORAGE_URL:-https://components-file.espressif.cn}"`,
     ...(pyEnv
       ? [`export IDF_PYTHON_ENV_PATH="\${IDF_PYTHON_ENV_PATH:-${pyEnv.replace(/(["\\$`])/g, '\\$1')}}"`]
@@ -362,13 +403,33 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
     `exec idf.py ${[...idfArgs, ...actions].map(q).join(' ')}`
   ].join('\n')
 
-  const shell = process.env.SHELL ?? '/bin/zsh'
+  const windowsScript = [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$OutputEncoding = [Console]::OutputEncoding',
+    "if (-not $env:NO_PROXY) { $env:NO_PROXY = [Environment]::GetEnvironmentVariable('NO_PROXY', 'User') }",
+    ...(pyEnv ? [`$env:PATH = ${psQuote(join(pyEnv, 'Scripts'))} + ';' + $env:PATH`] : []),
+    `Write-Output ${psQuote(`[toolchain] 加载 ESP-IDF 环境 (${info.version ?? '?'}) …`)}`,
+    `try { . ${psQuote(join(info.idfPath, 'export.ps1'))} } catch { Write-Output $_; exit 201 }`,
+    'if (-not $env:IDF_PYTHON_ENV_PATH) { Write-Output "[toolchain] IDF Python environment missing"; exit 202 }',
+    '$idfPython = Join-Path $env:IDF_PYTHON_ENV_PATH "Scripts/python.exe"',
+    `Write-Output ${psQuote(`[toolchain] idf.py ${[...idfArgs, ...actions].join(' ')}`)}`,
+    `& $idfPython ${psQuote(join(info.idfPath, 'tools', 'idf.py'))} ${[...idfArgs, ...actions].map(psQuote).join(' ')}`,
+    'exit $LASTEXITCODE'
+  ].join('\n')
+  const windows = process.platform === 'win32'
+  const shell = windows ? powershellPath() : process.env.SHELL ?? '/bin/bash'
   // detached:自建进程组,取消时 kill(-pid) 连 cmake/ninja/esptool 一起终止
-  const proc = spawn(shell, ['-lc', script], {
+  const proc = spawn(shell, windows ? powershellArgs(windowsScript) : ['-lc', posixScript], {
     cwd: fw,
-    detached: true,
+    detached: !windows,
+    windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env }
+    env: { ...process.env, IDF_TOOLS_PATH: toolsPath,
+      IDF_COMPONENT_STORAGE_URL: process.env.IDF_COMPONENT_STORAGE_URL || 'https://components-file.espressif.cn',
+      PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
+      ...(pyEnv ? { IDF_PYTHON_ENV_PATH: pyEnv } : {}) }
   })
   active = { kind: opts.kind, target, proc, cancelled: false, startedAt }
   emitLines([line('info', `[toolchain] 任务开始:${opts.kind} → ${target}(cwd=${fw})`)])
@@ -458,6 +519,15 @@ function cancelTask(): void {
   task.cancelled = true
   const pid = task.proc.pid
   emitLines([line('warn', '[toolchain] 已请求取消,正在终止进程树…')])
+  if (process.platform === 'win32') {
+    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (error) => {
+      if (!error || active?.proc !== task.proc) return
+      // taskkill can report a child that exited during traversal even when the root was killed.
+      try { process.kill(pid, 0) } catch { return }
+      emitLines([line('error', `[toolchain] taskkill failed (exit=${error.code ?? '?'}, pid=${pid})`)])
+    })
+    return
+  }
   const killGroup = (sig: NodeJS.Signals): void => {
     try {
       process.kill(-pid, sig) // 负 pid = 整个进程组(cmake/ninja/esptool)
@@ -482,6 +552,18 @@ const PORT_PATTERNS: Record<string, RegExp> = {
 }
 
 export async function scanSerialPorts(): Promise<SerialPortInfo[]> {
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await promisify(execFile)(powershellPath(), powershellArgs(
+        '[System.IO.Ports.SerialPort]::GetPortNames() | ConvertTo-Json -Compress'
+      ), { windowsHide: true, timeout: 10000 })
+      const parsed: unknown = stdout.trim() ? JSON.parse(stdout) : []
+      const names: unknown[] = Array.isArray(parsed) ? parsed : [parsed]
+      return names.filter((name): name is string => typeof name === 'string' && /^COM[1-9]\d*$/i.test(name))
+        .sort((a, b) => Number(a.slice(3)) - Number(b.slice(3)))
+        .map((name) => ({ path: name, label: name }))
+    } catch { return [] }
+  }
   const pattern = PORT_PATTERNS[process.platform]
   if (!pattern) return []
   try {
@@ -530,7 +612,9 @@ export function disposeToolchain(): void {
   const pid = active?.proc.pid
   if (pid !== undefined) {
     try {
-      process.kill(-pid, 'SIGKILL')
+      if (process.platform === 'win32') {
+        spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 10000 })
+      } else process.kill(-pid, 'SIGKILL')
     } catch {
       // 已退出
     }

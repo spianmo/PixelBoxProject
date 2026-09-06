@@ -20,7 +20,7 @@
  * 注意:会触发一次真实固件构建(有增量缓存时较快)。
  */
 import * as esbuild from 'esbuild'
-import { existsSync, mkdtempSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -54,6 +54,10 @@ const bundlePath = join(tmpDir, 'toolchain.bundle.mjs')
 const electronStubPlugin = {
   name: 'electron-stub',
   setup(build) {
+    build.onResolve({ filter: /^\.\/workspace$/ }, () => ({ path: 'workspace', namespace: 'workspace-stub' }))
+    build.onLoad({ filter: /.*/, namespace: 'workspace-stub' }, () => ({
+      contents: 'export function emitFsEventIfWatched() {}'
+    }))
     build.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'stub' }))
     build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
       contents: `
@@ -164,6 +168,10 @@ else fail('任务失败', `exit=${result.exitCode} cancelled=${result.cancelled}
 
 if (logLines.length > 10) ok('toolchain:log 数据流', `${logLines.length} 行(经 IPC 到「构建」tab)`)
 else fail('toolchain:log 数据流', `仅 ${logLines.length} 行`)
+if (process.platform === 'win32') {
+  if (logLines.some((l) => /CLIXML|<Objs Version=/.test(l.text))) fail('PowerShell 日志', '日志包含序列化 XML')
+  else ok('PowerShell 输出为可读文本')
+}
 
 for (const a of result.artifacts ?? []) {
   if (existsSync(a.path) && statSync(a.path).size === a.sizeBytes && a.sizeBytes > 0) {
@@ -176,6 +184,27 @@ if (KIND === 'merge') {
   const merged = (result.artifacts ?? []).find((a) => a.path.endsWith(`${TARGET}-merged.bin`))
   if (merged) ok('merged.bin 命名与位置', merged.path)
   else fail('merged.bin', '结果中未包含 <target>-merged.bin 产物')
+}
+if (result.success && TARGET === 'esp32s3') {
+  try {
+    const config = readFileSync(join(info.firmwareDir, 'sdkconfig'), 'utf8')
+    for (const setting of ['CONFIG_PX_ENABLE_SPEECH=y', 'CONFIG_SR_MN_CN_MULTINET7_QUANT=y',
+      'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_speech.csv"', 'CONFIG_JSVM_MEM_LIMIT_KB=2048']) {
+      if (!config.split(/\r?\n/).includes(setting)) throw new Error(`Missing ${setting}`)
+    }
+    const build = join(info.firmwareDir, 'build')
+    const flash = JSON.parse(readFileSync(join(build, 'flasher_args.json'), 'utf8'))
+    const model = Object.entries(flash.flash_files).find(([, path]) => path.replaceAll('\\', '/').endsWith('srmodels/srmodels.bin'))
+    if (!model) throw new Error('Model missing from flash files')
+    const packed = readFileSync(join(build, model[1]))
+    if (packed.length === 0 || packed.length > 3 * 1024 * 1024) throw new Error('Invalid model partition size')
+    if (KIND === 'merge') {
+      const merged = readFileSync(join(info.firmwareDir, 'dist', `${TARGET}-merged.bin`))
+      const offset = Number(model[0])
+      if (!merged.subarray(offset, offset + packed.length).equals(packed)) throw new Error('Merged image model mismatch')
+    }
+    ok('默认 S3 语音配置、模型烧录清单与合并镜像', `${packed.length} bytes`)
+  } catch (error) { fail('默认语音固件', error.message) }
 }
 
 // ----------------------------------------------------------------
