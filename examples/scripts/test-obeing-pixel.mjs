@@ -166,6 +166,8 @@ function runtime(width = 368, height = 448) {
     let micStops = 0;
     let ended;
     let audioFeeds = 0;
+    const audioChunks = [];
+    let audioEnds = 0;
     const sockets = [];
     const timers = new Map();
     const intervals = [];
@@ -184,7 +186,7 @@ function runtime(width = 368, height = 448) {
         net: { mdns: { discover: async () => [{ name: 'Obeing Pixel Phone', ip: '192.168.1.20', port: 18888 }] } },
         audio: {
             mic: { start(options) { micStarts++; micCallback = options.onData; micCallbacks.push(options.onData); }, stop() { micStops++; } },
-            player: { openPcmStream: () => ({ feed() { audioFeeds++; }, stop() {}, buffered: () => 0, end() {}, onEnded(cb) { ended = cb; } }) },
+            player: { openPcmStream: () => ({ feed(pcm) { audioFeeds++; audioChunks.push(Buffer.from(pcm)); }, stop() {}, buffered: () => 0, end() { audioEnds++; }, onEnded(cb) { ended = cb; } }) },
         },
         sensors: { imu: { available: () => false } },
         screen: {
@@ -198,7 +200,8 @@ function runtime(width = 368, height = 448) {
     };
     runInNewContext(main.outputFiles[0].text, { px, console: { log() {} }, WebSocket: Socket, ArrayBuffer, Int16Array, setTimeout(cb) { const id = timers.size + 1; timers.set(id, cb); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(cb) { intervals.push(cb); return intervals.length; }, clearInterval() {} });
     return {
-        sent, sockets,
+        sent, sockets, audioChunks,
+        get audioEnds() { return audioEnds; },
         get micStarts() { return micStarts; }, get micStops() { return micStops; }, get audioFeeds() { return audioFeeds; },
         touch(x, y) { touch({ type: 'down', x, y }); },
         button(type) { button({ id: 'boot', type }); },
@@ -400,8 +403,9 @@ await test('播报停止采音，audio.end不抢先恢复，实际播完回执�
     r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
     assert.equal(r.micStops, 1);
     r.message(new Int16Array([100, 200]).buffer);
-    assert.equal(r.audioFeeds, 1);
+    assert.equal(r.audioFeeds, 0);
     r.message({ type: 'audio.end', turnId: 1 });
+    assert.equal(r.audioFeeds, 1);
     assert.equal(r.micStarts, 1);
     r.audioEnded();
     assert.equal(r.micStarts, 1);
@@ -427,11 +431,75 @@ await test('audio.cancel丢弃旧播放，过期audio.end不确认新轮，等�
     r.message({ type: 'audio.cancel', turnId: 1 });
     r.message({ type: 'audio.end', turnId: 1 });
     r.message(new Int16Array([100, 200]).buffer);
-    assert.equal(r.audioFeeds, 1);
+    assert.equal(r.audioFeeds, 0);
     r.message({ type: 'audio.end', turnId: 2 });
+    assert.equal(r.audioFeeds, 1);
     r.audioEnded();
     assert.deepEqual(r.sent.filter((m) => m.type === 'audio.played'), [{ type: 'audio.played', turnId: 2 }]);
     r.exit();
+});
+await test('PCM startup absorbs packet jitter and preserves every sample through the short tail', async () => {
+    for (const sampleRate of [16000, 24000, 48000]) {
+        const r = await pairedRuntime();
+        r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+        r.message({ type: 'audio.start', turnId: 1, sampleRate, channels: 1, format: 'pcm_s16le' });
+        const chunks = [];
+        for (let i = 0; i < 10; i++) {
+            const pcm = new Int16Array(sampleRate * 32 / 1000).fill(i + 1).buffer;
+            chunks.push(Buffer.from(pcm));
+            r.advance(i % 3 === 0 ? 55 : 24);
+            r.message(pcm);
+            if (i < 7) assert.equal(r.audioFeeds, 0, 'speaker must wait for a usable startup buffer');
+            if (i === 7) assert.equal(r.audioChunks[0].byteLength, sampleRate * 2 * 256 / 1000);
+        }
+        const tail = new Int16Array([123, -456]).buffer;
+        chunks.push(Buffer.from(tail)); r.message(tail);
+        r.message({ type: 'audio.end', turnId: 1 });
+        assert.deepEqual(Buffer.concat(r.audioChunks), Buffer.concat(chunks));
+        assert.equal(r.audioEnds, 1);
+        assert.equal(r.sent.some(m => m.type === 'audio.played'), false);
+        r.audioEnded();
+        assert.equal(r.sent.filter(m => m.type === 'audio.played').length, 1);
+        r.exit();
+    }
+});
+await test('short and empty replies finish without waiting for the startup threshold', async () => {
+    for (const samples of [0, 160]) {
+        const r = await pairedRuntime();
+        r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+        r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+        const pcm = new Int16Array(samples).fill(456).buffer;
+        r.message(pcm);
+        assert.equal(r.audioFeeds, 0);
+        r.message({ type: 'audio.end', turnId: 1 });
+        assert.deepEqual(Buffer.concat(r.audioChunks), Buffer.from(pcm));
+        assert.equal(r.audioEnds, 1);
+        r.message(new Int16Array([789]).buffer);
+        assert.deepEqual(Buffer.concat(r.audioChunks), Buffer.from(pcm));
+        r.audioEnded();
+        assert.ok(r.sent.some(m => m.type === 'audio.played' && m.turnId === 1));
+        r.exit();
+    }
+});
+await test('cancel, mute, disconnect and account changes discard pending startup PCM', async () => {
+    for (const action of ['cancel', 'mute', 'disconnect', 'account', 'exit']) {
+        const r = await pairedRuntime();
+        r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+        r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+        r.message(new Int16Array(512).fill(123).buffer);
+        if (action === 'cancel') r.message({ type: 'audio.cancel', turnId: 1 });
+        if (action === 'mute') r.button('doubleClick');
+        if (action === 'disconnect') r.sockets[0].close();
+        if (action === 'account') r.message({ type: 'account.state', authenticated: true, accountEpoch: 2 });
+        if (action === 'exit') r.exit();
+        if (action !== 'disconnect' && action !== 'exit') r.message({ type: 'audio.end', turnId: 1 });
+        else assert.equal(r.sockets[0].onmessage, null);
+        r.audioEnded();
+        assert.equal(r.audioFeeds, 0, action);
+        assert.equal(r.audioEnds, 0, action);
+        assert.equal(r.sent.some(m => m.type === 'audio.played'), false, action);
+        if (action !== 'exit') r.exit();
+    }
 });
 await test('撤销授权、本地/远程静音与心跳超时立即停麦，断连PCM不再发送', async () => {
     for (const scenario of ['revoke', 'mute', 'remote-mute', 'timeout']) {

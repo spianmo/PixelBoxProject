@@ -1,6 +1,7 @@
 import { CatMotion, clamp, prepareCat } from './model';
 import { drawScene, fullscreenAt, pairingKeyAt } from './render';
 import { layoutPoint } from './layout';
+import { BufferedPcmPlayback } from './playback';
 import { applyMessage, disconnect, initialState, parseMessage, rmsLevel, SAMPLE_RATE, SERVICE_TYPE, WAKE_WORD } from './state';
 
 const view = initialState();
@@ -27,7 +28,7 @@ let lastMessageAt = 0;
 let lastActivityAt = 0;
 let connectTimer = 0;
 let pendingTimer = 0;
-let playback: ReturnType<typeof px.audio.player.openPcmStream> | null = null;
+let playback: BufferedPcmPlayback | null = null;
 let playbackEnded = false;
 let playbackTurnId: number | null = null;
 
@@ -167,7 +168,7 @@ function onMessage(raw: string | ArrayBuffer): void {
             return;
         }
         try {
-            const stream = px.audio.player.openPcmStream({ sampleRate: rate, channels: 1 });
+            const stream = new BufferedPcmPlayback(rate);
             playback = stream;
             playbackTurnId = turnId;
             view.state = 'speaking';
