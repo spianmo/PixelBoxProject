@@ -24,7 +24,7 @@ const source = `
 import { drawScene } from '../examples/06-obeing-pixel/src/render';
 import { drawHarness } from '../examples/07-obeing-harness/src/render';
 import { initialState } from '../examples/06-obeing-pixel/src/state';
-import { CatMotion } from '../examples/06-obeing-pixel/src/model';
+import { CatMotion, prepareCat } from '../examples/06-obeing-pixel/src/model';
 const view = initialState(); view.state = 'idle'; view.muted = true;
 const motion = new CatMotion();
 const form = {page:'assistant'};
@@ -34,6 +34,7 @@ px.sensors.imu.start({rateHz:50,onData(data){
     if(p.lastSample)p.maxGap=Math.max(p.maxGap,now-p.lastSample);
     p.lastSample=now;p.samples++;p.x=-data.ax;p.y=data.ay;
 }});
+prepareCat();
 px.screen.setFps(24);
 px.screen.onFrame(dt=>{
     p.frames++;p.clock+=dt;

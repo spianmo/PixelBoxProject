@@ -186,6 +186,9 @@ function packedShape(shape: CatShape): Float32Array {
     shapeCache[shape] = points;
     return points;
 }
+export function prepareCat(): void {
+    for (const shape of CAT_SHAPES) packedShape(shape);
+}
 let occupancy = new Uint8Array(4096);
 const raster = {
     step: 0, count: 0, pixels: 0,

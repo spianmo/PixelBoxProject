@@ -1,4 +1,4 @@
-import { CatMotion, clamp } from './model';
+import { CatMotion, clamp, prepareCat } from './model';
 import { drawScene, fullscreenAt, pairingKeyAt } from './render';
 import { layoutPoint } from './layout';
 import { applyMessage, disconnect, initialState, parseMessage, rmsLevel, SAMPLE_RATE, SERVICE_TYPE, WAKE_WORD } from './state';
@@ -319,6 +319,7 @@ if (px.sensors.imu.available()) {
     } });
 }
 
+prepareCat();
 px.screen.setFps(24);
 px.screen.onFrame((dt) => {
     const step = Math.max(0, dt);

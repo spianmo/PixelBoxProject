@@ -16,7 +16,7 @@ try {
         ${process.argv.includes('--detail') ? `
         p.native = {};
         const restore = [];
-        for (const [object, name] of [[px.screen,'clear'],[px.screen,'fillRect'],[px.screen,'drawText'],[px.screen,'measureText'],[px.util,'projectPoints']]) {
+        for (const [object, name] of [[px.screen,'clear'],[px.screen,'fillRect'],[px.screen,'fillRects'],[px.screen,'drawText'],[px.screen,'measureText'],[px.util,'projectPoints'],[px.util,'projectPointRuns']]) {
             if (typeof object[name] !== 'function') continue;
             const original = object[name], stats = p.native[name] = {calls:0,ms:0};
             object[name] = function(...args) {

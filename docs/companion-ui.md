@@ -11,6 +11,8 @@ scan streaks and eye color offsets appear only for 180 ms after an IMU jolt.
 Latest IMU tilt is applied directly after pose blending, without a low-pass
 filter or yaw/pitch animation. Rendering batches rectangle commands through
 `fillRects` and caches bounded font measurements; older firmware has a fallback.
+All shapes are prepared at app startup to avoid a cold shape allocation during
+an IMU-driven frame or conversation state change.
 
 Normal mode enlarges the cat and reserves only three caption lines. The account
 name is absent from the assistant header; connectivity follows the brand.
@@ -37,3 +39,9 @@ fullscreen touch handling, persistent-session reload and explicit logout.
 
 The earlier firmware performance measurements in `jsvm-performance.md` predate
 these larger scenes and morph animations; they are not final UI FPS claims.
+
+The enlarged-scene device probe after the batch/font firmware measured 5.38 FPS
+for example6, 5.92 FPS for example7 normal and 5.72 FPS fullscreen, with live
+IMU and no execution timeouts or dropped jobs. It used a renderer fixture,
+without authenticated speech, and preceded moving shape preparation to startup.
+These values are frame throughput, not measured motion-to-photon latency.

@@ -1,4 +1,4 @@
-import { CatMotion, clamp } from '../../06-obeing-pixel/src/model';
+import { CatMotion, clamp, prepareCat } from '../../06-obeing-pixel/src/model';
 import { fullscreenAt } from '../../06-obeing-pixel/src/render';
 import { layoutPoint } from '../../06-obeing-pixel/src/layout';
 import { EnterpriseAuth, validateOrigin } from './auth';
@@ -244,6 +244,7 @@ if (px.sensors.imu.available()) px.sensors.imu.start({ rateHz: 50, onData(data) 
     if (Math.abs(data.ax + targetX) + Math.abs(data.ay - targetY) > 0.35) shakeUntil = px.system.now() + 180;
     targetX = clamp(-data.ax, -1, 1); targetY = clamp(data.ay, -1, 1);
 } });
+prepareCat();
 px.screen.setFps(24);
 px.screen.onFrame((dt) => {
     if (!running) return;
