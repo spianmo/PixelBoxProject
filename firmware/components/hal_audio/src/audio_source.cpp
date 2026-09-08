@@ -165,15 +165,15 @@ size_t PcmRingSource::feed(const uint8_t* data, size_t len) {
 
     // 先补齐上次残留的半帧
     if (stash_len_ > 0) {
+        // 满环时保留半帧并拒收新字节，交给调用方重试，不能补齐后直接丢弃。
+        if (cap_ - used_ < fb) return 0;
         while (stash_len_ < fb && accepted < len) stash_[stash_len_++] = data[accepted++];
         if (stash_len_ < fb) return accepted;  // 仍不足一帧
-        if (cap_ - used_ >= fb) {
-            for (size_t i = 0; i < fb; i++) {
-                buf_[wr_] = stash_[i];
-                wr_ = (wr_ + 1) % cap_;
-            }
-            used_ += fb;
+        for (size_t byte = 0; byte < fb; byte++) {
+            buf_[wr_] = stash_[byte];
+            wr_ = (wr_ + 1) % cap_;
         }
+        used_ += fb;
         stash_len_ = 0;
     }
 
@@ -194,7 +194,7 @@ size_t PcmRingSource::feed(const uint8_t* data, size_t len) {
     used_ += copied;
     accepted += copied;
 
-    // 空间满时丢弃多余整帧;残余不足一帧的尾巴进 stash
+    // 未接收的整帧由调用方重试；残余不足一帧的尾巴进 stash。
     if (copied == whole) {
         size_t tail = len - accepted;
         if (tail > 0 && tail < fb) {

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <strings.h>
 #include <vector>
 
 #include "cJSON.h"
@@ -100,6 +101,18 @@ struct AudioPriority {
 struct Http {
     esp_http_client_handle_t handle = nullptr;
     std::string error;
+    std::function<void(const uint8_t*, size_t)> on_data;
+    bool close_requested = false;
+    static esp_err_t event(esp_http_client_event_t* event) {
+        auto& self = *static_cast<Http*>(event->user_data);
+        if (event->event_id == HTTP_EVENT_ON_HEADER && event->header_key && event->header_value
+                && strcasecmp(event->header_key, "Connection") == 0
+                && strcasecmp(event->header_value, "close") == 0) self.close_requested = true;
+        if (event->event_id == HTTP_EVENT_ON_DATA && event->data_len > 0 && self.on_data
+                && esp_http_client_get_status_code(event->client) == 200)
+            self.on_data(static_cast<const uint8_t*>(event->data), event->data_len);
+        return ESP_OK;
+    }
     ~Http() { if (handle) esp_http_client_cleanup(handle); }
     bool failed(const char* stage, esp_err_t code = ESP_FAIL) {
         int tls = 0, flags = 0;
@@ -284,6 +297,17 @@ void release_model() {
 }
 }  // namespace
 
+struct TtsConnection {
+    Http request;
+    Config config;
+    int64_t idle_since = 0;
+    bool reusable(const Config& next) const {
+        return request.handle && config.region == next.region && config.key == next.key
+            && !request.close_requested && idle_since
+            && esp_timer_get_time() - idle_since < 15000000;
+    }
+};
+
 struct Recording {
     explicit Recording(size_t samples)
         : wav(44 + samples * sizeof(int16_t)),
@@ -464,7 +488,10 @@ void Engine::detach_audio() {
 void Engine::run() {
     while (alive_.load()) {
         std::shared_ptr<Job>* queued = nullptr;
-        if (xQueueReceive(queue_, &queued, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        if (xQueueReceive(queue_, &queued, pdMS_TO_TICKS(100)) != pdTRUE) {
+            if (tts_connection_ && !tts_connection_->reusable(tts_connection_->config)) tts_connection_.reset();
+            continue;
+        }
         auto job = *queued;
         delete queued;
         if (!active(*job)) { job->fail("语音操作已取消"); continue; }
@@ -478,6 +505,7 @@ void Engine::run() {
     }
     std::shared_ptr<Job>* queued = nullptr;
     while (xQueueReceive(queue_, &queued, 0) == pdTRUE) { (*queued)->fail("语音操作已取消"); delete queued; }
+    tts_connection_.reset();
     if (role_ == Role::Wake) release_model();
 }
 
@@ -641,6 +669,8 @@ void Engine::wake(const std::shared_ptr<Job>& job) {
 }
 
 void Engine::recognize(const std::shared_ptr<Job>& job) {
+    // 识别与播报不会并行；先还回空闲 TTS 的 TLS 内存供 ASR 握手使用。
+    tts_connection_.reset();
     const size_t max_samples = static_cast<size_t>(job->max_ms) * kRate / 1000;
     auto recording = job->recording;
     if (!recording) { job->fail("录音未启动"); return; }
@@ -731,11 +761,11 @@ void Engine::recognize(const std::shared_ptr<Job>& job) {
                     if (!queued) level_update->pending.store(false);
                 }
             }
-            // 100 ms 一包；追发握手期间的积压时每包最多 4096 字节，采音线程从不等待网络。
-            if (used - sent >= 3200) break;
+            // 40 ms 一包，减少首个假设的上传等待；采音线程从不等待网络。
+            if (used - sent >= 1280) break;
         }
         finished = finished || used >= max_samples * 2;
-        if (used > sent && (used - sent >= 3200 || finished)) {
+        if (used > sent && (used - sent >= 1280 || finished)) {
             const size_t count = std::min<size_t>(4096, used - sent);
             if (!socket.audio(wav.data + 44 + sent, count)) { recording->stop(); job->fail("Azure 语音发送失败"); return; }
             sent += count;
@@ -757,58 +787,103 @@ void Engine::speak(const std::shared_ptr<Job>& job) {
     log_memory("Azure TTS starting");
     const std::string ssml = "<speak version='1.0' xml:lang='" + job->config.language + "'><voice name='" + job->config.voice + "'>" + xml_escape(job->text) + "</voice></speak>";
     const std::string url = "https://" + job->config.region + ".tts.speech.microsoft.com/cognitiveservices/v1";
-    Http request;
+    auto connection = std::move(tts_connection_);
+    bool reused = connection && connection->reusable(job->config);
+    if (!reused) connection.reset();
     const int64_t deadline = esp_timer_get_time() + 120000000;
     const auto valid = [&] { return active(*job) && esp_timer_get_time() < deadline; };
-    // 输出格式头必须在 HTTP open 前设置；统一使用原始16k单声道PCM以避免容器误解码。
-    esp_http_client_config_t options{};
-    options.url = url.c_str(); options.method = HTTP_METHOD_POST; options.timeout_ms = 15000;
-    options.crt_bundle_attach = esp_crt_bundle_attach; options.disable_auto_redirect = true;
-    options.buffer_size = 4096;
-    request.handle = esp_http_client_init(&options);
-    if (!request.handle) { job->fail("TLS 请求创建失败"); return; }
-    esp_http_client_set_header(request.handle, "Ocp-Apim-Subscription-Key", job->config.key.c_str());
-    esp_http_client_set_header(request.handle, "Content-Type", "application/ssml+xml");
-    esp_http_client_set_header(request.handle, "X-Microsoft-OutputFormat", "raw-16khz-16bit-mono-pcm");
-    esp_http_client_set_header(request.handle, "User-Agent", "ObeingPixel/1.0");
-    const esp_err_t open_error = esp_http_client_open(request.handle, ssml.size());
-    if (open_error != ESP_OK) { request.failed("TTS connect", open_error); job->fail(request.error); return; }
-    if (!request.write(reinterpret_cast<const uint8_t*>(ssml.data()), ssml.size(), valid)) { job->fail(request.error); return; }
-    const int status = request.status();
-    if (status != 200) { job->fail(status < 0 ? request.error : status == 401 || status == 403 ? "Azure 语音密钥或区域无效" : "Azure 语音合成 HTTP " + std::to_string(status)); return; }
+    for (int attempt = 0; attempt < 2 && valid(); attempt++) {
+        if (!connection) {
+            connection = std::make_shared<TtsConnection>();
+            connection->config = job->config;
+            auto& request = connection->request;
+            // 输出格式头在 open 前设置；每个连接保留证书验证和禁止重定向。
+            esp_http_client_config_t options{};
+            options.url = url.c_str(); options.method = HTTP_METHOD_POST; options.timeout_ms = 15000;
+            options.crt_bundle_attach = esp_crt_bundle_attach; options.disable_auto_redirect = true;
+            options.buffer_size = 4096;
+            options.keep_alive_enable = true;
+            options.event_handler = Http::event;
+            options.user_data = &request;
+            request.handle = esp_http_client_init(&options);
+            if (!request.handle) { job->fail("TLS 请求创建失败"); return; }
+            esp_http_client_set_header(request.handle, "Ocp-Apim-Subscription-Key", job->config.key.c_str());
+            esp_http_client_set_header(request.handle, "Content-Type", "application/ssml+xml");
+            esp_http_client_set_header(request.handle, "X-Microsoft-OutputFormat", "raw-16khz-16bit-mono-pcm");
+            esp_http_client_set_header(request.handle, "User-Agent", "ObeingPixel/1.0");
+        }
+        auto& request = connection->request;
+        request.close_requested = false;
+        esp_http_client_set_timeout_ms(request.handle, 15000);
+        const esp_err_t open_error = esp_http_client_open(request.handle, ssml.size());
+        if (open_error != ESP_OK) request.failed("TTS connect", open_error);
+        if (open_error == ESP_OK && request.write(reinterpret_cast<const uint8_t*>(ssml.data()), ssml.size(), valid)) break;
+        // 空闲连接被服务器关闭时，仅在尚未接收响应/播放前重建一次。
+        if (reused && attempt == 0 && valid()) { connection.reset(); reused = false; continue; }
+        job->fail(request.error); return;
+    }
+    if (!valid()) { if (active(*job)) job->fail("Azure 语音合成超时"); return; }
+    auto& request = connection->request;
     auto ring = hal_audio::PcmRingSource::create(kRate, 1, 65536);
     if (!ring) { job->fail("播报缓冲分配失败"); return; }
     auto completed = std::make_shared<std::atomic<bool>>(false);
     ring->on_finished([completed] { completed->store(true); });
-    if (hal_audio::player_add(ring) != ESP_OK) { job->fail("扬声器不可用"); return; }
     if (!set_player(ring, *job)) return;
-    uint8_t chunk[2049];
-    size_t carry = 0;
     size_t total = 0;
-    while (valid()) {
-        const int n = esp_http_client_read(request.handle, reinterpret_cast<char*>(chunk + carry), sizeof(chunk) - carry);
-        if (n < 0) { job->fail("Azure 语音数据读取失败"); return; }
-        if (n == 0) break;
-        if (!total) ESP_LOGI(kTag, "Azure TTS first audio: %lld ms", (long long)((esp_timer_get_time() - started) / 1000));
-        total += n;
-        if (total > 4 * 1024 * 1024) { job->fail("语音播报超出时长限制"); return; }
-        const size_t aligned = (static_cast<size_t>(n) + carry) & ~size_t(1);
-        const size_t next_carry = static_cast<size_t>(n) + carry - aligned;
+    int64_t last_audio = esp_timer_get_time();
+    std::string stream_error;
+    bool playing = false;
+    // IDF read 会等待凑满调用者缓冲；ON_DATA 在每次 HTTP 解析时立即推送，首包无需凑满。
+    request.on_data = [&](const uint8_t* data, size_t size) {
+        if (!stream_error.empty() || !valid()) return;
+        if (size > 4 * 1024 * 1024 - total) { stream_error = "语音播报超出时长限制"; return; }
+        if (!total) ESP_LOGI(kTag, "Azure TTS first audio: %lld ms reused=%s", (long long)((esp_timer_get_time() - started) / 1000), reused ? "true" : "false");
+        total += size;
         size_t offset = 0;
-        while (offset < aligned && valid()) {
-            // 按环缓冲实际空闲量反压TLS读取，禁止把长回答整段载入PSRAM。
-            offset += ring->feed(chunk + offset, aligned - offset);
-            if (offset < aligned) vTaskDelay(pdMS_TO_TICKS(10));
+        while (offset < size && valid()) {
+            offset += ring->feed(data + offset, size - offset);
+            if (!playing && total >= 2) {
+                if (hal_audio::player_add(ring) != ESP_OK) { stream_error = "扬声器不可用"; return; }
+                playing = true;
+            }
+            // 只在环已满时等待播放器消费，HTTP 回调与读循环都在语音 worker。
+            if (offset < size) vTaskDelay(pdMS_TO_TICKS(10));
         }
-        if (next_carry) chunk[0] = chunk[aligned];
-        carry = next_carry;
+        last_audio = esp_timer_get_time();
+    };
+    struct ClearCallback {
+        Http& request;
+        ~ClearCallback() { request.on_data = {}; }
+    } clear_callback{request};
+    int status = request.status();
+    if (status < 0 && reused && !total && valid()) {
+        // TCP 写成功仍可能遇到服务端空闲关闭；未播任何字节时才可重试，防止重复播报。
+        esp_http_client_close(request.handle);
+        request.error.clear();
+        reused = false;
+        const esp_err_t open_error = esp_http_client_open(request.handle, ssml.size());
+        if (open_error != ESP_OK) request.failed("TTS reconnect", open_error);
+        else if (request.write(reinterpret_cast<const uint8_t*>(ssml.data()), ssml.size(), valid)) status = request.status();
+    }
+    if (status != 200) { job->fail(status < 0 ? request.error : status == 401 || status == 403 ? "Azure 语音密钥或区域无效" : "Azure 语音合成 HTTP " + std::to_string(status)); return; }
+    // 短读超时只用于检查取消/无音频时限，不把网络的短暂停顿误判为响应结束。
+    esp_http_client_set_timeout_ms(request.handle, 100);
+    uint8_t chunk[2048];
+    while (valid() && stream_error.empty()) {
+        const int received = esp_http_client_read(request.handle, reinterpret_cast<char*>(chunk), sizeof(chunk));
+        if (received < 0 && received != -ESP_ERR_HTTP_EAGAIN) { stream_error = "Azure 语音数据读取失败"; break; }
+        if (esp_timer_get_time() - last_audio >= 15000000) { stream_error = "Azure 语音数据等待超时"; break; }
+        if (received == 0) break;
     }
     if (!active(*job)) return;
-    if (!total || carry || !valid() || !esp_http_client_is_complete_data_received(request.handle)) { job->fail("语音响应不完整或超时"); return; }
+    if (!stream_error.empty()) { job->fail(stream_error); return; }
+    if (!total || total % 2 || !valid() || !esp_http_client_is_complete_data_received(request.handle)) { job->fail("语音响应不完整或超时"); return; }
     ring->end();
     while (valid() && !completed->load()) vTaskDelay(pdMS_TO_TICKS(20));
     if (valid()) {
         ESP_LOGI(kTag, "Azure TTS playback done: %u bytes, %lld ms", unsigned(total), (long long)((esp_timer_get_time() - started) / 1000));
+        connection->idle_since = esp_timer_get_time();
+        if (!request.close_requested) tts_connection_ = connection;
         job->done();
     }
     else if (active(*job)) job->fail("扬声器播放超时");

@@ -201,51 +201,7 @@ Rect to_physical(const Rect &r)
 /** 把物理矩形 p 的像素从逻辑帧缓冲收集进 staging (行优先紧凑排列) */
 void gather_rect(const Rect &p)
 {
-    uint16_t *dst = s.staging;
-    const gfx::Surface &fb = s.fb;
-    switch (s.rotation) {
-    case 0:
-        for (int y = 0; y < p.h; ++y) {
-            memcpy(dst + static_cast<size_t>(y) * p.w, fb.row(p.y + y) + p.x,
-                   static_cast<size_t>(p.w) * sizeof(uint16_t));
-        }
-        break;
-    case 90:
-        // 逆变换: lx = py, ly = PW-1-px
-        for (int y = 0; y < p.h; ++y) {
-            const int py = p.y + y;
-            uint16_t *drow = dst + static_cast<size_t>(y) * p.w;
-            for (int x = 0; x < p.w; ++x) {
-                const int px = p.x + x;
-                drow[x] = fb.row(s.panel_w - 1 - px)[py];
-            }
-        }
-        break;
-    case 180:
-        for (int y = 0; y < p.h; ++y) {
-            const int py = p.y + y;
-            const uint16_t *srow = fb.row(s.panel_h - 1 - py);
-            uint16_t *drow = dst + static_cast<size_t>(y) * p.w;
-            for (int x = 0; x < p.w; ++x) {
-                drow[x] = srow[s.panel_w - 1 - (p.x + x)];
-            }
-        }
-        break;
-    case 270:
-        // 逆变换: lx = PH-1-py, ly = px
-        for (int y = 0; y < p.h; ++y) {
-            const int py = p.y + y;
-            const uint16_t *srow_base = fb.px;
-            uint16_t *drow = dst + static_cast<size_t>(y) * p.w;
-            const int lx = s.panel_h - 1 - py;
-            for (int x = 0; x < p.w; ++x) {
-                drow[x] = srow_base[static_cast<size_t>(p.x + x) * fb.stride + lx];
-            }
-        }
-        break;
-    default:
-        break;
-    }
+    gfx::gather_rotated_rect(s.fb, s.staging, s.rotation, p.x, p.y, p.w, p.h);
 }
 
 }  // namespace
@@ -261,6 +217,7 @@ esp_err_t init()
     s.panel_w = cfg->width;
     s.panel_h = cfg->height;
     s.spi_host = static_cast<spi_host_device_t>(cfg->qspi_host);
+    const size_t strip_bytes = static_cast<size_t>(s.panel_w) * kStripRows * sizeof(uint16_t);
 
     s.trans_done = xSemaphoreCreateBinary();
     if (!s.trans_done) return ESP_ERR_NO_MEM;
@@ -273,7 +230,8 @@ esp_err_t init()
     buscfg.sclk_io_num = cfg->pin_sclk;
     buscfg.data2_io_num = cfg->pin_d2;
     buscfg.data3_io_num = cfg->pin_d3;
-    buscfg.max_transfer_sz = s.panel_w * s.panel_h * static_cast<int>(sizeof(uint16_t)) + 64;
+    // 驱动据此预留内部 DMA 描述符；实际只传行带，无需按整帧预留。
+    buscfg.max_transfer_sz = static_cast<int>(strip_bytes) + 64;
     ESP_RETURN_ON_ERROR(spi_bus_initialize(s.spi_host, &buscfg, SPI_DMA_CH_AUTO), TAG,
                         "spi_bus_initialize 失败");
 
@@ -335,7 +293,6 @@ esp_err_t init()
         ESP_LOGE(TAG, "帧缓冲分配失败 (%dx%d)", s.panel_w, s.panel_h);
         return ESP_ERR_NO_MEM;
     }
-    const size_t strip_bytes = static_cast<size_t>(s.panel_w) * kStripRows * sizeof(uint16_t);
     s.staging = static_cast<uint16_t *>(
         heap_caps_aligned_alloc(64, strip_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (!s.staging) {
@@ -430,9 +387,10 @@ esp_err_t flush()
         p.w = ((x1 > s.panel_w) ? s.panel_w : x1) - p.x;
         p.h = ((y1 > s.panel_h) ? s.panel_h : y1) - p.y;
 
-        // 按行带推送: staging 仅容 kStripRows 行, 每带一笔 DMA、等完成后复用
-        for (int row = 0; row < p.h && err == ESP_OK; row += kStripRows) {
-            const int band_h = (p.h - row < kStripRows) ? (p.h - row) : kStripRows;
+        // 窄脏区可装更多行，减少窗口命令和 DMA 等待次数；总字节数保持不变。
+        const int band_rows = ((s.panel_w * kStripRows) / p.w) & ~1;
+        for (int row = 0; row < p.h && err == ESP_OK; row += band_rows) {
+            const int band_h = (p.h - row < band_rows) ? (p.h - row) : band_rows;
             const Rect band{p.x, p.y + row, p.w, band_h};
             gather_rect(band);
             err = esp_lcd_panel_draw_bitmap(s.panel, band.x, band.y, band.x + band.w,

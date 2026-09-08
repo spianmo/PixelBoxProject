@@ -42,10 +42,11 @@ static JSValue slow(JSContext *, JSValueConst, int, JSValueConst *) {
 static jsvm::LatestValue<int> samples;
 static bool sources_active = false;
 static int sensor_value = 0, frame_value = 0;
+static int64_t frame_due_us = 0, frame_ran_us = 0;
 static int64_t sensor_deadline() { return sources_active && samples.pending() ? 0 : -1; }
-static int64_t frame_deadline() { return sources_active ? 0 : -1; }
+static int64_t frame_deadline() { return sources_active ? frame_due_us : -1; }
 static void poll_sensor(JSContext *) { samples.take(sensor_value); }
-static void draw_frame(JSContext *) { frame_value = sensor_value; }
+static void draw_frame(JSContext *) { frame_value = sensor_value; frame_ran_us = host::now_us; }
 static pxjs::JsFuncPtr teardown_func;
 static pxjs::PromisePtr teardown_promise;
 static pxjs::SelfRef teardown_self;
@@ -139,6 +140,24 @@ int main() {
     empty_queue();
     assert(slow_jobs == CONFIG_JSVM_QUEUE_DEPTH);
     std::puts("[OK] burst delivery drains quickly and slow callbacks yield to timers");
+
+    // 连续网络增量不能把已到期的画面推迟到旧的 100 ms 批次上限。
+    for (const int64_t due_offset : {int64_t(0), int64_t(12000)}) {
+        sources_active = true;
+        const int64_t batch_start = host::now_us;
+        frame_due_us = batch_start + due_offset;
+        int delivered = 0;
+        for (int i = 0; i < CONFIG_JSVM_QUEUE_DEPTH; ++i)
+            assert(post([&] { ++delivered; host::now_us += 3000; }, 0));
+        run_loop_turn();
+        assert(delivered == (due_offset ? 4 : 3));
+        assert(frame_ran_us - batch_start == (due_offset ? 12000 : 9000));
+        sources_active = false;
+        empty_queue();
+        assert(delivered == CONFIG_JSVM_QUEUE_DEPTH);
+    }
+    frame_due_us = 0;
+    std::puts("[OK] queued network work respects active frame deadlines without dropping events");
 
     sources_active = true;
     assert(post([&] { samples.publish(next, 10002); }, 0));

@@ -112,6 +112,12 @@ S3/P4 的默认配置使用 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`，让 TLS 握�
 提供 DHCP DNS 之外的备用解析；获取 IP 日志会列出实际 DNS。真机复测见
 [语音与网络诊断](../docs/speech-network-performance.md)。
 
+低延迟语音还需 `CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y` 和
+`CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000`。否则 WebSocket 收发共用锁，
+接收慢分片时会阻塞 ASR PCM 上传与 AI 发问。默认配置与 `sdkconfig.speech` 已启用，
+已有独立构建目录须在其 `menuconfig -> ESP WebSocket client` 开启独立 TX 锁并重新构建；
+仅下发示例 JS 不会改变该配置。
+
 ## 板型选择
 
 `idf.py menuconfig` → `PixelBox Board`:

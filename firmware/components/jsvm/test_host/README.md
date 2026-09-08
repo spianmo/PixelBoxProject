@@ -16,6 +16,8 @@ pass `.exe` for the benchmark executable. The suite covers:
 
 - Queue saturation, nonblocking posts from the consumer and cross-task cleanup.
 - Latest-value stream epochs and input-before-frame execution.
+- Active input/frame deadlines shorten event batches to an 8 ms minimum budget;
+  cheap bursts still coalesce, and queued messages are retained for the next turn.
 - Recursive microtasks, deadline-ordered timers, cancellation and reentry.
 - Runaway JS interruption and continued execution after the exception.
 - Callback self-unsubscription, builder errors and VM generation changes.

@@ -1,5 +1,50 @@
 # Speech and Network Diagnosis (2026-09-06)
 
+## 2026-09-08 流式时延优化（本次未烧录）
+
+已定位并修正以下等待点，历史真机数字不能用作本次更新的实测结果：
+
+- example07 `HarnessController.respond` 原来等待 `conversation.ask()` 完成才调用 TTS。
+  现在在增量回调交给 `StreamingSpeech`，首句/短分句尽早合成，无标点等待 300 ms；
+  其后边播放边积累，单段最多 240 个 Unicode 字符，实际播放完成后才进入待机。
+  取消会清除排队文字和定时器；最终文本修订未提交尾部时正常更新，若重写已提交前缀则
+  停止追加语音，字幕仍显示最终文本。300 ms 不包括云端合成或 JS 调度延迟。
+- `MexusConversation.prepare` 在待机或录音时提前做 TLS/hello，首个问题复用会话。
+  预连接不发送用户问题；退出释放连接，等待预连接的旧轮可立即取消。
+- ESP WebSocket client 1.8.0 默认收发共锁，`esp_websocket_client_send_with_exact_opcode`
+  和接收路径争用 `client->lock`。已开启库自带 `ESP_WS_CLIENT_SEPARATE_TX_LOCK`，
+  独立 TX 锁等待上限为 2000 ms；默认 build 的生成头文件已核实生效。
+- Azure WSS ASR 的正常 PCM 发包阈值从 3200 字节（100 ms）降到 1280 字节（40 ms）。
+  VAD 的 800 ms 静音结束边界保持不变，避免缩短网络延迟同时截断正常停顿。
+- ESP-IDF `esp_http_client_read` 会循环等待填满调用缓冲。原生 TTS 改在
+  `HTTP_EVENT_ON_DATA` 到达时直接喂 PCM，首包不再等待 2048 字节；HTTP 读取以 100 ms
+  超时检查取消，连续 15 秒没有音频报错。TLS 握手/响应头仍有 15 秒 I/O 边界，
+  单段 120 秒总截止不变。不能把 100 ms 描述为所有网络阶段取消的硬上限。
+- 相邻 TTS 段复用已完整消费的 HTTPS 连接，空闲 15 秒或开始 ASR 即释放；旧连接失效
+  且尚未播音时重连一次。换区域/密钥、错误响应和截断不会复用。PCM 满环且残留半帧时
+  现在拒收并等待调用方重试，修复此前跨包字节丢失。
+- example06 首播积累从 256 ms 降为 64 ms，首包后 80 ms 定时启动；它依赖手机下发
+  PCM，不能替手机提前发起云端 TTS。06/07 渲染与 JSVM 调度修改见
+  [显示性能报告](jsvm-performance.md)。
+
+本次验证：example06 33 项、example07 43 项测试；全部 7 示例 TypeScript/打包；
+123 个 Playwright 场景及连续帧像素对照；JSVM 宿主机测试；speech streaming/prelude/
+wake-registration/core 和新增 TTS 测试（真实播报函数与音频环缓冲，UBSan）均通过。
+新增测试覆盖首包在 HTTP read 返回前进入播放器、奇数字节分片、70 KiB 背压、复用/过期/
+换密钥/服务器关连接、认证错误、截断、无音频超时和取消。
+
+默认 ESP32-S3 `idf.py -B build build` 通过；`build/pixelbox.bin` 为 0x41d500 字节，
+5 MiB 分区余量 18%，SHA-256：
+`6cab35c5ecb474e35ed8c9ffed1f5e1d3cc78f82db0e66972a61ae1d4b460a92`。
+产物使用当前 MN7 配置，没有更改唤醒词、模型或分区。
+绘图完整宿主机套件有一条既有字体 advance 断言失败，HEAD 原版已独立复现；
+本次绘图专项 38,961 条断言通过。
+
+部署需同时更新固件与对应示例 JS，独立构建的旧 sdkconfig 需手动开启上述 TX 锁。
+未调用生产 Azure/企业 API，未烧录；FPS、物理 IMU 延迟、真实首字/首音和并发资源峰值
+仍需真机验收。可沿用下方诊断工具记录 `first-text`、`Azure first partial`、
+`Azure TTS first audio`，结合 `tools/profile-device.mjs` 对照同设备和同网络。
+
 ## MultiNet7 动态唤醒切换（2026-09-08，未烧录）
 
 当前默认 S3 固件和 `sdkconfig.speech` 已改用 ESP-SR 2.4.7 的 `mn7_cn` 中文模型。

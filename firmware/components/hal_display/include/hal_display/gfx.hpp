@@ -91,6 +91,10 @@ void destroy_surface(Surface *s);
  * ------------------------------------------------------------ */
 
 void clear(Surface &s, uint16_t c565);
+
+/** 采集物理矩形到紧凑行带; 坐标已由 HAL 裁剪, rotation 为 0/90/180/270。 */
+void gather_rotated_rect(const Surface &source, uint16_t *destination, int rotation,
+                         int x, int y, int width, int height);
 void set_pixel(Surface &s, int x, int y, uint16_t c565);
 /** 越界返回 0 */
 uint16_t get_pixel(const Surface &s, int x, int y);

@@ -171,6 +171,60 @@ static void test_blit()
     gfx::destroy_surface(&dst);
 }
 
+static void test_fill_fast_paths()
+{
+    const uint16_t sentinel = 0x1234;
+    // 覆盖连续/带行距画布，确认 memset 与整行填色不会写到裁剪区外。
+    for (int width : {1, 3, 32, 65}) {
+        for (int padding : {0, 3}) {
+            const int height = 7, stride = width + padding;
+            for (uint16_t color : {uint16_t(0), uint16_t(0xffff), uint16_t(0xabab), uint16_t(0x1357)}) {
+                std::vector<uint16_t> pixels(static_cast<size_t>(stride) * height + 2, sentinel);
+                gfx::Surface surface{pixels.data() + 1, width, height, stride};
+                gfx::clear(surface, color);
+                CHECK(pixels.front() == sentinel && pixels.back() == sentinel);
+                for (int y = 0; y < height; ++y)
+                    for (int x = 0; x < stride; ++x)
+                        CHECK(surface.row(y)[x] == (x < width ? color : sentinel));
+                gfx::fill_rect(surface, -2, 2, width + 4, 3, sentinel);
+                for (int y = 0; y < height; ++y)
+                    for (int x = 0; x < stride; ++x)
+                        CHECK(surface.row(y)[x] == (x >= width || (y >= 2 && y < 5) ? sentinel : color));
+                CHECK(pixels.front() == sentinel && pixels.back() == sentinel);
+            }
+        }
+    }
+}
+
+static void test_rotated_gather()
+{
+    const int panel_width = 7, panel_height = 5;
+    for (int rotation : {0, 90, 180, 270}) {
+        const bool swapped = rotation == 90 || rotation == 270;
+        const int width = swapped ? panel_height : panel_width;
+        const int height = swapped ? panel_width : panel_height;
+        for (int padding : {0, 3}) {
+            std::vector<uint16_t> pixels(static_cast<size_t>(width + padding) * height);
+            gfx::Surface source{pixels.data(), width, height, width + padding};
+            for (int y = 0; y < height; ++y)
+                for (int x = 0; x < width; ++x) source.row(y)[x] = static_cast<uint16_t>(y * 100 + x);
+            // 穷举所有有效脏矩形，逐像素与独立的逆旋转公式比较。
+            for (int y = 0; y < panel_height; ++y) for (int x = 0; x < panel_width; ++x)
+                for (int h = 1; h <= panel_height - y; ++h) for (int w = 1; w <= panel_width - x; ++w) {
+                    std::vector<uint16_t> output(static_cast<size_t>(w) * h + 2, 0xbeef);
+                    gfx::gather_rotated_rect(source, output.data() + 1, rotation, x, y, w, h);
+                    CHECK(output.front() == 0xbeef && output.back() == 0xbeef);
+                    for (int row = 0; row < h; ++row) for (int column = 0; column < w; ++column) {
+                        const int px = x + column, py = y + row;
+                        const int sx = rotation == 90 ? py : rotation == 270 ? panel_height - 1 - py : rotation == 180 ? panel_width - 1 - px : px;
+                        const int sy = rotation == 90 ? panel_width - 1 - px : rotation == 270 ? px : rotation == 180 ? panel_height - 1 - py : py;
+                        CHECK(output[1 + row * w + column] == source.row(sy)[sx]);
+                    }
+                }
+        }
+    }
+}
+
 static pxfont_t g_font8, g_font16;
 static std::vector<uint8_t> g_font8_data, g_font16_data;
 
@@ -360,15 +414,20 @@ static void test_gif(const char *fx_dir)
 
 int main(int argc, char **argv)
 {
+    const bool gfx_only = argc > 1 && strcmp(argv[1], "--gfx-only") == 0;
     const char *fonts_dir = argc > 1 ? argv[1] : "../fonts";
     const char *fx_dir = argc > 2 ? argv[2] : "fixtures";
     test_color();
     test_primitives();
     test_blit();
-    test_font(fonts_dir);
-    test_text();
-    test_png(fx_dir);
-    test_gif(fx_dir);
+    test_fill_fast_paths();
+    test_rotated_gather();
+    if (!gfx_only) {
+        test_font(fonts_dir);
+        test_text();
+        test_png(fx_dir);
+        test_gif(fx_dir);
+    }
     printf("%s: %d/%d 通过\n", g_failed ? "FAILED" : "OK", g_total - g_failed, g_total);
     return g_failed ? 1 : 0;
 }

@@ -21,6 +21,7 @@ target_include_directories(runtime_test PRIVATE stubs ../include ../src
 target_link_libraries(runtime_test PRIVATE quickjs)
 target_compile_options(runtime_test PRIVATE -UNDEBUG)
 add_test(NAME runtime COMMAND runtime_test)
+set_tests_properties(runtime PROPERTIES TIMEOUT 60)
 
 add_executable(qjs_bench qjs_bench.cpp ../src/project_points.cpp)
 target_include_directories(qjs_bench PRIVATE stubs ../include ../src)

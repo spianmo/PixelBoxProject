@@ -61,6 +61,11 @@ void destroy_surface(Surface *s)
 
 static inline void fill_row(uint16_t *dst, int n, uint16_t c)
 {
+    // 黑白等双字节相同的 RGB565 色直接批量写入，避免逐像素存储。
+    if (static_cast<uint8_t>(c) == static_cast<uint8_t>(c >> 8)) {
+        memset(dst, static_cast<uint8_t>(c), static_cast<size_t>(n) * sizeof(uint16_t));
+        return;
+    }
     for (int i = 0; i < n; ++i) dst[i] = c;
 }
 
@@ -68,18 +73,48 @@ void clear(Surface &s, uint16_t c565)
 {
     if (!s.px) return;
     if (s.stride == s.w) {
-        // 连续缓冲: 铺首行后成倍 memcpy (log 次拷贝)
         const size_t total = static_cast<size_t>(s.w) * s.h;
         if (total == 0) return;
-        fill_row(s.px, s.w, c565);
-        size_t filled = static_cast<size_t>(s.w);
-        while (filled < total) {
-            const size_t n = (filled <= total - filled) ? filled : total - filled;
-            memcpy(s.px + filled, s.px, n * sizeof(uint16_t));
-            filled += n;
+        // 常用黑底清屏只写 PSRAM，避免指数拷贝再读一遍整帧像素。
+        if (static_cast<uint8_t>(c565) == static_cast<uint8_t>(c565 >> 8)) {
+            memset(s.px, static_cast<uint8_t>(c565), total * sizeof(uint16_t));
+            return;
         }
+        // 其他颜色反复复制同一缓存行带，避免指数拷贝的大源区域挤出 PSRAM cache。
+        fill_row(s.px, s.w, c565);
+        const size_t row_bytes = static_cast<size_t>(s.w) * sizeof(uint16_t);
+        for (int y = 1; y < s.h; ++y) memcpy(s.row(y), s.px, row_bytes);
     } else {
         for (int y = 0; y < s.h; ++y) fill_row(s.row(y), s.w, c565);
+    }
+}
+
+void gather_rotated_rect(const Surface &source, uint16_t *destination, int rotation,
+                         int x, int y, int width, int height)
+{
+    if (!source.px || !destination || width <= 0 || height <= 0) return;
+    if (rotation == 90 || rotation == 270) {
+        // 输入在 PSRAM、输出在内部 DMA 内存：连续读取输入行，跨行写内部缓冲，
+        // 避免每个输出像素都跳到另一条 PSRAM cache line。
+        for (int column = 0; column < width; ++column) {
+            const int source_y = rotation == 90 ? source.h - 1 - (x + column) : x + column;
+            const uint16_t *source_row = source.row(source_y);
+            for (int row = 0; row < height; ++row) {
+                const int source_x = rotation == 90 ? y + row : source.w - 1 - (y + row);
+                destination[static_cast<size_t>(row) * width + column] = source_row[source_x];
+            }
+        }
+        return;
+    }
+    for (int row = 0; row < height; ++row) {
+        uint16_t *destination_row = destination + static_cast<size_t>(row) * width;
+        if (rotation == 180) {
+            const uint16_t *source_row = source.row(source.h - 1 - (y + row));
+            for (int column = 0; column < width; ++column)
+                destination_row[column] = source_row[source.w - 1 - (x + column)];
+        } else {
+            memcpy(destination_row, source.row(y + row) + x, static_cast<size_t>(width) * sizeof(uint16_t));
+        }
     }
 }
 
@@ -155,6 +190,11 @@ void fill_rect(Surface &s, int x, int y, int w, int h, uint16_t c565)
     if (y1 > s.h) y1 = s.h;
     if (x0 >= x1 || y0 >= y1) return;
     const int n = x1 - x0;
+    if (n == s.stride) {
+        Surface region{s.row(y0), n, y1 - y0, n};
+        clear(region, c565);
+        return;
+    }
     uint16_t *first = s.row(y0) + x0;
     fill_row(first, n, c565);  // 首行铺满
     const size_t row_bytes = static_cast<size_t>(n) * sizeof(uint16_t);

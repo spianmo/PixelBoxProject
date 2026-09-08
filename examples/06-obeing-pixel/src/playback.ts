@@ -1,12 +1,14 @@
-const PREBUFFER_MS = 256;
+const PREBUFFER_MS = 64;
+const MAX_START_WAIT_MS = 80;
 
-/** Hold the initial PCM burst so network and frame scheduling jitter do not drain the speaker. */
+/** 首播只积累两帧 PCM，慢速小包也由定时器启动，避免一直等到 audio.end。 */
 export class BufferedPcmPlayback {
     private readonly stream: ReturnType<typeof px.audio.player.openPcmStream>;
     private pending: ArrayBuffer[] = [];
     private pendingBytes = 0;
     private started = false;
     private closed = false;
+    private startTimer = 0;
 
     constructor(private readonly sampleRate: number) {
         this.stream = px.audio.player.openPcmStream({ sampleRate, channels: 1 });
@@ -18,9 +20,12 @@ export class BufferedPcmPlayback {
         this.pending.push(pcm);
         this.pendingBytes += pcm.byteLength;
         if (this.pendingBytes >= Math.ceil(this.sampleRate * 2 * PREBUFFER_MS / 1000)) this.flush();
+        else if (!this.startTimer) this.startTimer = setTimeout(() => { this.startTimer = 0; if (!this.closed) this.flush(); }, MAX_START_WAIT_MS);
     }
 
     private flush(): void {
+        clearTimeout(this.startTimer);
+        this.startTimer = 0;
         if (!this.pendingBytes) return;
         const pcm = new Uint8Array(this.pendingBytes);
         let offset = 0;
@@ -43,6 +48,8 @@ export class BufferedPcmPlayback {
 
     stop(): void {
         this.closed = true;
+        clearTimeout(this.startTimer);
+        this.startTimer = 0;
         this.pending = [];
         this.pendingBytes = 0;
         this.stream.stop();

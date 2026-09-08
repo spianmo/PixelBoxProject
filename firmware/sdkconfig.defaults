@@ -50,6 +50,10 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # ---- esp_http_server: WebSocket 支持 (devd 开发服务必需) ----
 CONFIG_HTTPD_WS_SUPPORT=y
 
+# WSS 上传与下行独立加锁，接收慢分片时仍可发送 ASR PCM 和 AI 请求。
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000
+
 # ---- 蓝牙: NimBLE (px.ble 依赖; 未开启时 bindings_net 退化为 stub) ----
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y

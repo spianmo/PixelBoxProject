@@ -118,51 +118,7 @@ Rect to_physical(const Rect &r)
 /** 把物理矩形 p (≤ 行带高度) 的像素从逻辑帧缓冲收集进 staging */
 void gather_rect(const Rect &p)
 {
-    uint16_t *dst = s.staging;
-    const gfx::Surface &fb = s.fb;
-    switch (s.rotation) {
-    case 0:
-        for (int y = 0; y < p.h; ++y) {
-            memcpy(dst + static_cast<size_t>(y) * p.w, fb.row(p.y + y) + p.x,
-                   static_cast<size_t>(p.w) * sizeof(uint16_t));
-        }
-        break;
-    case 90:
-        // 逆变换: lx = py, ly = PW-1-px
-        for (int y = 0; y < p.h; ++y) {
-            const int py = p.y + y;
-            uint16_t *drow = dst + static_cast<size_t>(y) * p.w;
-            for (int x = 0; x < p.w; ++x) {
-                const int px = p.x + x;
-                drow[x] = fb.row(s.panel_w - 1 - px)[py];
-            }
-        }
-        break;
-    case 180:
-        for (int y = 0; y < p.h; ++y) {
-            const int py = p.y + y;
-            const uint16_t *srow = fb.row(s.panel_h - 1 - py);
-            uint16_t *drow = dst + static_cast<size_t>(y) * p.w;
-            for (int x = 0; x < p.w; ++x) {
-                drow[x] = srow[s.panel_w - 1 - (p.x + x)];
-            }
-        }
-        break;
-    case 270:
-        // 逆变换: lx = PH-1-py, ly = px
-        for (int y = 0; y < p.h; ++y) {
-            const int py = p.y + y;
-            const uint16_t *srow_base = fb.px;
-            uint16_t *drow = dst + static_cast<size_t>(y) * p.w;
-            const int lx = s.panel_h - 1 - py;
-            for (int x = 0; x < p.w; ++x) {
-                drow[x] = srow_base[static_cast<size_t>(p.x + x) * fb.stride + lx];
-            }
-        }
-        break;
-    default:
-        break;
-    }
+    gfx::gather_rotated_rect(s.fb, s.staging, s.rotation, p.x, p.y, p.w, p.h);
 }
 
 /* ------------------------------------------------------------

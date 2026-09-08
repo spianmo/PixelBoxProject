@@ -1,4 +1,4 @@
-import { companionBody, companionHeader, wrapText, type RenderInput, type Screen } from '../../06-obeing-pixel/src/render';
+import { beginScene, sceneKey, companionBody, companionHeader, wrapText, type RenderInput, type Screen } from '../../06-obeing-pixel/src/render';
 import type { ViewState } from '../../06-obeing-pixel/src/state';
 import { layoutScreen, lineHeight, textHeight } from '../../06-obeing-pixel/src/layout';
 import { WAKEWORD_CONFIG } from './wakeword-config';
@@ -92,10 +92,11 @@ export function drawHarness(target: Screen, view: ViewState, input: RenderInput,
 function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form: FormState, wakePhrase: string): void {
     const p = palette(view);
     const W = screen.width;
-    screen.clear(p.bg);
+    const redraw = beginScene(screen, sceneKey(view, input) + JSON.stringify(form.page === 'assistant'
+        ? [form.page, wakePhrase] : [form, view.errorText, view.thinkingText]), p.bg);
     if (form.page === 'assistant') {
-        companionHeader(screen, 'ObeingHarness', view, input);
-        if (!input.fullscreen) {
+        if (redraw) companionHeader(screen, 'ObeingHarness', view, input);
+        if (redraw && !input.fullscreen) {
             icon(screen, view.muted ? 'mute' : 'mic', W - 116, 43, p.accent);
             icon(screen, 'theme', W - 78, 43, p.fg);
             icon(screen, 'settings', W - 38, 43, p.fg);
@@ -103,6 +104,7 @@ function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form
         companionBody(screen, view, input, view.state === 'idle' ? short(screen, wakePhrase, screen.width - 44) : LABELS[view.state] || '小川');
         return;
     }
+    if (!redraw) return;
     text(screen, 'ObeingHarness', 20, 19, p.fg);
     if (input.battery >= 0) text(screen, `${input.battery}%`, W - 54, 19, p.quiet);
     icon(screen, 'back', 23, 49, p.fg);

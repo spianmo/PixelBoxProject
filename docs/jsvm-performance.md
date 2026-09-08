@@ -1,5 +1,32 @@
 # JSVM Performance Review (2026-09-06)
 
+## 2026-09-08 渲染与调度优化（待真机验收）
+
+以下旧版约 5 FPS 数据不代表本次补丁的帧率。本次改动覆盖固件和 example06/07：
+
+- `examples/06-obeing-pixel/src/render.ts` 的 `beginScene`、`companionBody` 保留静态背景与字幕，
+  IMU 帧只恢复旧小猫区域和相交网格，字幕变化独立刷新；07 使用同一缓存。
+- `drawCat` 增加 IMU 直接位移，彩边跳过最终白色主体覆盖的像素。99 个姿态与原五层
+  算法逐像素一致，彩边及主体累计填色从 8,535,765 降到 2,540,035 像素，减少 70.2%；
+  该指标不含背景/字幕，也不是整体帧率提高比例。`wrapText` 缓存字体 advance。
+- 两个示例请求 30 FPS，IMU 保持 50 Hz 最新值投递；不能以 `setFps(30)` 作为实测证据。
+- `jsvm.cpp#run_loop_turn` 在输入、帧或定时器到期时将事件批次预算缩到 8 ms，
+  最多仍合批 32 条便宜事件。单条回调不能抢占，8 ms 是批次边界而非硬实时保证。
+- `gfx.cpp#clear` 对黑白使用 memset，其他颜色从缓存首行复制；整行矩形复用同一路径。
+  `gather_rotated_rect` 让 90/270 度旋转连续读取 PSRAM，跨行写内部 DMA 缓冲。
+- AMOLED DMA 描述符按实际 32 行缓冲大小预留；窄脏区在同一缓冲中装更多行，减少传输次数。
+
+本地验证：06 的 33 项测试通过，包含 216 个连续帧和页面切换的整屏重画对照；
+另外独立执行 1,080 帧跨尺寸/姿态/IMU 的逐像素检查通过。
+Playwright 使用真实字体检查 06 的 69 个场景、07 的 54 个场景，无越界/文字重叠。
+JSVM 宿主机 CTest 通过，模拟 3 ms 的事件时，到期帧在 9 ms 执行、12 ms 后到期的帧在
+12 ms 执行，剩余事件完整送达。绘图专项 38,961/38,961 断言通过；完整绘图测试仅有
+既有 `pixel12` 字体 A advance==6 断言失败，独立重建 HEAD 原版也复现该失败。
+
+真机验收需更新固件和对应示例，运行 `node tools/profile-device.mjs <设备IP> 12` 记录 FPS，
+再在 ASR/AI/TTS 并行工作时检查 IMU 跟随与字幕。未烧录前不宣称真实 FPS、物理输入到
+屏幕响应时延或音频网络并发稳定性已通过。
+
 ## Findings and Changes
 
 1. IMU samples were queued individually. A slow frame accumulated stale input,

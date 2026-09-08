@@ -13,7 +13,8 @@ const authModule = await source('auth.ts');
 const { EnterpriseAuth, validateOrigin, isSameServiceOrigin } = authModule;
 const { LocalAuthStore } = await source('persistence.ts');
 const { MexusConversation, hello } = await source('conversation.ts');
-const { HarnessController, speechParts, userMessage } = await source('controller.ts');
+const { HarnessController, userMessage } = await source('controller.ts');
+const { StreamingSpeech } = await source('speech-stream.ts');
 const { projectSpeechConfig } = await source('project-config.ts');
 const { drawHarness, keyboardKeyAt } = await source('render.ts');
 async function mainWithSpeech(region, key) {
@@ -217,6 +218,76 @@ function sockets() {
     };
     return { factory, peers };
 }
+await test('待机预连接只做hello，录音期间握手完成后首个问题直接复用', async () => {
+    const { auth } = await loggedIn();
+    const { factory, peers } = sockets();
+    const conversation = new MexusConversation(auth, factory);
+    const warm = conversation.prepare();
+    assert.equal(conversation.prepare(), warm);
+    await tick();
+    const peer = peers[0]; peer.onopen();
+    assert.deepEqual(peer.frames.map(frame => frame.type), ['hello']);
+    const result = conversation.ask('录音后的问题', { answer() {}, progress() {} });
+    await tick();
+    assert.equal(peers.length, 1);
+    assert.equal(peer.frames.length, 1);
+    peer.receive('welcome', { sessionId: 'prewarmed' });
+    await warm; await tick();
+    assert.deepEqual(peer.frames.map(frame => frame.type), ['hello', 'user.turn']);
+    peer.receive('assistant.done', { requestId: peer.frames.at(-1).payload.requestId, finalText: '回复' });
+    assert.equal(await result, '回复');
+    await conversation.prepare();
+    assert.equal(peers.length, 1);
+    conversation.cancel(true);
+});
+await test('退出取消预连接，迟到鉴权和welcome不能保留socket；失败后正式请求重连', async () => {
+    const { auth } = await loggedIn();
+    const { factory, peers } = sockets();
+    const conversation = new MexusConversation(auth, factory);
+    const originalValid = auth.valid.bind(auth);
+    let releaseAuth;
+    auth.valid = () => new Promise(resolve => { releaseAuth = resolve; });
+    const pending = conversation.prepare();
+    conversation.cancel(true);
+    releaseAuth(auth.current()); await pending;
+    assert.equal(peers.length, 0);
+    auth.valid = originalValid;
+    const warm = conversation.prepare(); await tick();
+    const old = peers[0]; old.onopen();
+    const late = old.onmessage;
+    conversation.cancel(true); await warm;
+    late({ data: JSON.stringify({ v: 1, type: 'welcome', payload: { sessionId: 'late' } }) });
+    assert.equal(old.readyState, 3);
+    const failedWarm = conversation.prepare(); await tick();
+    const caught = assert.rejects(failedWarm, /网络连接失败/);
+    peers[1].onerror(); await caught;
+    const result = conversation.ask('重试', { answer() {}, progress() {} }); await tick();
+    assert.equal(peers.length, 3);
+    peers[2].onopen(); peers[2].receive('welcome', { sessionId: 'retry' });
+    peers[2].receive('assistant.done', { requestId: peers[2].frames.at(-1).payload.requestId, finalText: '成功' });
+    assert.equal(await result, '成功');
+    conversation.cancel(true);
+});
+await test('等待预连接期间取消立即结束旧轮，新轮仍复用这次握手', async () => {
+    const { auth } = await loggedIn();
+    const { factory, peers } = sockets();
+    const conversation = new MexusConversation(auth, factory);
+    const warm = conversation.prepare(); await tick();
+    const peer = peers[0]; peer.onopen();
+    const first = conversation.ask('旧轮', { answer() {}, progress() {} }); await tick();
+    let cancelled = false;
+    const caught = first.catch(error => { assert.match(error.message, /取消/); cancelled = true; });
+    conversation.cancel(); await tick();
+    assert.equal(cancelled, true, '取消不等待15秒预连接超时');
+    await caught;
+    const next = conversation.ask('新轮', { answer() {}, progress() {} }); await tick();
+    peer.receive('welcome', { sessionId: 'shared' }); await warm; await tick();
+    assert.equal(peers.length, 1);
+    assert.equal(peer.frames.at(-1).payload.text, '新轮');
+    peer.receive('assistant.done', { requestId: peer.frames.at(-1).payload.requestId, finalText: '答复' });
+    assert.equal(await next, '答复');
+    conversation.cancel(true);
+});
 await test('WSS hello/user.turn增量按seq去重，旧request不污染，done无增量也返回', async () => {
     const { auth } = await loggedIn();
     const { factory, peers } = sockets();
@@ -353,11 +424,117 @@ function runtime(wakeConfig) {
     const account = { nickname: '测试', userCode: 'USR123', tenantCode: 'ABC123' };
     let current = null;
     const auth = { current: () => current, clear() { current = null; }, async login() { current = account; return account; } };
-    const conversation = { cancel() {}, async ask(text, events) { events.answer('真实协议测试回复'); events.progress('查询完成'); return '真实协议测试回复'; } };
+    const conversation = { cancel() {}, async prepare() {}, async ask(text, events) { events.answer('真实协议测试回复'); events.progress('查询完成'); return '真实协议测试回复'; } };
     const controller = new HarnessController(auth, conversation, speech, () => true, wakeConfig);
     controller.setPaused(false);
     return { controller, speech, speechCalls, wake: () => wake(), wakeError: (message) => wakeError(message), recognized: (text) => transcriptResolve(text), played: () => playbackResolve() };
 }
+await test('首句在AI完成前开播，增量字幕持续更新，尾句按顺序播完才待机', async () => {
+    const r = runtime();
+    let events, finishAnswer;
+    r.controller.conversation.ask = (_text, callbacks) => {
+        events = callbacks;
+        return new Promise(resolve => { finishAnswer = resolve; });
+    };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    const turn = r.controller.sendText('天气怎么样');
+    events.answer('今天晴天。');
+    await tick();
+    assert.deepEqual(r.speechCalls.filter(([name]) => name === 'speak'), [['speak', '今天晴天。']]);
+    assert.equal(r.controller.view.state, 'speaking');
+    events.answer('今天晴天。适合散步');
+    assert.equal(r.controller.view.assistantText, '今天晴天。适合散步');
+    events.answer('今天晴天。适合散步，记得带水。');
+    finishAnswer('今天晴天。适合散步，记得带水。');
+    await tick();
+    assert.equal(r.speechCalls.filter(([name]) => name === 'speak').length, 1);
+    r.played(); await tick();
+    assert.deepEqual(r.speechCalls.filter(([name]) => name === 'speak'), [['speak', '今天晴天。'], ['speak', '适合散步，记得带水。']]);
+    assert.equal(r.controller.isBusy(), true);
+    r.played(); await turn;
+    assert.equal(r.controller.view.state, 'idle');
+    r.controller.dispose();
+});
+await test('无标点首片有界启动，代理对补齐后播出，final只替换未提交尾部', async () => {
+    const parts = [];
+    let release;
+    const stream = new StreamingSpeech(text => {
+        parts.push(text);
+        return new Promise(resolve => { release = resolve; });
+    });
+    stream.update('第一段没有标点');
+    await new Promise(resolve => setTimeout(resolve, 340));
+    assert.deepEqual(parts, ['第一段没有标点']);
+    stream.update('第一段没有标点原始尾部');
+    const done = stream.finish('第一段没有标点修订尾部');
+    release(); await tick();
+    assert.deepEqual(parts, ['第一段没有标点', '修订尾部']);
+    release(); await done;
+    const unicodeParts = [];
+    const unicode = new StreamingSpeech(async text => { unicodeParts.push(text); });
+    const prefix = '川'.repeat(39);
+    unicode.update(prefix + '\uD83D');
+    await tick();
+    assert.deepEqual(unicodeParts, []);
+    unicode.update(prefix + '\uD83D\uDE00');
+    await tick();
+    await unicode.finish(prefix + '\uD83D\uDE00结束');
+    assert.deepEqual(unicodeParts, [prefix + '\uD83D\uDE00', '结束']);
+});
+await test('已提交前缀被修订不重播，停止清除定时尾句，播放失败可由finish捕获', async () => {
+    const parts = [];
+    const stream = new StreamingSpeech(async text => { parts.push(text); });
+    stream.update('原来答案。'); await tick();
+    await stream.finish('完全改写的最终答案。');
+    assert.deepEqual(parts, ['原来答案。']);
+    const stopped = new StreamingSpeech(async text => { parts.push(text); });
+    stopped.update('取消前没标点'); stopped.stop();
+    await new Promise(resolve => setTimeout(resolve, 340));
+    assert.deepEqual(parts, ['原来答案。']);
+    const failed = new StreamingSpeech(async () => { throw new Error('播放失败'); });
+    failed.update('错误测试。'); await tick();
+    await assert.rejects(failed.finish('错误测试。尾部不播'), /播放失败/);
+});
+await test('流式播放中静音清除后续段，迟到AI和播放回调不恢复旧轮', async () => {
+    const r = runtime();
+    let events, finishAnswer;
+    r.controller.conversation.ask = (_text, callbacks) => {
+        events = callbacks;
+        return new Promise(resolve => { finishAnswer = resolve; });
+    };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    const turn = r.controller.sendText('测试');
+    events.answer('开始回答。'); await tick();
+    events.answer('开始回答。积累的后续内容');
+    r.controller.toggleMute();
+    events.answer('开始回答。迟到内容。');
+    finishAnswer('开始回答。迟到内容。');
+    r.played(); await turn;
+    assert.deepEqual(r.speechCalls.filter(([name]) => name === 'speak'), [['speak', '开始回答。']]);
+    assert.equal(r.controller.view.state, 'muted');
+    r.controller.dispose();
+});
+await test('AI流中途失败立即取消正在播放的首段，队列不继续播报', async () => {
+    const r = runtime();
+    let events, failAnswer;
+    r.controller.conversation.ask = (_text, callbacks) => {
+        events = callbacks;
+        return new Promise((_resolve, reject) => { failAnswer = reject; });
+    };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    const turn = r.controller.sendText('测试');
+    events.answer('开始回答。'); await tick();
+    const cancels = r.speechCalls.filter(([name]) => name === 'cancel').length;
+    failAnswer(new Error('AI 服务暂时不可用')); await turn;
+    assert.equal(r.speechCalls.filter(([name]) => name === 'cancel').length, cancels + 1);
+    assert.equal(r.controller.view.errorText, 'AI 服务暂时不可用');
+    r.played(); await tick();
+    assert.equal(r.controller.view.state, 'idle');
+    r.controller.dispose();
+});
 await test('业务自定义唤醒词和阈值在首次注册及重启监听时完整下发', async () => {
     const wakeConfig = { phrase: '小爱同学', pinyin: 'xiao ai tong xue', threshold: 0.15 };
     const r = runtime(wakeConfig);
@@ -496,25 +673,32 @@ await test('退出/取消识别后迟到结果不恢复账号或发送问题，�
     assert.equal(r.speechCalls.some(([name]) => name === 'speak'), false);
     r.controller.dispose();
 });
-await test('长中文回复按UTF8分段，不拆字符且每段符合原生TTS限制', () => {
+async function spokenParts(text) {
+    const parts = [];
+    const stream = new StreamingSpeech(async part => { parts.push(part); });
+    await stream.finish(text);
+    return parts;
+}
+await test('长中文回复按UTF8分段，不拆字符且每段符合原生TTS限制', async () => {
     const answer = '小川正在回答。'.repeat(1500) + String.fromCodePoint(0x1f600);
-    const parts = speechParts(answer);
+    const parts = await spokenParts(answer);
     assert.equal(parts.join(''), answer);
     assert.ok(parts.length > 1);
     assert.ok(parts.every((value) => new TextEncoder().encode(value).byteLength <= 5400));
     assert.ok(parts.every((value) => Array.from(value).length <= 240));
 });
-await test('3000汉字无句末仍按240字符上限切分，表情与句末边界完整', () => {
+await test('3000汉字首段40字符后按240上限切分，表情与句末边界完整', async () => {
     const answer = '川'.repeat(3000);
-    const parts = speechParts(answer);
+    const parts = await spokenParts(answer);
     assert.equal(parts.join(''), answer);
-    assert.equal(parts.length, 13);
+    assert.equal(parts.length, 14);
+    assert.equal(parts[0].length, 40);
     assert.ok(parts.every((value) => Array.from(value).length <= 240));
     const emoji = String.fromCodePoint(0x1f600);
-    const boundary = '川'.repeat(239) + emoji + '你好。';
-    assert.deepEqual(speechParts(boundary), ['川'.repeat(239) + emoji, '你好。']);
+    const boundary = '川'.repeat(279) + emoji + '你好。';
+    assert.deepEqual(await spokenParts(boundary), ['川'.repeat(40), '川'.repeat(239) + emoji, '你好。']);
     const sentence = '川'.repeat(119) + '。';
-    assert.deepEqual(speechParts(sentence + '回答'), [sentence, '回答']);
+    assert.deepEqual(await spokenParts('首句。' + sentence + '回答'), ['首句。', sentence, '回答']);
 });
 await test('暂停页面阻止网络恢复和静音切换启动唤醒，返回助手只启动一次', async () => {
     const r = runtime();

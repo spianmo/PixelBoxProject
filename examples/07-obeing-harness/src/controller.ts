@@ -2,6 +2,7 @@ import { initialState, type ViewState } from '../../06-obeing-pixel/src/state';
 import { EnterpriseAuth, type ServerConfig, type Session } from './auth';
 import { MexusConversation } from './conversation';
 import { WAKEWORD_CONFIG, type WakewordConfig } from './wakeword-config';
+import { StreamingSpeech } from './speech-stream';
 
 export interface SpeechConfig { region: string; key: string; language?: string; voice?: string }
 export interface SpeechPort {
@@ -22,6 +23,7 @@ export class HarnessController {
     private wakeGeneration = 0;
     private wakeStarted = false;
     private paused = true;
+    private speechStream: StreamingSpeech | null = null;
 
     constructor(readonly auth: EnterpriseAuth, readonly conversation: MexusConversation,
         private readonly speech: SpeechPort, private readonly online: () => boolean,
@@ -96,6 +98,7 @@ export class HarnessController {
         this.busy = true;
         this.clearTurn();
         this.view.state = 'listening';
+        void this.conversation.prepare().catch(() => {});
         try {
             const recognition = this.speech.recognize({ maxMs: 15000, silenceMs: 800, timeoutMs: 20000,
                 onPartial: (text) => { if (this.active(generation)) this.view.userText = text; },
@@ -126,20 +129,33 @@ export class HarnessController {
         this.view.state = 'thinking';
         // 云端思考和扬声器播报期间持续监听唤醒词；命中后 listen() 会取消旧轮并开始新一轮录音。
         void this.armWakeword();
-        const answer = await this.conversation.ask(text, {
-            answer: (value) => { if (this.active(generation)) this.view.assistantText = value.slice(-2400); },
-            progress: (value) => { if (this.active(generation)) this.view.thinkingText = value; },
-        });
-        if (!this.active(generation)) return;
-        this.view.assistantText = answer.slice(-2400);
-        this.view.level = 0;
-        if (answer && this.speechConfigured && !this.view.muted) {
+        const stream = this.speechConfigured && !this.view.muted ? new StreamingSpeech(async (part) => {
+            if (!this.active(generation)) return;
             this.view.state = 'speaking';
-            // 原生 speak Promise 仅在扬声器实际播完后结束，唤醒监听由独立原生通道保持。
-            for (const part of speechParts(answer)) {
-                if (!this.active(generation)) return;
-                await this.speech.speak(part);
-            }
+            this.view.level = 0;
+            await this.speech.speak(part);
+        }) : null;
+        this.speechStream = stream;
+        try {
+            const answer = await this.conversation.ask(text, {
+                answer: (value) => {
+                    if (!this.active(generation)) return;
+                    this.view.assistantText = value.slice(-2400);
+                    stream?.update(value);
+                },
+                progress: (value) => { if (this.active(generation)) this.view.thinkingText = value; },
+            });
+            if (!this.active(generation)) return;
+            this.view.assistantText = answer.slice(-2400);
+            this.view.level = 0;
+            // 首段在增量回调中启动；AI 完成后仅补齐尾句，并等待扬声器实际播完。
+            await stream?.finish(answer);
+        } catch (error) {
+            if (this.active(generation)) this.speech.cancel();
+            throw error;
+        } finally {
+            stream?.stop();
+            if (this.speechStream === stream) this.speechStream = null;
         }
         if (!this.active(generation)) return;
         this.busy = false;
@@ -162,6 +178,7 @@ export class HarnessController {
     async standby(): Promise<void> {
         if (this.disposed || this.paused || this.busy || !this.view.authenticated) return;
         this.view.state = this.view.muted ? 'muted' : 'idle';
+        if (this.online()) void this.conversation.prepare().catch(() => {});
         await this.armWakeword();
     }
 
@@ -193,6 +210,8 @@ export class HarnessController {
         this.wakeGeneration++;
         this.wakeStarted = false;
         this.busy = false;
+        this.speechStream?.stop();
+        this.speechStream = null;
         this.conversation.cancel(closeConnection);
         this.speech.wakeword.stop();
         this.speech.cancel();
@@ -250,25 +269,4 @@ export function userMessage(error: unknown, fallback: string): string {
 
 export function defaultServer(deviceId: string): ServerConfig {
     return { origin: 'https://v4.teamhelper.cn', domain: '', oem: '', deviceId };
-}
-
-/** 同时限制字节和朗读长度，避免长中文超过单段播放时限，且不拆开 Unicode 字符。 */
-export function speechParts(text: string): string[] {
-    const encoder = new TextEncoder();
-    const parts: string[] = [];
-    let part = '';
-    let bytes = 0;
-    let characters = 0;
-    for (const character of text) {
-        const size = encoder.encode(character).byteLength;
-        if ((bytes + size > 5400 || characters >= 240) && part) {
-            parts.push(part); part = ''; bytes = 0; characters = 0;
-        }
-        part += character; bytes += size; characters++;
-        if (characters >= 120 && /[。！？.!?\n]/.test(character)) {
-            parts.push(part); part = ''; bytes = 0; characters = 0;
-        }
-    }
-    if (part) parts.push(part);
-    return parts;
 }

@@ -14,6 +14,8 @@ async function moduleAt(name) {
 const model = await moduleAt('model.ts');
 const state = await moduleAt('state.ts');
 const render = await moduleAt('render.ts');
+const harnessBundle = await build({ entryPoints: [join(examples, '07-obeing-harness/src/render.ts')], bundle: true, format: 'esm', target: 'es2020', write: false, logLevel: 'silent' });
+const harnessRender = await import(`data:text/javascript;base64,${Buffer.from(harnessBundle.outputFiles[0].text).toString('base64')}`);
 const main = await build({ entryPoints: [join(source, 'main.ts')], bundle: true, format: 'iife', target: 'es2020', write: false, logLevel: 'silent' });
 let passed = 0;
 async function test(name, fn) {
@@ -135,6 +137,25 @@ await test('PCM音量拒绝空帧和奇数字节，幅度钳制为0到100', () =
     assert.equal(state.rmsLevel(new Int16Array([0, 0]).buffer), 0);
     assert.equal(state.rmsLevel(new Int16Array([32767, -32768]).buffer), 100);
 });
+await test('长流式字幕按字宽缓存排版，与逐行测量结果一致', () => {
+    let measurements = 0;
+    const screen = { measureText(text) { measurements++; return { width: Array.from(text).reduce((sum, ch) => sum + (ch.codePointAt(0) > 127 ? 12 : 6), 0), height: 12 }; } };
+    const legacy = (text, width, maxLines) => {
+        const lines = []; let line = '';
+        for (const ch of text) {
+            if (ch === '\n') { lines.push(line); line = ''; continue; }
+            if (line && screen.measureText(line + ch).width > width) { lines.push(line); line = ch; } else line += ch;
+        }
+        if (line) lines.push(line);
+        return lines.slice(-maxLines);
+    };
+    for (const text of ['', '\n', '中文字宽ABC😀'.repeat(180), '逐步生成\n第二行\n\n尾部', '超窄字符']) {
+        for (const width of [0, 11, 12, 87, 320]) for (const lines of [1, 2, 4]) assert.deepEqual(render.wrapText(screen, text, width, lines), legacy(text, width, lines));
+    }
+    measurements = 0;
+    for (let length = 10; length < 2400; length += 23) render.wrapText(screen, '重复流式字幕ABC'.repeat(240).slice(0, length), 320, 2);
+    assert.ok(measurements <= 10, `原生measureText调用${measurements}次`);
+});
 await test('全状态浅暗主题文字和绘制坐标不超屏，绘制开销受控', () => {
     for (const width of [368, 320]) for (const theme of ['light', 'dark']) {
         for (const value of ['offline', 'pairing', 'login', 'idle', 'sleep', 'wake', 'listening', 'thinking', 'speaking', 'muted', 'error']) {
@@ -149,6 +170,126 @@ await test('全状态浅暗主题文字和绘制坐标不超屏，绘制开销�
             render.drawScene(screen, view, { clock: 1700, tiltX: 0.8, tiltY: -0.8, battery: 86, settings: false });
             assert.ok(rects < 850, `绘制次数 ${rects}`);
             render.drawScene(screen, view, { clock: 1700, tiltX: -0.8, tiltY: 0.8, battery: 86, settings: true });
+        }
+    }
+});
+
+function pixelScreen(width, height) {
+    const pixels = new Uint32Array(width * height);
+    const screen = {
+        width, height, pixels, clears: 0, textCalls: 0, writes: 0,
+        clear(color) { this.clears++; pixels.fill(color); this.writes += pixels.length; },
+        fillRect(x, y, w, h, color) {
+            const left = Math.max(0, Math.round(x)), top = Math.max(0, Math.round(y));
+            const right = Math.min(width, Math.round(x + w)), bottom = Math.min(height, Math.round(y + h));
+            for (let row = top; row < bottom; row++) pixels.fill(color, row * width + left, row * width + right);
+            this.writes += Math.max(0, right - left) * Math.max(0, bottom - top);
+        },
+        measureText(text, style) { return { width: Array.from(text).reduce((sum, ch) => sum + (ch.charCodeAt(0) > 127 ? 12 : 6), 0) * (style?.scale || 1), height: 12 * (style?.scale || 1) }; },
+        drawText(text, x, y, style) {
+            this.textCalls++;
+            const scale = style?.scale || 1;
+            for (const ch of text) {
+                const w = this.measureText(ch, style).width;
+                // 用确定性的字形像素验证新旧字幕清理，不依赖桌面字体安装。
+                if (ch !== ' ') this.fillRect(x, y + (ch.charCodeAt(0) % 3) * scale, w - scale, 8 * scale, style?.color || 0);
+                x += w;
+            }
+        },
+    };
+    return screen;
+}
+
+await test('彩边跳过白色遮挡仍与五层全量绘制逐像素一致，实际填充面积显著降低', () => {
+    let previousWrites = 0, optimizedWrites = 0, cases = 0;
+    for (const shape of model.CAT_SHAPES) for (const scale of [4.4, 7.8, 11]) for (const tilt of [-1, 0, 1]) {
+        const expected = pixelScreen(480, 480), actual = pixelScreen(480, 480);
+        const view = { ...state.initialState(), state: 'speaking', level: 68 };
+        const input = { clock: 1800, tiltX: tilt, tiltY: -tilt, battery: 86, settings: false };
+        const pose = { ...model.poseFor(view.state, input.clock, tilt, -tilt, view.level), shape };
+        input.pose = pose;
+        const cx = 240 + tilt * 12, cy = 240 - tilt * 8, step = Math.max(2, Math.round(scale));
+        const occupancy = new Map();
+        for (const point of model.projectCat(pose, scale, cx, cy)) {
+            const x = Math.round(point.sx / step) * step, y = Math.round(point.sy / step) * step;
+            occupancy.set(`${x},${y}`, { x, y });
+        }
+        const runs = [];
+        for (const point of Array.from(occupancy.values()).sort((a, b) => a.y - b.y || a.x - b.x)) {
+            const last = runs.at(-1);
+            if (last && last.y === point.y && point.x - last.x - last.width <= step) last.width = point.x + step - last.x;
+            else runs.push({ ...point, width: step });
+        }
+        for (const layer of [{ dx: step, dy: -step, color: 0x2050ef }, { dx: -step, dy: step, color: 0xe31c35 }, { dx: Math.ceil(step / 2), dy: 0, color: 0x17f5f5 }, { dx: -Math.ceil(step / 2), dy: 1, color: 0xf9fb54 }, { dx: 0, dy: 0, color: 0xffffff }]) {
+            for (const run of runs) expected.fillRect(run.x + layer.dx, run.y + layer.dy, run.width + 1, step + 1, layer.color);
+        }
+        for (const voxel of model.facePoints(view.state, input.clock, view.level)) {
+            const p = model.projectPoint(model.posedShapePoint(voxel, pose), pose, scale, cx, cy);
+            expected.fillRect(Math.round(p.sx / step) * step, Math.round(p.sy / step) * step, step + 1, step + 1, 0x0d1210);
+        }
+        render.drawCat(actual, view, input, 240, scale);
+        assert.deepEqual(actual.pixels, expected.pixels, `${shape} ${scale} ${tilt}`);
+        previousWrites += expected.writes; optimizedWrites += actual.writes; cases++;
+    }
+    assert.ok(optimizedWrites < previousWrites * 0.4);
+    console.log(`[指标] ${cases} 个姿态彩边填充像素 ${previousWrites} -> ${optimizedWrites}，减少 ${(100 * (1 - optimizedWrites / previousWrites)).toFixed(1)}%`);
+});
+
+await test('06/07连续帧局部刷新与整屏重画逐像素一致，静态字幕不重画', () => {
+    for (const [width, height] of [[320, 448], [368, 448], [480, 480]]) for (const harness of [false, true]) {
+        const actual = pixelScreen(width, height);
+        const view = { ...state.initialState(), connected: true, authenticated: true, state: 'idle', assistantText: '回答会实时显示' };
+        const form = { page: 'assistant', returnPage: 'assistant', field: 'account', values: {}, upper: false, symbols: false, busy: false, speechReady: true };
+        const draw = (screen, input) => harness ? harnessRender.drawHarness(screen, view, input, form) : render.drawScene(screen, view, input);
+        for (let index = 0; index < 36; index++) {
+            if (index === 8) { view.assistantText += '，随后继续增长。'; view.userText = '这是新问题'; }
+            if (index === 12) view.thinkingText = '检索完成';
+            if (index === 15) view.theme = 'light';
+            if (index === 18) view.state = 'speaking';
+            if (index === 26) view.thinkingText = '';
+            if (index === 28) { view.assistantText = ''; view.userText = ''; }
+            const input = { clock: index * 47 + 800, tiltX: Math.sin(index / 2), tiltY: Math.cos(index / 3), battery: 86, settings: false, fullscreen: index >= 21, shake: index % 4 === 0 ? 1 : 0 };
+            const expected = pixelScreen(width, height);
+            draw(expected, input);
+            const beforeText = actual.textCalls, beforeWrites = actual.writes;
+            draw(actual, input);
+            let different = 0;
+            for (let pixel = 0; pixel < actual.pixels.length; pixel++) if (actual.pixels[pixel] !== expected.pixels[pixel]) different++;
+            assert.equal(different, 0, `${harness ? '07' : '06'} ${width} frame ${index}`);
+            if (index === 1) {
+                assert.equal(actual.clears, 1);
+                assert.equal(actual.textCalls, beforeText);
+                assert.ok(actual.writes - beforeWrites < expected.writes, '局部帧减少实际像素写入');
+            }
+        }
+    }
+});
+await test('页面、配对、账号和输入框变化使静态缓存失效，返回助手无旧页面残影', () => {
+    for (const harness of [false, true]) {
+        const actual = pixelScreen(480, 480);
+        const view = { ...state.initialState(), connected: true, authenticated: true, state: 'idle', phoneName: '测试手机' };
+        const form = { page: 'assistant', returnPage: 'assistant', field: 'account', values: { tenant: '企业', account: '账号', password: 'secret', region: 'eastasia', key: 'key', origin: 'https://example.test', oem: '', domain: '', question: '' }, upper: false, symbols: false, busy: false, speechReady: true };
+        const input = { clock: 1700, tiltX: 0.4, tiltY: -0.3, battery: 86, settings: false };
+        const changes = harness ? [
+            () => {}, () => { form.page = 'settings'; }, () => { form.page = 'login'; },
+            () => { form.busy = true; }, () => { view.errorText = '登录失败'; },
+            () => { form.page = 'editor'; }, () => { form.values.account = '新账号ABC'; form.upper = true; },
+            () => { form.page = 'assistant'; view.errorText = ''; },
+        ] : [
+            () => {}, () => { input.settings = true; }, () => { view.displayName = '新账号'; },
+            () => { input.settings = false; view.state = 'pairing'; view.authenticated = false; },
+            () => { view.pairingCode = '123456'; }, () => { view.pairingPending = true; },
+            () => { view.errorText = '重新连接'; }, () => { view.state = 'idle'; view.authenticated = true; },
+        ];
+        for (const change of changes) {
+            change();
+            for (let repeat = 0; repeat < 2; repeat++) {
+                const expected = pixelScreen(480, 480);
+                const draw = (screen) => harness ? harnessRender.drawHarness(screen, view, input, form) : render.drawScene(screen, view, input);
+                draw(expected); draw(actual);
+                assert.deepEqual(actual.pixels, expected.pixels, `${harness ? '07' : '06'} 页面 ${form.page} 状态 ${view.state}`);
+                input.clock += 61; input.tiltX *= -1;
+            }
         }
     }
 });
@@ -170,6 +311,7 @@ function runtime(width = 368, height = 448) {
     let audioEnds = 0;
     const sockets = [];
     const timers = new Map();
+    let timerId = 0;
     const intervals = [];
     const sent = [];
     class Socket {
@@ -198,7 +340,7 @@ function runtime(width = 368, height = 448) {
         input: { onTouch(cb) { touch = cb; }, onButton(cb) { button = cb; } },
         app: { onExit(cb) { exit = cb; } },
     };
-    runInNewContext(main.outputFiles[0].text, { px, console: { log() {} }, WebSocket: Socket, ArrayBuffer, Int16Array, setTimeout(cb) { const id = timers.size + 1; timers.set(id, cb); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(cb) { intervals.push(cb); return intervals.length; }, clearInterval() {} });
+    runInNewContext(main.outputFiles[0].text, { px, console: { log() {} }, WebSocket: Socket, ArrayBuffer, Int16Array, setTimeout(cb, delay) { const id = ++timerId; timers.set(id, { cb, at: now + delay }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(cb) { intervals.push(cb); return intervals.length; }, clearInterval() {} });
     return {
         sent, sockets, audioChunks,
         get audioEnds() { return audioEnds; },
@@ -213,6 +355,7 @@ function runtime(width = 368, height = 448) {
         heartbeat() { intervals[1](); },
         frameText() { frame(16); return screenText.join('\n'); },
         advance(ms) { now += ms; },
+        flushTimers() { for (const [id, timer] of Array.from(timers)) if (timer.at <= now) { timers.delete(id); timer.cb(); } },
         exit() { exit(); },
     };
 }
@@ -438,7 +581,7 @@ await test('audio.cancel丢弃旧播放，过期audio.end不确认新轮，等�
     assert.deepEqual(r.sent.filter((m) => m.type === 'audio.played'), [{ type: 'audio.played', turnId: 2 }]);
     r.exit();
 });
-await test('PCM startup absorbs packet jitter and preserves every sample through the short tail', async () => {
+await test('PCM在64ms音频到达时首播，按顺序保留每个采样及短尾包', async () => {
     for (const sampleRate of [16000, 24000, 48000]) {
         const r = await pairedRuntime();
         r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
@@ -449,8 +592,8 @@ await test('PCM startup absorbs packet jitter and preserves every sample through
             chunks.push(Buffer.from(pcm));
             r.advance(i % 3 === 0 ? 55 : 24);
             r.message(pcm);
-            if (i < 7) assert.equal(r.audioFeeds, 0, 'speaker must wait for a usable startup buffer');
-            if (i === 7) assert.equal(r.audioChunks[0].byteLength, sampleRate * 2 * 256 / 1000);
+            if (i < 1) assert.equal(r.audioFeeds, 0, '首包允许等待下一帧形成64ms缓冲');
+            if (i === 1) assert.equal(r.audioChunks[0].byteLength, sampleRate * 2 * 64 / 1000);
         }
         const tail = new Int16Array([123, -456]).buffer;
         chunks.push(Buffer.from(tail)); r.message(tail);
@@ -460,6 +603,21 @@ await test('PCM startup absorbs packet jitter and preserves every sample through
         assert.equal(r.sent.some(m => m.type === 'audio.played'), false);
         r.audioEnded();
         assert.equal(r.sent.filter(m => m.type === 'audio.played').length, 1);
+        r.exit();
+    }
+});
+await test('慢速小包在首块后80ms开播，无需等待audio.end且取消会清理启动任务', async () => {
+    for (const cancel of [false, true]) {
+        const r = await pairedRuntime();
+        r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+        r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+        r.message(new Int16Array(160).fill(234).buffer);
+        r.advance(79); r.flushTimers();
+        assert.equal(r.audioFeeds, 0);
+        if (cancel) r.message({ type: 'audio.cancel', turnId: 1 });
+        r.advance(1); r.flushTimers();
+        assert.equal(r.audioFeeds, cancel ? 0 : 1);
+        assert.equal(r.audioEnds, 0);
         r.exit();
     }
 });

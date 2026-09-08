@@ -22,6 +22,7 @@ struct Config {
 enum class Kind { Wake, Recognize, Speak };
 enum class Role { Operation, Wake };
 struct Recording;
+struct TtsConnection;
 struct Job {
     Kind kind;
     uint32_t generation = 0;
@@ -63,6 +64,8 @@ private:
     std::shared_ptr<Job> current_;
     int mic_id_ = -1;
     std::shared_ptr<hal_audio::PcmRingSource> player_;
+    // 仅 operation worker 访问；相邻分句复用 TLS，空闲或转入录音时释放。
+    std::shared_ptr<TtsConnection> tts_connection_;
     Role role_ = Role::Operation;
 };
 

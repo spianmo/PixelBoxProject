@@ -537,9 +537,18 @@ void run_loop_turn()
 {
     const int64_t start = esp_timer_get_time();
     drain_callback_releases();
-    // 突发消息先更新状态再绘制。S3 上单帧可达 400 ms，8 ms 预算只能
-    // 消费 1-2 条增量，反复重绘会累积数秒延迟；最多处理 32 条 / 100 ms。
-    const int64_t deadline = esp_timer_get_time() + 100000;
+    // 廉价增量仍按最多 32 条合批；有输入/帧到期时，将批次预算压至 8 ms，
+    // 防止连续网络事件额外阻塞 IMU 和渲染 100 ms。单个回调仍由执行超时约束。
+    const int64_t batch_start = esp_timer_get_time();
+    int64_t deadline = batch_start + 100000;
+    if (s_ctx) {
+        const int64_t timer = internal::next_timer_deadline_us();
+        if (timer >= 0) deadline = std::min(deadline, std::max(batch_start + 8000, timer));
+        for (const auto &source : s_loop_sources) {
+            const int64_t due = source.deadline();
+            if (due >= 0) deadline = std::min(deadline, std::max(batch_start + 8000, due));
+        }
+    }
     for (int i = 0; i < 32 && !stopping(); ++i) {
         std::function<void()> *job = nullptr;
         if (xQueueReceive(s_queue, &job, 0) != pdTRUE) break;

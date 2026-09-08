@@ -21,6 +21,9 @@ export class MexusConversation {
     private generation = 0;
     private cancelCurrent: (() => void) | null = null;
     private idle: { socket: WebSocket; account: Session; sid: string; stop(): void } | null = null;
+    private preparing: Promise<void> | null = null;
+    private stopPreparing: (() => void) | null = null;
+    private prepareGeneration = 0;
 
     constructor(private readonly auth: EnterpriseAuth, private readonly socketFactory: SocketFactory = (url) => new WebSocket(url),
         private readonly now: () => number = () => Date.now()) { }
@@ -30,7 +33,72 @@ export class MexusConversation {
         const cancel = this.cancelCurrent;
         this.cancelCurrent = null;
         cancel?.();
-        if (closeConnection) this.closeIdle();
+        if (closeConnection) {
+            this.prepareGeneration++;
+            this.stopPreparing?.();
+            this.preparing = null;
+            this.closeIdle();
+        }
+    }
+
+    private matchesIdle(account: Session): boolean {
+        return !!this.idle && this.idle.socket.readyState === 1
+            && this.idle.socket.url === this.auth.config.origin.replace(/^https:/, 'wss:') + '/mexusclaw-socket'
+            && this.idle.account.token === account.token && this.idle.account.userId === account.userId
+            && this.idle.account.tenantId === account.tenantId;
+    }
+
+    prepare(): Promise<void> {
+        if (this.preparing) return this.preparing;
+        if (this.cancelCurrent) return Promise.resolve();
+        const generation = this.prepareGeneration;
+        // 待机/录音阶段先完成 TLS 和 hello，不等最终转写才串行握手，不发送用户问题。
+        const preparing = this.auth.valid().then(account => {
+            if (generation !== this.prepareGeneration || this.cancelCurrent || this.matchesIdle(account)) return;
+            this.closeIdle();
+            return new Promise<void>((resolve, reject) => {
+                const socket = this.socketFactory(this.auth.config.origin.replace(/^https:/, 'wss:') + '/mexusclaw-socket');
+                let terminal = false;
+                const finish = (error?: Error, sid = '') => {
+                    if (terminal) return;
+                    terminal = true;
+                    clearTimeout(timer);
+                    socket.onopen = null; socket.onmessage = null; socket.onclose = null; socket.onerror = null;
+                    if (this.stopPreparing === stop) this.stopPreparing = null;
+                    if (sid && generation === this.prepareGeneration && socket.readyState === 1) this.keepIdle(socket, account, sid);
+                    else { try { socket.close(1000, 'prepare_end'); } catch { } }
+                    if (error) reject(error); else resolve();
+                };
+                const stop = () => finish();
+                const timer = setTimeout(() => finish(new Error('AI 握手超时')), 15000);
+                this.stopPreparing = stop;
+                const send = (frame: Frame) => {
+                    try { socket.send(JSON.stringify(frame)); }
+                    catch { finish(new Error('AI 连接已中断')); }
+                };
+                socket.onopen = () => send(hello(account, this.auth.config.deviceId, this.now()));
+                socket.onclose = socket.onerror = () => finish(new Error('AI 网络连接失败'));
+                socket.onmessage = event => {
+                    if (terminal || typeof event.data !== 'string') return;
+                    if (event.data.length > 65536) { finish(new Error('AI 响应过大')); return; }
+                    try {
+                        const frame = record(JSON.parse(event.data));
+                        if (frame.v !== 1) return;
+                        const payload = record(frame.payload);
+                        if (frame.type === 'ping') send(envelope('pong', string(frame.id), '', { nonce: string(payload.nonce) }, this.now()));
+                        if (frame.type === 'welcome') {
+                            const sid = string(payload.sessionId);
+                            finish(sid ? undefined : new Error('AI 服务未下发会话标识'), sid);
+                        }
+                        if (frame.type === 'error') finish(new Error('AI 服务暂时不可用'));
+                    } catch { finish(new Error('AI 消息格式错误')); }
+                };
+            });
+        });
+        this.preparing = preparing;
+        const clear = () => { if (this.preparing === preparing) this.preparing = null; };
+        void preparing.then(clear, clear);
+        return preparing;
     }
 
     private closeIdle(): void {
@@ -73,6 +141,20 @@ export class MexusConversation {
         const generation = this.generation;
         let account = await this.auth.valid();
         if (generation !== this.generation) throw new Error('本轮已取消');
+        // 预连接失败由正式请求重试；普通轮次取消仍允许复用已开始的握手。
+        if (this.preparing) await new Promise<void>((resolve, reject) => {
+            const cancel = () => {
+                if (this.cancelCurrent === cancel) this.cancelCurrent = null;
+                reject(new Error('本轮已取消'));
+            };
+            const done = () => {
+                if (this.cancelCurrent === cancel) this.cancelCurrent = null;
+                resolve();
+            };
+            this.cancelCurrent = cancel;
+            void this.preparing!.then(done, done);
+        });
+        if (generation !== this.generation) throw new Error('本轮已取消');
         for (let attempt = 0; attempt < 2; attempt++) {
             try { return await this.connect(text, account, events, generation); }
             catch (error) {
@@ -88,9 +170,7 @@ export class MexusConversation {
     private connect(text: string, account: Session, events: ConversationEvents, generation: number): Promise<string> {
         return new Promise((resolve, reject) => {
             const url = this.auth.config.origin.replace(/^https:/, 'wss:') + '/mexusclaw-socket';
-            if (this.idle && (this.idle.socket.readyState !== 1 || this.idle.socket.url !== url
-                || this.idle.account.token !== account.token || this.idle.account.userId !== account.userId
-                || this.idle.account.tenantId !== account.tenantId)) this.closeIdle();
+            if (this.idle && !this.matchesIdle(account)) this.closeIdle();
             const reused = this.idle;
             this.idle = null;
             reused?.stop();

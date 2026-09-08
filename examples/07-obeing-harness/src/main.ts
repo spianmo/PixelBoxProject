@@ -245,7 +245,7 @@ if (px.sensors.imu.available()) px.sensors.imu.start({ rateHz: 50, onData(data) 
     targetX = clamp(-data.ax, -1, 1); targetY = clamp(data.ay, -1, 1);
 } });
 prepareCat();
-px.screen.setFps(24);
+px.screen.setFps(30);
 px.screen.onFrame((dt) => {
     if (!running) return;
     const step = Math.max(0, dt);

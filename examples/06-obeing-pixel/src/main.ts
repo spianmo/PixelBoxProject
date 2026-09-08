@@ -321,7 +321,7 @@ if (px.sensors.imu.available()) {
 }
 
 prepareCat();
-px.screen.setFps(24);
+px.screen.setFps(30);
 px.screen.onFrame((dt) => {
     const step = Math.max(0, dt);
     clock += step;

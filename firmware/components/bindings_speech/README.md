@@ -153,6 +153,13 @@ TLS 请求不输出密钥或服务响应正文。
 
 `cancel()` 立即停止采音与播放并拒绝当前 Promise；已阻塞的 TLS 读取由 worker
 在下一数据块或 socket 超时后清理；连接最长 15 秒，识别响应等待受剩余 timeoutMs 限制。
+ASR 每 40 ms 上传一次 PCM。TTS 在 HTTP 数据事件中立即喂入 64 KiB 播放环缓冲，
+不等待 `esp_http_client_read()` 凑满读取块；收到响应头后的读取以 100 ms 为取消检查边界，
+连续 15 秒没有音频或整次合成/播放超过 120 秒时报错。DNS、TLS 握手与响应头仍使用 15 秒 I/O 超时，
+并非整个请求或取消的严格墙钟上限。
+相邻 `speak()` 分句复用同区域、同密钥的 HTTPS 连接，空闲 15 秒、转入 ASR、worker 退出
+或响应失败时释放；服务端关闭空闲连接时只在还未播放任何音频的情况下重试一次。
+流式上层可在收到完整短句后立即调用 `speak()`，随后串行播报后续分句。
 绑定层使用递增代数屏蔽已入队的旧唤醒、
 错误和音量回调，以及旧 Promise 的成功结果。唤醒与识别/播报有独立代数及 worker，
 新任务只替换同通道旧任务；`wakeword.stop()` 仅停止唤醒，`cancel()` 则同时取消两条通道。
@@ -166,12 +173,17 @@ c++ -std=c++17 -pthread -Wall -Wextra -Werror \
     -o /private/tmp/obeing-speech-core-test
 /private/tmp/obeing-speech-core-test firmware/build/srmodels/srmodels.bin
 node firmware/components/bindings_speech/tests/check-prelude.mjs
+node firmware/components/bindings_speech/tests/check-streaming.mjs
+node firmware/components/bindings_speech/tests/check-tts-streaming.mjs
 node firmware/components/bindings_speech/tests/check-wake-registration.mjs
 node firmware/components/bindings_speech/tests/check-model-hashes.mjs firmware/build
 ```
 
 上述测试覆盖区域与 SSML 校验、WAV 格式、静音截断、瞬时噪声过滤、唤醒前导音频环绕与清空，
 以及参数边界、缓存模型换词、单独修改阈值、注册失败恢复、并行唤醒和取消后的过期回调。
+TTS 回归提取实际 HTTP/播报实现并链接真实 PCM 环缓冲，在 UBSan 下验证首包提前交付、
+跨包半帧/满环反压、TLS 复用与过期、失效连接重试、认证失败、截断及取消。
+本次 TTS/ASR 延迟优化尚未烧录，云端首音频延迟和连续对话的实际耗时仍需真机验收。
 本次 MN7 切换及动态唤醒词注册的真机识别效果尚未验证；桌面注册测试中的模型接口为替身。
 此前语音版本在 PixelBox S3 的物理麦克风、扬声器和真实 Azure 账号上，
 已通过实际 Azure WSS 握手、两轮识别与 TTS 播放、并行唤醒及 AI 连接复用检查；
