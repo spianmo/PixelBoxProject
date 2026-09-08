@@ -12,7 +12,7 @@ firmware/
 ├── partitions.csv         # 分区表: OTA 双分区 + littlefs storage
 ├── partitions_wakeword.csv# 唤醒词构建分区表 (storage 压缩, 尾部加 model 分区)
 ├── sdkconfig.defaults     # esp32s3 / 16MB Flash / Octal PSRAM 默认配置
-├── sdkconfig.defaults.esp32s3 # S3 默认独立语音、MultiNet7 模型与语音分区
+├── sdkconfig.defaults.esp32s3 # S3 默认独立语音、MultiNet5 量化模型与语音分区
 ├── sdkconfig.wakeword     # 唤醒词叠加配置 (见「启用唤醒词」)
 ├── main/                  # app_main: 板级初始化 → appmgr → devd → jsvm
 └── components/
@@ -36,13 +36,18 @@ firmware/
 ## 构建与烧录
 
 ESP32-S3 默认构建为独立语音版：`sdkconfig.defaults.esp32s3` 自动启用
-`PX_ENABLE_SPEECH`、MultiNet7 中文模型和 `partitions_speech.csv`，JS 堆上限为 2 MiB。
+`PX_ENABLE_SPEECH`、MultiNet5 量化拼音模型和 `partitions_speech.csv`，JS 堆上限为 2 MiB。
 命令行 `idf.py build` 和 IDE 默认构建使用同一配置，产物为 `build/pixelbox.bin`
 及 `build/srmodels/srmodels.bin`；打包 merged.bin 自动包含模型，无需额外传 `sdkconfig.speech`。
 C6/P4 不启用独立语音。
 
-已有旧 `sdkconfig` 不会被默认值覆盖：本机配置已同步；其他旧工作区可先备份
-`sdkconfig`，用 `idf.py set-target esp32s3` 重建默认配置，再运行 `idf.py build`。
+已有旧 `sdkconfig` 不会被默认值覆盖。ESPIDE 的 S3 入口是 `idf.py -B build build/flash`，
+读取 `firmware/sdkconfig`；`build_mn5q8/sdkconfig` 等独立构建的修改不会同步到它。
+若出现 `PixelBox speech requires mn5q8_cn`，在 `firmware/` 运行
+`idf.py -B build menuconfig`，搜索 `SR_MN_CN_MULTINET5_RECOGNITION_QUANT8` 并选中，
+保存后执行 `idf.py -B build build`。这会取消旧 MultiNet7 选择并重新生成配套模型。
+已有网络配置还需同步下文「HTTPS 内存配置」的 Wi-Fi 缓冲和备用 DNS 参数。
+保留现有板型与其他配置时无需 `set-target` 或清空构建目录。
 语音分区与旧 `partitions.csv` 不同，首次升级需完整烧录分区表、固件和模型，不能单 app OTA；
 旧 storage 数据需提前备份。
 
@@ -98,6 +103,13 @@ S3/P4 的默认配置使用 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`，让 TLS 握�
 运行 `idf.py menuconfig`，在 `Component config -> mbedTLS -> Memory allocation strategy`
 选择 `External SPIRAM`，然后重新构建、烧录固件；仅热更新示例 JS 不会修改 TLS 分配策略。
 使用 `-B` / `-D SDKCONFIG=...` 的语音构建应沿用相同参数。CA 证书校验和 NTP 同步仍需保留。
+
+独立语音 S3 还需要给硬件 AES 的 DMA 临时缓冲留内部内存：默认静态 Wi-Fi RX/TX
+缓冲各 8 个，RX BA window 为 6。已有构建须同步更新 `CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM`、
+`CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM` 和 `CONFIG_ESP_WIFI_RX_BA_WIN`，不能只更新 JS。
+`CONFIG_LWIP_FALLBACK_DNS_SERVER_SUPPORT=y`、`CONFIG_LWIP_FALLBACK_DNS_SERVER_ADDRESS="1.1.1.1"`
+提供 DHCP DNS 之外的备用解析；获取 IP 日志会列出实际 DNS。真机复测见
+[语音与网络诊断](../docs/speech-network-performance.md)。
 
 ## 板型选择
 
@@ -168,7 +180,7 @@ wifi_manager strncpy→memcpy 修正所致)。
 
 ## 启用唤醒词 (esp-sr WakeNet)
 
-当前默认语音版通过 MultiNet7 检测“你好小川”。本节为旧 `px.voice` 手机中继的
+当前默认语音版通过 MultiNet5 检测业务动态注册的唤醒词，示例应用预设“你好小川”。本节为旧 `px.voice` 手机中继的
 WakeNet 可选配置，会关闭独立语音并选用另一套分区；不用于 example07。
 该配置使用独立构建目录 + 叠加配置：
 

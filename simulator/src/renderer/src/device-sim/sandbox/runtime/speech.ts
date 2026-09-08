@@ -51,7 +51,7 @@ export class SpeechImpl {
   available(): boolean { return this.enabled }
 
   readonly wakeword = {
-    start: async (_options: { phrase?: string; threshold?: number; onWake: () => void }): Promise<void> => {
+    start: async (_options: { phrase: string; pinyin: string; threshold: number; onWake: () => void; onError?: (message: string) => void }): Promise<void> => {
       throw new Error('ENOTSUP: ESP-SR 本地唤醒仅在 PixelBox 固件可用')
     },
     stop: (): void => { /* 桌面没有 ESP-SR 检测任务。 */ }

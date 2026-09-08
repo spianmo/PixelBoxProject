@@ -403,6 +403,14 @@ void WifiManager::on_ip_event(int32_t event_id, void* data) {
     }
   }
   ESP_LOGI(TAG, "已获取 IP: %s", ip);
+  for (int index = 0; index < ESP_NETIF_DNS_MAX; ++index) {
+    esp_netif_dns_info_t dns{};
+    if (esp_netif_get_dns_info(ev->esp_netif, static_cast<esp_netif_dns_type_t>(index), &dns) == ESP_OK
+        && dns.ip.type == ESP_IPADDR_TYPE_V4) {
+      char address[16];
+      ESP_LOGI(TAG, "DNS[%d]: %s", index, esp_ip4addr_ntoa(&dns.ip.u_addr.ip4, address, sizeof(address)));
+    }
+  }
   fire(WifiEvent::GotIp, 0);
 }
 

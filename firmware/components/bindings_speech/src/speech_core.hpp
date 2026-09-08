@@ -6,24 +6,46 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 
 namespace speech {
 
-constexpr const char* kWakePhrase = "你好小川";
-constexpr const char* kWakePinyin = "ni hao xiao chuan";
+constexpr const char* kWakeModelName = "mn5q8_cn";
+constexpr std::array<const char*, 3> kWakeModelFiles = {"mn5q8_index", "mn5q8_data", "_MODEL_INFO_"};
 constexpr int kRate = 16000;
+
+struct WakeConfig {
+    std::string phrase, pinyin;
+    double threshold = std::numeric_limits<double>::quiet_NaN();
+};
+
+/** 业务必须显式提供词和门限；这里只限制 MultiNet5 输入格式，不补默认值或截断门限。 */
+inline const char* validate_wake_config(const WakeConfig& config) {
+    if (config.phrase.empty() || config.phrase.size() > 96
+            || config.phrase.front() == ' ' || config.phrase.back() == ' '
+            || std::any_of(config.phrase.begin(), config.phrase.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+        return "phrase 必须为 1 至 96 UTF-8 字节的唤醒词，不能包含控制字符或首尾空格";
+    if (config.pinyin.size() < 2 || config.pinyin.size() > 63
+            || config.pinyin.front() == ' ' || config.pinyin.back() == ' '
+            || config.pinyin.find("  ") != std::string::npos
+            || std::any_of(config.pinyin.begin(), config.pinyin.end(), [](unsigned char c) { return c != ' ' && (c < 'a' || c > 'z'); }))
+        return "pinyin 必须为 2 至 63 字节的小写无声调拼音，音节间用单个空格分隔";
+    if (!std::isfinite(config.threshold) || config.threshold < 0.0 || config.threshold > 0.9999)
+        return "threshold 必须显式设置为 0 至 0.9999 的有限数值";
+    return nullptr;
+}
 
 template <typename Interface>
 bool has_required_multinet_api(const Interface* iface) {
-    // MultiNet7 的 switch_loader_mode/open_log 是可选空指针，不纳入可用性判断或调用。
+    // MultiNet5 不支持 switch_loader_mode，可选接口不纳入可用性判断或调用。
     return iface && iface->create && iface->destroy && iface->get_samp_rate && iface->get_samp_chunksize
         && iface->set_det_threshold && iface->detect && iface->get_results && iface->clean
         && iface->set_speech_commands && iface->check_speech_command;
 }
 
 struct ModelPayload { const uint8_t* data = nullptr; size_t size = 0; };
-using ModelPayloads = std::array<ModelPayload, 4>;
+using ModelPayloads = std::array<ModelPayload, kWakeModelFiles.size()>;
 
 /** ESP-SR pack_model.py 的定长目录表；在 vendor 解析器分配内存前校验计数、字符串与数据边界。 */
 inline bool valid_model_archive(const uint8_t* data, size_t size, ModelPayloads* payloads = nullptr) {
@@ -46,11 +68,12 @@ inline bool valid_model_archive(const uint8_t* data, size_t size, ModelPayloads*
     if (!models || models > 16) return false;
     size_t offset = 4;
     size_t first_payload = size;
-    bool has_mn7 = false;
+    bool has_wake_model = false;
     for (uint32_t i = 0; i < models; i++) {
         if (offset > size || size - offset < 36 || !name_ok(offset)) return false;
-        const bool mn7 = std::strcmp(reinterpret_cast<const char*>(data + offset), "mn7_cn") == 0;
-        if (mn7 && has_mn7) return false;
+        const bool wake_model = std::strcmp(reinterpret_cast<const char*>(data + offset), kWakeModelName) == 0;
+        if (wake_model && has_wake_model) return false;
+        if (wake_model) has_wake_model = true;
         const uint32_t files = u32(offset + 32);
         if (!files || files > 32) return false;
         offset += 36;
@@ -63,21 +86,91 @@ inline bool valid_model_archive(const uint8_t* data, size_t size, ModelPayloads*
             if (!bytes || begin > size || bytes > size - begin) return false;
             if (std::strcmp(name, "_MODEL_INFO_") == 0 && bytes > 4096) return false;
             first_payload = std::min(first_payload, static_cast<size_t>(begin));
-            int slot = -1;
-            if (std::strcmp(name, "mn7_index") == 0) slot = 0;
-            else if (std::strcmp(name, "mn7_data") == 0) slot = 1;
-            else if (std::strcmp(name, "vocab") == 0) slot = 2;
-            else if (std::strcmp(name, "_MODEL_INFO_") == 0) slot = 3;
-            if (mn7 && slot >= 0) {
+            for (size_t slot = 0; wake_model && slot < kWakeModelFiles.size(); slot++) {
+                if (std::strcmp(name, kWakeModelFiles[slot]) != 0) continue;
                 if (required & (1u << slot)) return false;
                 required |= 1u << slot;
                 if (payloads) (*payloads)[slot] = {data + begin, bytes};
             }
         }
-        if (mn7 && required == 15) has_mn7 = true;
+        if (wake_model && required != (1u << kWakeModelFiles.size()) - 1) return false;
     }
-    return has_mn7 && offset <= first_payload;
+    return has_wake_model && offset <= first_payload;
 }
+
+/** 唤醒只保留最多 160 ms 待处理音频；丢帧后清空旧队列，避免跨缺口拼接一句话。 */
+inline size_t wake_backlog_drop_samples(size_t queued, bool overflow) {
+    constexpr size_t max_pending = kRate * 160 / 1000;
+    return overflow ? queued : (queued > max_pending ? queued - max_pending : 0);
+}
+
+/** MN5Q8 可能在结果概率低于设置值时仍返回 DETECTED，最终回调必须再做一次显式门限。 */
+inline bool wake_match(int command_id, float probability, float threshold) {
+    return command_id == 1 && std::isfinite(probability) && probability >= threshold;
+}
+
+/** 按实际送入模型的窗口统计音频，区分输入过轻、削波和窗口变化。 */
+struct WakeAudioStats {
+    uint64_t energy = 0;
+    size_t samples = 0, clipped = 0;
+    int peak = 0;
+    void feed(const int16_t* frame, size_t count) {
+        for (size_t i = 0; i < count; i++) {
+            const int value = frame[i];
+            energy += static_cast<uint64_t>(int64_t(value) * value);
+            peak = std::max(peak, std::abs(value));
+            if (value == -32768 || value == 32767) clipped++;
+        }
+        samples += count;
+    }
+    double rms() const { return samples ? std::sqrt(double(energy) / samples) : 0; }
+};
+
+/** 模型刷新时回放约 200 ms 完整音频帧，保留低于能量门限的轻声词首。 */
+class WakePreroll {
+public:
+    static size_t frame_capacity(size_t frame_samples) { return (kRate / 5 + frame_samples - 1) / frame_samples; }
+    WakePreroll(int16_t* storage, size_t frame_samples)
+        : storage_(storage), frame_samples_(frame_samples), capacity_(frame_capacity(frame_samples)) {}
+    void append(const int16_t* frame) {
+        std::memcpy(storage_ + next_ * frame_samples_, frame, frame_samples_ * sizeof(int16_t));
+        next_ = (next_ + 1) % capacity_;
+        count_ = std::min(count_ + 1, capacity_);
+    }
+    template <typename Consumer>
+    bool replay(Consumer consume) {
+        const size_t first = (next_ + capacity_ - count_) % capacity_;
+        for (size_t i = 0; i < count_; i++)
+            if (consume(storage_ + ((first + i) % capacity_) * frame_samples_)) return true;
+        return false;
+    }
+    void clear() { next_ = count_ = 0; }
+private:
+    int16_t* storage_;
+    size_t frame_samples_, capacity_, next_ = 0, count_ = 0;
+};
+
+/** 连续静音后在首个有声帧前刷新 MultiNet；调用方需回放前导音频。 */
+class WakeSpeechBoundary {
+public:
+    bool feed(const int16_t* samples, size_t count) {
+        if (!count) return false;
+        uint64_t energy = 0;
+        for (size_t i = 0; i < count; i++) {
+            const int32_t sample = samples[i];
+            energy += static_cast<uint64_t>(sample * sample);
+        }
+        if (energy <= uint64_t(128 * 128) * count) {
+            quiet_samples_ = std::min<size_t>(kRate / 2, quiet_samples_ + count);
+            return false;
+        }
+        const bool boundary = quiet_samples_ >= kRate / 2;
+        quiet_samples_ = 0;
+        return boundary;
+    }
+private:
+    size_t quiet_samples_ = 0;
+};
 
 inline bool digest_matches(const uint8_t* digest, const char* expected) {
     static constexpr const char* hex = "0123456789abcdef";

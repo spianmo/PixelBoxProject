@@ -55,7 +55,7 @@ if (mode === 'azure-host') {
         } else if (mode === 'cache-check') {
             const boot = await client.subscribeLogs(Number.MAX_SAFE_INTEGER);
             const before = JSON.parse(await client.evalJs('JSON.stringify(px.system.memory())'));
-            await client.evalJs("globalThis.__cacheReady=false;px.speech.wakeword.start({phrase:'你好小川',onWake:()=>{}}).then(()=>__cacheReady=true,e=>__cacheReady=String(e));true");
+            await client.evalJs("globalThis.__cacheReady=false;px.speech.wakeword.start({phrase:'你好小川',pinyin:'ni hao xiao chuan',threshold:0.30,onWake:()=>{}}).then(()=>__cacheReady=true,e=>__cacheReady=String(e));true");
             for (let i=0;i<15;i++) { await pause(1000); const state=await client.evalJs('__cacheReady'); if(state==='true')break; if(state!=='false'||i===14)throw Error('Wake failed: '+state); }
             await client.evalJs('px.speech.wakeword.stop();true');
             await pause(1000);
@@ -68,11 +68,11 @@ if (mode === 'azure-host') {
             await pause(31000);
             say({stage:'waiting-for-cache-expiry',seconds:31});
             await pause(31000);
-            const released=JSON.parse(await client.evalJs('JSON.stringify(px.system.memory())'));
-            if(!resumed && released.psramFree < cached.psramFree + 2000000) throw Error('Idle model memory was not released');
+            const retained=JSON.parse(await client.evalJs('JSON.stringify(px.system.memory())'));
+            if(!resumed && retained.psramFree > cached.psramFree + 2000000) throw Error('Wake model was unexpectedly evicted while its worker was alive');
             const after=await client.subscribeLogs(Number.MAX_SAFE_INTEGER);
             if(after.boot!==boot.boot)throw Error('Device restarted during cache check');
-            say({stage:resumed?'cache-check-inconclusive-app-resumed-speech':'model-released',released,sameBoot:true});
+            say({stage:resumed?'cache-check-inconclusive-app-resumed-speech':'model-retained',retained,sameBoot:true});
         } else if (mode === 'status') {
             say(await client.evalJs('({memory:px.system.memory(),wifi:px.wifi.status(),now:px.system.now(),speech:px.speech.available(),runtime:__pxRuntimeStats()})'));
         } else if (mode === 'mic') {
@@ -110,7 +110,7 @@ if (mode === 'azure-host') {
         } else {
             if (config) await client.evalJs(`px.speech.configure(${JSON.stringify(config)}); 'configured'`);
             const expression = mode === 'wake'
-                ? `px.speech.wakeword.start({phrase:'你好小川',onWake:()=>{},onError:e=>{__speechProbe.runtimeError=String(e)}})`
+                ? `px.speech.wakeword.start({phrase:'你好小川',pinyin:'ni hao xiao chuan',threshold:0.30,onWake:()=>{},onError:e=>{__speechProbe.runtimeError=String(e)}})`
                 : mode === 'recognize' ? `px.speech.recognize({maxMs:8000,silenceMs:800,timeoutMs:30000,onLevel:n=>{__speechProbe.peak=Math.max(__speechProbe.peak,n)}})`
                 : mode === 'tts' ? `px.speech.speak('今天天气很好，我们一起去公园散步。')`
                 : `fetch('https://${config.region}.stt.speech.microsoft.com/',{timeoutMs:20000}).then(r=>({status:r.status}))`;

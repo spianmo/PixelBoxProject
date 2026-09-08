@@ -43,9 +43,9 @@ try {
                 userText: '今天适合去公园散步吗？', thinkingText: '天气查询已完成', assistantText: '今天晴，气温适宜。很适合散步，记得带水。', level: 62 };
             const form = { page: variant.page, returnPage: 'login', field: 'password', upper: false, symbols: false, busy: false, speechReady: true,
                 values: { tenant: 'OBEING', account: 'USER01', password: 'fixture-password', region: 'eastasia', key: 'x'.repeat(32), origin: 'https://v4.teamhelper.cn', oem: '', domain: '', question: '' } };
-            if (variant.page !== 'assistant') { view.userText = ''; view.assistantText = ''; view.thinkingText = ''; }
+            if (variant.page !== 'assistant' || variant.wakePhrase) { view.userText = ''; view.assistantText = ''; view.thinkingText = ''; }
             if (variant.error) view.errorText = '设备 TLS 内存不足，请更新固件后重新登录企业账号';
-            Harness.drawHarness(screen, view, { clock: 1800, tiltX: tilt, tiltY: -0.4, battery: 86, settings: false, fullscreen: variant.fullscreen }, form);
+            Harness.drawHarness(screen, view, { clock: 1800, tiltX: tilt, tiltY: -0.4, battery: 86, settings: false, fullscreen: variant.fullscreen }, form, variant.wakePhrase);
             const pixels = ctx.getImageData(0, 0, width, height).data;
             let white = 0;
             let colors = 0;
@@ -56,6 +56,7 @@ try {
             }
             if (variant.page === 'assistant' && texts.some(box => box.text === '小川')) violations.push('account name on assistant');
             if (variant.fullscreen && texts.some(box => box.y < height - 145)) violations.push('text above fullscreen captions');
+            if (variant.wakePhrase === '小爱同学' && !texts.some(box => box.text === variant.wakePhrase)) violations.push('custom wake phrase missing');
             return { ...variant, width, height, fontHeight: texts[0].h, violations, white, colors, png: canvas.toDataURL() };
         };
         const results = [];
@@ -68,6 +69,11 @@ try {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448;
             document.body.append(canvas);
             results.push(window.renderHarnessVariant(canvas, { page: 'assistant', theme: 'dark', state, fullscreen: true }));
+        }
+        for (const width of [320, 368, 480]) for (const wakePhrase of ['小爱同学', '欢迎使用语音助手请帮我处理今天的工作安排和日程']) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448;
+            document.body.append(canvas);
+            results.push(window.renderHarnessVariant(canvas, { page: 'assistant', theme: 'dark', state: 'idle', wakePhrase }));
         }
         return results;
     });

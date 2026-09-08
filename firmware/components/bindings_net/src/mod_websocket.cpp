@@ -9,14 +9,19 @@
  *   - readyState 静态常量 CONNECTING/OPEN/CLOSING/CLOSED 挂在构造器上
  */
 #include <atomic>
+#include <algorithm>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
+#include "esp_timer.h"
+#include "hal_net/ws_message.hpp"
 #include "js_helpers.hpp"
 #include "jsvm/jsvm.hpp"
 #include "net_worker.hpp"
@@ -35,10 +40,15 @@ struct WsClient {
   bool terminal_sent = false;   ///< onclose 已派发(仅 JS 线程)
   bool destroy_scheduled = false;
   void* handler_ref = nullptr;  ///< 事件处理器持有的 WsPtr*,destroy 后回收
+  std::mutex work_mutex, close_mutex;
+  std::deque<std::function<void()>> work;
+  bool work_running = false;
+  size_t queued_bytes = 0, queued_messages = 0;
+  int64_t queue_report_us = 0, queue_delay_max_ms = 0;
+  size_t received_messages = 0;
 
   // 以下仅 WS 事件任务访问(分片重组)
-  std::vector<uint8_t> frag;
-  int cur_op = 0;
+  hal_net::WsMessage message;
   int close_code = 1005;  ///< 1005 = 无 close 帧
   std::string close_reason;
 };
@@ -53,6 +63,31 @@ static WsPtr ws_from_this(JSContext* ctx, JSValueConst this_val) {
   return sp ? *sp : nullptr;
 }
 
+// 每个连接只安排一个消费者，send/close/destroy 严格有序；TLS 等待不会阻塞 JS 绘制。
+static bool ws_submit_work(const WsPtr& ws, std::function<void()> action) {
+  std::lock_guard<std::mutex> lock(ws->work_mutex);
+  ws->work.push_back(std::move(action));
+  if (ws->work_running) return true;
+  ws->work_running = true;
+  if (pxjs::worker_submit([ws]() {
+    const UBaseType_t previous = uxTaskPriorityGet(nullptr);
+    vTaskPrioritySet(nullptr, std::max(previous,
+        std::min<UBaseType_t>(CONFIG_JSVM_TASK_PRIORITY + 1, configMAX_PRIORITIES - 1)));
+    for (;;) {
+      std::function<void()> next;
+      {
+        std::lock_guard<std::mutex> lock(ws->work_mutex);
+        if (ws->work.empty()) { ws->work_running = false; break; }
+        next = std::move(ws->work.front()); ws->work.pop_front();
+      }
+      next();
+    }
+    vTaskPrioritySet(nullptr, previous);
+  }, true)) return true;
+  ws->work.clear(); ws->work_running = false;
+  return false;
+}
+
 /** 惰性销毁底层客户端(阻塞操作丢给 worker);destroy 后回收事件处理器引用 */
 static void ws_schedule_destroy(const WsPtr& ws) {
   if (ws->destroy_scheduled || !ws->handle) return;
@@ -61,10 +96,10 @@ static void ws_schedule_destroy(const WsPtr& ws) {
   void* href = ws->handler_ref;
   ws->handle = nullptr;
   ws->handler_ref = nullptr;
-  pxjs::worker_submit([h, href]() {
+  ws_submit_work(ws, [h, href]() {
     esp_websocket_client_destroy(h);  // 内部先 stop 事件任务,之后不会再有事件回调
     delete static_cast<WsPtr*>(href);
-  }, true);
+  });
 }
 
 /** JS 线程:取 obj.<prop> 若为函数则以 ev 为参调用(消费 ev) */
@@ -118,6 +153,7 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
 
   switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED: {
+      if (ws->state.load() >= 2) break;
       ws->state.store(1);
       pxjs::run_on_js([ws]() {
         if (pxjs::vm_stale(ws->gen)) return;
@@ -133,26 +169,40 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
       if (op == 0x09 || op == 0x0A) break;  // ping/pong 忽略
       if (op == 0x08) {                     // close 帧:记录 code/reason
         if (data->data_len >= 2) {
+          std::lock_guard<std::mutex> lock(ws->close_mutex);
           const uint8_t* p = reinterpret_cast<const uint8_t*>(data->data_ptr);
           ws->close_code = (p[0] << 8) | p[1];
           ws->close_reason.assign(reinterpret_cast<const char*>(p) + 2, data->data_len - 2);
         }
         break;
       }
-      if (op == 0x01 || op == 0x02) ws->cur_op = op;  // 0x00 为延续帧,沿用 cur_op
-      if (data->payload_offset == 0) ws->frag.clear();
-      if (data->data_len > 0) {
-        ws->frag.insert(ws->frag.end(),
-                        reinterpret_cast<const uint8_t*>(data->data_ptr),
-                        reinterpret_cast<const uint8_t*>(data->data_ptr) + data->data_len);
+      if (ws->state.load() >= 2) break;
+      const auto result = ws->message.feed(op, data->fin, data->payload_offset,
+          data->payload_len, data->data_ptr, data->data_len);
+      if (result == hal_net::WsMessage::Result::Invalid) {
+        ws->state.store(3);
+        pxjs::run_on_js([ws]() { ws_dispatch_terminal(ws, 1002, "Invalid or oversized message"); });
+        break;
       }
-      if (data->payload_offset + data->data_len >= data->payload_len) {
+      if (result == hal_net::WsMessage::Result::Complete) {
         // 消息完整,投递 JS
-        bool is_text = ws->cur_op == 0x01;
-        auto payload = std::make_shared<std::vector<uint8_t>>(std::move(ws->frag));
-        ws->frag = {};
-        pxjs::run_on_js([ws, payload, is_text]() {
+        bool is_text = ws->message.type == 0x01;
+        auto payload = std::make_shared<std::vector<uint8_t>>(std::move(ws->message.bytes));
+        const int64_t received = esp_timer_get_time();
+        pxjs::run_on_js([ws, payload, is_text, received]() {
           if (pxjs::vm_stale(ws->gen)) return;
+          const int64_t now = esp_timer_get_time();
+          const int64_t delay = (now - received) / 1000;
+          ws->queue_delay_max_ms = std::max(ws->queue_delay_max_ms, delay);
+          ws->received_messages++;
+          // USB 串口日志也会等待；逐条打印延迟会反过来放大增量消息积压。
+          if (now - ws->queue_report_us >= 5000000) {
+            const auto stats = jsvm::runtime_stats();
+            ESP_LOGI(TAG, "message JS queue: max=%lld ms messages=%u pending=%lu source-max=%lld job-max=%lld ms",
+                (long long)ws->queue_delay_max_ms, unsigned(ws->received_messages), (unsigned long)stats.queue_depth,
+                (long long)(stats.max_source_us / 1000), (long long)(stats.max_job_us / 1000));
+            ws->queue_report_us = now;
+          }
           JSContext* ctx = ws->ctx;
           JSValue dv;
           if (is_text) {
@@ -186,6 +236,7 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
     case WEBSOCKET_EVENT_DISCONNECTED:
     case WEBSOCKET_EVENT_CLOSED: {
       ws->state.store(3);
+      std::lock_guard<std::mutex> lock(ws->close_mutex);
       int code = ws->close_code;
       std::string reason = ws->close_reason;
       pxjs::run_on_js([ws, code, reason]() { ws_dispatch_terminal(ws, code, reason); });
@@ -204,20 +255,49 @@ static JSValue js_ws_send(JSContext* ctx, JSValueConst this_val, int argc, JSVal
   if (ws->state.load() != 1) return pxjs::throw_msg(ctx, "WebSocket 未处于 OPEN 状态");
   if (argc < 1) return pxjs::throw_msg(ctx, "send(data) 缺少参数");
 
-  int sent;
+  const bool is_text = JS_IsString(argv[0]);
+  std::vector<uint8_t> bytes;
   if (JS_IsString(argv[0])) {
     std::string s = pxjs::to_std_string(ctx, argv[0]);
-    sent = esp_websocket_client_send_text(ws->handle, s.c_str(), (int)s.size(),
-                                          pdMS_TO_TICKS(10000));
+    bytes.assign(s.begin(), s.end());
   } else {
-    std::vector<uint8_t> bin;
-    if (!pxjs::get_binary(ctx, argv[0], bin))
+    if (!pxjs::get_binary(ctx, argv[0], bytes))
       return pxjs::throw_msg(ctx, "send 仅支持 string / ArrayBuffer / Uint8Array");
-    sent = esp_websocket_client_send_bin(ws->handle,
-                                         reinterpret_cast<const char*>(bin.data()),
-                                         (int)bin.size(), pdMS_TO_TICKS(10000));
   }
-  if (sent < 0) return pxjs::throw_msg(ctx, "WebSocket 发送失败");
+  const size_t size = bytes.size();
+  {
+    std::lock_guard<std::mutex> lock(ws->work_mutex);
+    if (size > 65536 - ws->queued_bytes || ws->queued_messages >= 16)
+      return pxjs::throw_msg(ctx, "WebSocket 发送队列已满");
+    ws->queued_bytes += size; ws->queued_messages++;
+  }
+  const auto handle = ws->handle;
+  const bool queued = ws_submit_work(ws, [ws, handle, bytes = std::move(bytes), is_text]() {
+    int sent = int(bytes.size());
+    if (!pxjs::vm_stale(ws->gen) && ws->state.load() != 3) {
+      const char* data = bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data());
+      sent = is_text ? esp_websocket_client_send_text(handle, data, bytes.size(), pdMS_TO_TICKS(2000))
+                     : esp_websocket_client_send_bin(handle, data, bytes.size(), pdMS_TO_TICKS(2000));
+    }
+    {
+      std::lock_guard<std::mutex> lock(ws->work_mutex);
+      ws->queued_bytes -= bytes.size(); ws->queued_messages--;
+    }
+    if (sent != int(bytes.size())) pxjs::run_on_js([ws]() {
+      if (!pxjs::vm_stale(ws->gen)) {
+        JSValue ev = JS_NewObject(ws->ctx);
+        JS_SetPropertyStr(ws->ctx, ev, "type", JS_NewString(ws->ctx, "error"));
+        JS_SetPropertyStr(ws->ctx, ev, "message", JS_NewString(ws->ctx, "WebSocket 发送失败"));
+        ws_call_handler(ws, "onerror", ev);
+      }
+      ws_dispatch_terminal(ws, 1006, "Send failed");
+    });
+  });
+  if (!queued) {
+    std::lock_guard<std::mutex> lock(ws->work_mutex);
+    ws->queued_bytes -= size; ws->queued_messages--;
+    return pxjs::throw_msg(ctx, "WebSocket 发送任务创建失败");
+  }
   return JS_UNDEFINED;
 }
 
@@ -238,7 +318,7 @@ static JSValue js_ws_close(JSContext* ctx, JSValueConst this_val, int argc, JSVa
   if (argc >= 2 && !JS_IsUndefined(argv[1])) reason = pxjs::to_std_string(ctx, argv[1]);
 
   esp_websocket_client_handle_t h = ws->handle;
-  pxjs::worker_submit([h, code, reason, has_code, ws]() {
+  ws_submit_work(ws, [h, code, reason, has_code, ws]() {
     if (!h) return;
     if (has_code || !reason.empty()) {
       esp_websocket_client_close_with_code(h, code, reason.c_str(), (int)reason.size(),
@@ -247,8 +327,11 @@ static JSValue js_ws_close(JSContext* ctx, JSValueConst this_val, int argc, JSVa
       esp_websocket_client_close(h, pdMS_TO_TICKS(3000));
     }
     // close 超时/失败也要保证终态派发(正常路径由 CLOSED/DISCONNECTED 事件触发,这里兜底)
-    pxjs::run_on_js([ws]() { ws_dispatch_terminal(ws, ws->close_code, ws->close_reason); });
-  }, true);
+    int code;
+    std::string reason;
+    { std::lock_guard<std::mutex> lock(ws->close_mutex); code = ws->close_code; reason = ws->close_reason; }
+    pxjs::run_on_js([ws, code, reason]() { ws_dispatch_terminal(ws, code, reason); });
+  });
   return JS_UNDEFINED;
 }
 
@@ -305,6 +388,7 @@ static JSValue js_ws_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSV
   cfg.buffer_size = 4096;
   cfg.network_timeout_ms = 10000;
   cfg.task_stack = 6144;
+  cfg.task_prio = std::min(CONFIG_JSVM_TASK_PRIORITY + 1, configMAX_PRIORITIES - 1);
   if (url.rfind("wss://", 0) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
   ws->handle = esp_websocket_client_init(&cfg);

@@ -3,7 +3,7 @@
  *
  * 设计要点 (architecture.md §4):
  *   - js_task is the only JS thread; its stack defaults to internal RAM;
- *   - loop: latest input / due frames / bounded events, timers and Promise jobs;
+ *   - loop: bounded events / timers and Promise jobs / latest input and due frames;
  *   - JS 堆走 PSRAM 自定义分配器, 上限 4MB (Kconfig 可调);
  *   - VM 支持 stop/restart (热更新), 通过中断处理器可打断 JS 死循环;
  *   - OOM 打印诊断并自动重启 VM。
@@ -537,6 +537,20 @@ void run_loop_turn()
 {
     const int64_t start = esp_timer_get_time();
     drain_callback_releases();
+    // 突发消息先更新状态再绘制。S3 上单帧可达 400 ms，8 ms 预算只能
+    // 消费 1-2 条增量，反复重绘会累积数秒延迟；最多处理 32 条 / 100 ms。
+    const int64_t deadline = esp_timer_get_time() + 100000;
+    for (int i = 0; i < 32 && !stopping(); ++i) {
+        std::function<void()> *job = nullptr;
+        if (xQueueReceive(s_queue, &job, 0) != pdTRUE) break;
+        run_one_job(job);
+        pump_jobs();
+        if (esp_timer_get_time() >= deadline) break;
+    }
+    if (s_ctx && !stopping()) {
+        internal::run_due_timers(s_ctx);
+        pump_jobs();
+    }
     if (s_ctx && !stopping()) {
         for (const auto &source : s_loop_sources) {
             if (stopping()) break;
@@ -549,18 +563,6 @@ void run_loop_turn()
                 s_max_source_us = std::max(s_max_source_us, esp_timer_get_time() - source_start);
             }
         }
-    }
-    const int64_t deadline = esp_timer_get_time() + 2000;
-    for (int i = 0; i < 4 && !stopping(); ++i) {
-        std::function<void()> *job = nullptr;
-        if (xQueueReceive(s_queue, &job, 0) != pdTRUE) break;
-        run_one_job(job);
-        pump_jobs();
-        if (esp_timer_get_time() >= deadline) break;
-    }
-    if (s_ctx && !stopping()) {
-        internal::run_due_timers(s_ctx);
-        pump_jobs();
     }
     s_max_turn_us = std::max(s_max_turn_us, esp_timer_get_time() - start);
 }

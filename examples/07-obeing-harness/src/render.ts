@@ -1,6 +1,7 @@
 import { companionBody, companionHeader, wrapText, type RenderInput, type Screen } from '../../06-obeing-pixel/src/render';
 import type { ViewState } from '../../06-obeing-pixel/src/state';
 import { layoutScreen, lineHeight, textHeight } from '../../06-obeing-pixel/src/layout';
+import { WAKEWORD_CONFIG } from './wakeword-config';
 
 export type Field = 'tenant' | 'account' | 'password' | 'region' | 'key' | 'origin' | 'oem' | 'domain' | 'question';
 export type Page = 'assistant' | 'login' | 'speech' | 'server' | 'settings' | 'editor';
@@ -21,7 +22,7 @@ export const FIELD_LABELS: Record<Field, string> = {
 };
 const LETTER_ROWS = ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
 const SYMBOL_ROWS = ['!@#$%^&*()', '-_=+[]{}<>', '/:;,.?\\|', '`~\'"'];
-const LABELS: Record<string, string> = { idle: '你好小川', wake: '我在', listening: '正在聆听', thinking: '思考中',
+const LABELS: Record<string, string> = { wake: '我在', listening: '正在聆听', thinking: '思考中',
     speaking: '小川正在回答', muted: '麦克风已关闭', error: '等待恢复', sleep: '在这里陪你' };
 
 function palette(view: ViewState) {
@@ -82,12 +83,13 @@ function field(screen: Screen, view: ViewState, form: FormState, name: Field, y:
     text(screen, short(screen, visible || '--', screen.width - 68), 32, y + 26 + (32 - textHeight(screen)) / 2, value ? p.fg : p.quiet);
 }
 
-export function drawHarness(target: Screen, view: ViewState, input: RenderInput, form: FormState): void {
+export function drawHarness(target: Screen, view: ViewState, input: RenderInput, form: FormState,
+    wakePhrase: string = WAKEWORD_CONFIG.phrase): void {
     const screen = layoutScreen(target);
-    try { renderHarness(screen, view, input, form); } finally { screen.finish(); }
+    try { renderHarness(screen, view, input, form, wakePhrase); } finally { screen.finish(); }
 }
 
-function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form: FormState): void {
+function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form: FormState, wakePhrase: string): void {
     const p = palette(view);
     const W = screen.width;
     screen.clear(p.bg);
@@ -98,7 +100,7 @@ function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form
             icon(screen, 'theme', W - 78, 43, p.fg);
             icon(screen, 'settings', W - 38, 43, p.fg);
         }
-        companionBody(screen, view, input, LABELS[view.state] || '小川');
+        companionBody(screen, view, input, view.state === 'idle' ? short(screen, wakePhrase, screen.width - 44) : LABELS[view.state] || '小川');
         return;
     }
     text(screen, 'ObeingHarness', 20, 19, p.fg);

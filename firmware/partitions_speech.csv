@@ -1,4 +1,4 @@
-# 16MiB flash；MN7中文模型约2.6MiB。与默认6MiB OTA槽不同，不能直接OTA迁移。
+# 16MiB flash；MN5Q8拼音模型约2.1MiB，沿用原语音分区布局。旧6MiB OTA槽不能直接OTA迁移。
 # Name, Type, SubType, Offset, Size
 nvs, data, nvs, 0x9000, 0x6000
 otadata, data, ota, 0xf000, 0x2000

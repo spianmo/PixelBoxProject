@@ -33,7 +33,7 @@ console.log('[OK] PCM16LE WAV 声道、采样率和长度')
 
 {
   const h = harness()
-  await assert.rejects(h.speech.wakeword.start({ onWake() {} }), /ENOTSUP/)
+  await assert.rejects(h.speech.wakeword.start({ phrase: '你好小川', pinyin: 'ni hao xiao chuan', threshold: 0.30, onWake() {} }), /ENOTSUP/)
   assert.equal(h.calls.length, 0)
   const result = h.speech.recognize({ silenceMs: 300 })
   assert.equal(h.calls.length, 0)

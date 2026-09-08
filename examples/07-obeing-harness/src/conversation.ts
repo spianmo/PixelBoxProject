@@ -20,15 +20,51 @@ export function hello(session: Session, deviceId: string, now: number): Frame {
 export class MexusConversation {
     private generation = 0;
     private cancelCurrent: (() => void) | null = null;
+    private idle: { socket: WebSocket; account: Session; sid: string; stop(): void } | null = null;
 
     constructor(private readonly auth: EnterpriseAuth, private readonly socketFactory: SocketFactory = (url) => new WebSocket(url),
         private readonly now: () => number = () => Date.now()) { }
 
-    cancel(): void {
+    cancel(closeConnection = false): void {
         this.generation++;
         const cancel = this.cancelCurrent;
         this.cancelCurrent = null;
         cancel?.();
+        if (closeConnection) this.closeIdle();
+    }
+
+    private closeIdle(): void {
+        const idle = this.idle;
+        this.idle = null;
+        if (!idle) return;
+        idle.stop();
+        idle.socket.onopen = null; idle.socket.onmessage = null; idle.socket.onclose = null; idle.socket.onerror = null;
+        try { idle.socket.close(1000, 'session_end'); } catch { }
+    }
+
+    private keepIdle(socket: WebSocket, account: Session, sid: string): void {
+        // 轮次结束后保留 TLS 和服务端会话；待机仍响应心跳，退出和换身份时显式释放。
+        let lastFrameAt = this.now();
+        const send = (frame: Frame) => {
+            try { socket.send(JSON.stringify(frame)); } catch { this.closeIdle(); }
+        };
+        const heartbeat = setInterval(() => {
+            if (this.idle?.socket !== socket) return;
+            if (this.now() - lastFrameAt > 45000) { this.closeIdle(); return; }
+            send(envelope('ping', '', sid, { nonce: `${this.now()}` }, this.now()));
+        }, 15000);
+        this.idle = { socket, account, sid, stop: () => clearInterval(heartbeat) };
+        socket.onclose = socket.onerror = () => { if (this.idle?.socket === socket) this.closeIdle(); };
+        socket.onmessage = (event) => {
+            if (this.idle?.socket !== socket || typeof event.data !== 'string' || event.data.length > 65536) return;
+            try {
+                const frame = record(JSON.parse(event.data));
+                if (frame.v !== 1) return;
+                lastFrameAt = this.now();
+                if (frame.type === 'ping') send(envelope('pong', string(frame.id), sid, { nonce: string(record(frame.payload).nonce) }, this.now()));
+                if (frame.type === 'error') this.closeIdle();
+            } catch { this.closeIdle(); }
+        };
     }
 
     async ask(text: string, events: ConversationEvents): Promise<string> {
@@ -51,24 +87,37 @@ export class MexusConversation {
 
     private connect(text: string, account: Session, events: ConversationEvents, generation: number): Promise<string> {
         return new Promise((resolve, reject) => {
-            const socket = this.socketFactory(this.auth.config.origin.replace(/^https:/, 'wss:') + '/mexusclaw-socket');
+            const url = this.auth.config.origin.replace(/^https:/, 'wss:') + '/mexusclaw-socket';
+            if (this.idle && (this.idle.socket.readyState !== 1 || this.idle.socket.url !== url
+                || this.idle.account.token !== account.token || this.idle.account.userId !== account.userId
+                || this.idle.account.tenantId !== account.tenantId)) this.closeIdle();
+            const reused = this.idle;
+            this.idle = null;
+            reused?.stop();
+            const socket = reused?.socket ?? this.socketFactory(url);
             const requestId = `px-${this.now()}-${generation}`;
-            let sid = '';
+            const startedAt = this.now();
+            let sentAt = startedAt;
+            let firstChunk = true;
+            let deltaCount = 0;
+            let textDeltaCount = 0;
+            let sid = reused?.sid ?? '';
             let answer = '';
             let sequence = -1;
             let terminal = false;
-            let ready = false;
+            let ready = !!reused;
             let lastFrameAt = this.now();
-            const clear = () => {
+            const clear = (keep: boolean) => {
                 clearTimeout(welcomeTimer); clearTimeout(turnTimer); clearInterval(heartbeat);
                 socket.onopen = null; socket.onmessage = null; socket.onclose = null; socket.onerror = null;
-                try { socket.close(1000, 'turn_end'); } catch { }
+                if (keep && ready && socket.readyState === 1) this.keepIdle(socket, account, sid);
+                else { try { socket.close(1000, 'turn_end'); } catch { } }
                 if (this.cancelCurrent === cancel) this.cancelCurrent = null;
             };
-            const finish = (error?: Error, value?: string) => {
+            const finish = (error?: Error, value?: string, keep = !error) => {
                 if (terminal) return;
                 terminal = true;
-                clear();
+                clear(keep);
                 if (error) reject(error); else resolve(value ?? answer);
             };
             const send = (frame: Frame) => {
@@ -77,10 +126,12 @@ export class MexusConversation {
                 catch { finish(new Error('AI 连接已中断')); }
             };
             const cancel = () => {
+                let keep = ready;
                 if (ready && socket.readyState === 1) {
-                    try { socket.send(JSON.stringify(envelope('cancel', requestId, sid, { requestId }, this.now()))); } catch { }
+                    try { socket.send(JSON.stringify(envelope('cancel', requestId, sid, { requestId }, this.now()))); }
+                    catch { keep = false; }
                 }
-                finish(new Error('本轮已取消'));
+                finish(new Error('本轮已取消'), undefined, keep);
             };
             const welcomeTimer = setTimeout(() => finish(new Error('AI 握手超时')), 15000);
             const turnTimer = setTimeout(() => finish(new Error('AI 响应超时，请重试')), 60000);
@@ -107,13 +158,15 @@ export class MexusConversation {
                     if (!sid) { finish(new Error('AI 服务未下发会话标识')); return; }
                     ready = true;
                     clearTimeout(welcomeTimer);
+                    console.log(`[harness.ai] ready=${this.now() - startedAt}ms reused=false`);
+                    sentAt = this.now();
                     send(envelope('user.turn', requestId, sid, { requestId, text, locale: 'zh-CN' }, this.now()));
                     return;
                 }
                 if (type === 'error' || type === 'assistant.error') {
                     if (ready && string(payload.requestId) && payload.requestId !== requestId) return;
                     const authFailure = [1100, 1101, 401, 20401].includes(Number(payload.code));
-                    finish(!ready && authFailure ? new AuthError(401, 'AI 登录凭据已过期') : new Error('AI 服务暂时不可用'));
+                    finish(authFailure && !answer ? new AuthError(401, 'AI 登录凭据已过期') : new Error('AI 服务暂时不可用'));
                     return;
                 }
                 if (!ready) return;
@@ -124,6 +177,10 @@ export class MexusConversation {
                 }
                 if (payload.requestId !== requestId) return;
                 if (type === 'assistant.delta') {
+                    deltaCount++;
+                    if (typeof payload.textChunk === 'string' && payload.textChunk.length) textDeltaCount++;
+                    // 只记录协议形状和长度，定位服务端未发文字与设备拒收的区别。
+                    if (deltaCount <= 2) console.log(`[harness.ai] delta seq=${Number(payload.seq)} chars=${typeof payload.textChunk === 'string' ? payload.textChunk.length : 0} effect=${Boolean(payload.visualEffect)}`);
                     const effect = record(payload.visualEffect);
                     const params = record(effect.params);
                     const label = string(params.displayName) || string(params.name);
@@ -132,16 +189,27 @@ export class MexusConversation {
                     const incomingSequence = Number(payload.seq);
                     if (!chunk || !Number.isSafeInteger(incomingSequence) || incomingSequence <= sequence) return;
                     sequence = incomingSequence;
+                    if (firstChunk) {
+                        firstChunk = false;
+                        console.log(`[harness.ai] first-text=${this.now() - sentAt}ms`);
+                    }
                     if (answer.length + chunk.length > 12000) { finish(new Error('回答超出设备显示范围，请缩小问题')); return; }
                     answer += chunk;
                     events.answer(answer);
                 } else if (type === 'assistant.done') {
+                    console.log(`[harness.ai] done=${this.now() - sentAt}ms deltas=${deltaCount} text-deltas=${textDeltaCount}`);
                     const final = typeof payload.finalText === 'string' && payload.finalText.trim() ? payload.finalText : answer;
                     if (final.length > 12000) { finish(new Error('回答过长，请缩小问题')); return; }
                     events.answer(final);
                     finish(undefined, final);
                 }
             };
+            if (reused) {
+                clearTimeout(welcomeTimer);
+                console.log('[harness.ai] ready=0ms reused=true');
+                sentAt = this.now();
+                send(envelope('user.turn', requestId, sid, { requestId, text, locale: 'zh-CN' }, this.now()));
+            }
         });
     }
 }

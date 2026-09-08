@@ -1,14 +1,14 @@
 import { initialState, type ViewState } from '../../06-obeing-pixel/src/state';
 import { EnterpriseAuth, type ServerConfig, type Session } from './auth';
 import { MexusConversation } from './conversation';
+import { WAKEWORD_CONFIG, type WakewordConfig } from './wakeword-config';
 
-export const WAKE_PHRASE = '你好小川';
 export interface SpeechConfig { region: string; key: string; language?: string; voice?: string }
 export interface SpeechPort {
     available(): boolean;
     configure(config: SpeechConfig): void;
-    wakeword: { start(options: { phrase: '你好小川'; onWake(): void; onError?(message: string): void }): Promise<void>; stop(): void };
-    recognize(options: { maxMs: number; silenceMs: number; timeoutMs: number; onLevel(level: number): void }): Promise<string>;
+    wakeword: { start(options: WakewordConfig & { onWake(): void; onError?(message: string): void }): Promise<void>; stop(): void };
+    recognize(options: { maxMs: number; silenceMs: number; timeoutMs: number; onLevel(level: number): void; onPartial(text: string): void }): Promise<string>;
     speak(text: string): Promise<void>;
     cancel(): void;
 }
@@ -24,7 +24,8 @@ export class HarnessController {
     private paused = true;
 
     constructor(readonly auth: EnterpriseAuth, readonly conversation: MexusConversation,
-        private readonly speech: SpeechPort, private readonly online: () => boolean) {
+        private readonly speech: SpeechPort, private readonly online: () => boolean,
+        readonly wakeConfig: Readonly<WakewordConfig> = WAKEWORD_CONFIG) {
         this.view.state = 'login';
         this.view.phoneName = 'ObeingHarness';
     }
@@ -96,8 +97,12 @@ export class HarnessController {
         this.clearTurn();
         this.view.state = 'listening';
         try {
-            const transcript = await this.speech.recognize({ maxMs: 15000, silenceMs: 800, timeoutMs: 20000,
+            const recognition = this.speech.recognize({ maxMs: 15000, silenceMs: 800, timeoutMs: 20000,
+                onPartial: (text) => { if (this.active(generation)) this.view.userText = text; },
                 onLevel: (level) => { if (this.active(generation)) this.view.level = Math.max(0, Math.min(100, level)); } });
+            // 先采音再恢复离线唤醒；录音、上传及等待识别结果时也允许重开本轮。
+            void this.armWakeword();
+            const transcript = await recognition;
             if (!this.active(generation)) return;
             const text = transcript.trim();
             if (!text) throw new Error('没有听到内容，请再说一次');
@@ -119,6 +124,8 @@ export class HarnessController {
 
     private async respond(text: string, generation: number): Promise<void> {
         this.view.state = 'thinking';
+        // 云端思考和扬声器播报期间持续监听唤醒词；命中后 listen() 会取消旧轮并开始新一轮录音。
+        void this.armWakeword();
         const answer = await this.conversation.ask(text, {
             answer: (value) => { if (this.active(generation)) this.view.assistantText = value.slice(-2400); },
             progress: (value) => { if (this.active(generation)) this.view.thinkingText = value; },
@@ -128,7 +135,7 @@ export class HarnessController {
         this.view.level = 0;
         if (answer && this.speechConfigured && !this.view.muted) {
             this.view.state = 'speaking';
-            // 原生 speak Promise 仅在扬声器实际播完后结束，整个播报期间保持关闭唤醒。
+            // 原生 speak Promise 仅在扬声器实际播完后结束，唤醒监听由独立原生通道保持。
             for (const part of speechParts(answer)) {
                 if (!this.active(generation)) return;
                 await this.speech.speak(part);
@@ -155,12 +162,17 @@ export class HarnessController {
     async standby(): Promise<void> {
         if (this.disposed || this.paused || this.busy || !this.view.authenticated) return;
         this.view.state = this.view.muted ? 'muted' : 'idle';
-        if (this.view.muted || !this.speechConfigured || !this.online() || this.wakeStarted) return;
+        await this.armWakeword();
+    }
+
+    private async armWakeword(): Promise<void> {
+        if (this.disposed || this.paused || !this.view.authenticated || this.view.muted
+            || !this.speechConfigured || !this.online() || this.wakeStarted) return;
         const generation = ++this.wakeGeneration;
         this.wakeStarted = true;
         try {
-            await this.speech.wakeword.start({ phrase: WAKE_PHRASE, onWake: () => {
-                if (generation !== this.wakeGeneration || this.paused || !this.wakeStarted || !this.view.authenticated || this.view.muted || this.busy) return;
+            await this.speech.wakeword.start({ ...this.wakeConfig, onWake: () => {
+                if (generation !== this.wakeGeneration || this.paused || !this.wakeStarted || !this.view.authenticated || this.view.muted) return;
                 this.view.state = 'wake';
                 void this.listen();
             }, onError: (message) => {
@@ -176,12 +188,12 @@ export class HarnessController {
         }
     }
 
-    cancel(): void {
+    cancel(closeConnection = false): void {
         this.generation++;
         this.wakeGeneration++;
         this.wakeStarted = false;
         this.busy = false;
-        this.conversation.cancel();
+        this.conversation.cancel(closeConnection);
         this.speech.wakeword.stop();
         this.speech.cancel();
         this.view.level = 0;
@@ -191,7 +203,7 @@ export class HarnessController {
     setPaused(paused: boolean): void {
         if (this.paused === paused) return;
         this.paused = paused;
-        if (paused) this.cancel();
+        if (paused) this.cancel(true);
     }
 
     toggleMute(): void {
@@ -202,14 +214,14 @@ export class HarnessController {
 
     networkChanged(connected: boolean): void {
         if (!connected) {
-            this.cancel();
+            this.cancel(true);
             if (!this.view.authenticated && !this.auth.current()) this.auth.clear(false);
             if (this.view.authenticated) { this.view.state = 'error'; this.view.errorText = 'Wi-Fi 已断开'; }
         } else if (this.view.authenticated) { this.view.errorText = ''; void this.standby(); }
     }
 
     logout(persist = true): void {
-        this.cancel();
+        this.cancel(true);
         this.auth.clear(persist);
         this.view.authenticated = false;
         this.view.connected = false;

@@ -1,5 +1,158 @@
 # Speech and Network Diagnosis (2026-09-06)
 
+## 流式 ASR 与对话延迟修正（2026-09-08）
+
+本次修改在已有 MultiNet5、独立录音缓冲与唤醒打断改动上继续进行，已烧录 PixelBox S3
+（MAC `28:84:85:90:6e:e8`），配套 example07 脚本也已更新。
+
+- 原 `Engine::recognize` 完整录音后才开始 HTTPS 上传，只返回最终结果；手机端
+  `PixelBoxVoiceSession::startRecognition` 使用 Azure `SpeechRecognizer` 持续识别。
+  两者的云处理时机不同，原硬件 ASR 根本不经过 WebSocket，无法靠调整 WebSocket 缓冲消除这段等待。
+- 硬件现通过已有 `esp_websocket_client` 1.8.0 向 Azure WSS 边录边发，协议对齐微软
+  Speech SDK 的 `WebsocketMessageFormatter` / `AudioStreamFormat`。每包约 100 ms，
+  TLS 建连期间仍采入每轮独立 PSRAM 缓冲，建连后顺序追发。中间结果只更新字幕，最终结果才提交 AI。
+- 原 `MexusConversation::connect` 每轮新建并关闭连接；现复用已完成 `welcome` 的连接，
+  以新 request ID 隔离轮次。取消发送协议 `cancel`，退出、离线、换 token 或进入设置时断开。
+- 原 `js_ws_send` 在 JS 界面线程直接调用阻塞发送，超时参数 10000 ms；现由每连接唯一消费者
+  顺序处理 send/close/destroy。队列最多 16 条且累计不超过 64 KiB；发送调用超时参数 2000 ms，
+  不代表整条网络操作的严格墙钟上限。收发任务优先级为 JS 任务优先级加一。
+- 原分片重组没有检查 FIN，RFC continuation 帧会被分别提交为残缺 JSON。
+  新 `hal_net::WsMessage` 同时处理 ESP-IDF 缓冲分段与 RFC 消息分帧，并限制消息总大小。
+- JS 回调必须先更新状态再绘制。真机单帧约 400 ms，原 4 条/2 ms 以及中间版本
+  32 条/8 ms 的预算都只能在重绘之间消费极少消息，积压最高实测 7245 ms。
+  现按最多 32 条/100 ms 批量处理，再执行输入源与绘制；预算在每条回调后检查。
+  队列诊断改为每 5 秒输出累计最大等待，避免逐条串口日志放大处理延迟。
+- Wi-Fi 静态 RX/TX 缓冲从各 16 调至各 8，RX BA window 为 6；约释放 25 KiB
+  内部 RAM。TLS 仍使用 PSRAM 和硬件 AES。ASR 在最终回调前销毁自身 TLS，
+  AI WSS 可跨轮保留并与下一轮 ASR/TTS 共存。
+- “Azure 语音连接失败”曾在 `192.168.31.100` 上复现为
+  `ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME`。现启用 lwIP 自带备用 DNS `1.1.1.1`，
+  保留 DHCP 主/次 DNS；每次获取 IP 后记录实际 DNS。库 1.8.0 的 TCP 错误字段在
+  `DISCONNECTED` 才有效，不能提前读取 `ERROR` 事件未初始化的 TLS 字段。
+  DNS、证书、内存和 401/403 认证故障分别提示。
+
+录音默认 15 秒，静音结束 800 ms；建连最多 15 秒，输入结束后的响应等待最多 20 秒。
+为慢建连及积压发送保留有界时间，总截止是采音截止与建连截止中较晚者再加 `timeoutMs`。
+旧 TLS 收尾仍受库的 I/O 边界约束，取消会立即使 JS 旧结果失效，但不承诺底层连接立即释放。
+
+验收时观察以下不含文本、密钥及账号的日志：
+
+- `Azure WSS connected`：建连耗时。
+- `Azure first partial`：采音开始到首个中间字幕进入原生回调的耗时。
+- `Azure input ended` / `Azure final`：输入结束及最终结果耗时、实际发送量。
+- `[harness.ai] ready` / `first-text` / `done`：是否复用连接、问题发送到首字及完整回复的耗时。
+- `px_ws: message JS queue`：每 5 秒报告该连接累计最大排队耗时和消息数量。
+- `Azure TTS first audio` / `playback done`：首块 PCM 和实际播放完成。
+
+本地验证：example07 的 34 项测试及全部 7 个示例的 TypeScript 检查与打包、原生回调隔离测试、
+`check-streaming.mjs` 的 UTF-8 分片/协议/边界及后台 FIFO/销毁顺序/worker 重试测试（UBSan）、
+既有录音/模型核心测试及 ESP32-S3 `build_mn5q8` 构建通过。桌面 Playwright 渲染检查覆盖
+48 个页面/尺寸/主题组合，文字越界及重叠为 0，动画像素变化检查通过。
+macOS 当前 AddressSanitizer 在进入测试 main 前初始化锁等待，60 秒超时；不计为 ASan 通过。
+已使用设备保存的账号与 Azure 配置完成连续两轮 WSS ASR、AI 回复和 TTS 播放，
+第二轮 `ready=0ms reused=true`，无 AES 内存错误、回调丢弃或执行超时。
+复测时网络已切为 `MST`（设备 `192.168.1.168`），因此不能将成功归因于备用 DNS，
+原网络仍需单独验收。未测功耗、长时间稳定性及复杂声学条件下的识别率；
+不同问题的服务端耗时不能作为精确性能对照，旧 REST 测量也不是 WSS 提速结果。
+
+### 连续两轮实测
+
+记录：`firmware/build_mn5q8/latency-network-results.json`。应用固件 SHA-256：
+`03585112a4926b43c0a9c68b3a9d91d9988972159b5108e2f743895920cc8296`；
+example07 脚本 SHA-256：`c559a9526f50fc16de682ecb1df9eb3cba061af6af24bd19a60b432a0339b52f`。
+
+| 指标 | 第一轮 | 第二轮 |
+| --- | ---: | ---: |
+| Azure WSS 建连 | 2204 ms | 1139 ms |
+| 采音开始至原生首个中间结果 | 6224 ms | 2915 ms |
+| 输入结束至最终结果 | 405 ms | 492 ms |
+| AI 会话准备 | 1265 ms | 0 ms，复用 |
+| 发送问题至首字回调 | 3961 ms | 3915 ms |
+| 发送问题至完整回答回调 | 5214 ms | 5664 ms |
+| TTS 首块 PCM | 13357 ms | 3526 ms |
+| TTS 实际播放完成 | 是 | 是 |
+
+两轮共用同一 boot，无回调丢弃或执行超时，结束后内部可用内存约 38 KiB。
+消息排队记录最大 2708 ms，中间版本相同测试流程曾达 7245 ms；仍有绘制及日志带来的延迟，
+未证明已达到 example06 的完整体验。TTS 第一轮 HTTP 响应头等待 12061 ms，
+表明云端/网络耗时仍会波动，不能归入 JS 排队。
+
+日志限频补丁已构建（固件 SHA-256 `1d6f14577389b0c39cbd820a8b39090b885005bd3b9e765b11c9b776b1e1855b`），
+但 USB 下载模式无响应，尚未烧录及真机验证；上述指标来自限频前版本。
+
+### ESPIDE 默认构建配置修正（2026-09-08）
+
+ESPIDE 的 S3 构建运行 `idf.py -B build build/flash`，使用 `firmware/sdkconfig`。
+此前只更新了独立构建的 `build_mn5q8/sdkconfig`，默认配置仍选择 MultiNet7，
+因此在 `bindings_speech/CMakeLists.txt` 的模型匹配检查处失败；更新 defaults 不会覆盖已有选择。
+现已将默认配置切到 MultiNet5，并同步 Wi-Fi RX/TX 各 8、RX BA window 6 和备用 DNS。
+重新生成后，两份 sdkconfig 内容完全一致。
+
+默认入口 `idf.py -B build build` 已通过，应用为 `build/pixelbox.bin`（0x41beb0 字节，
+5 MiB 分区余量 18%），SHA-256 为
+`3836f250e0828c2f1a0452605932c81c52e70025e6f307a722eee21a91219cc7`。
+`check-model-hashes.mjs` 对默认 build 的实际模型包校验通过；模型与分区表的哈希均与
+`build_mn5q8` 相同，flash 目标已包含 `srmodels.bin`。本次默认构建产物尚未烧录。
+旧工作区迁移步骤见 [固件构建说明](../firmware/README.md#构建与烧录)。
+
+```sh
+node firmware/components/bindings_speech/tests/check-streaming.mjs
+node firmware/components/bindings_speech/tests/check-prelude.mjs
+node examples/07-obeing-harness/test.mjs
+```
+
+## 会话内唤醒补充（2026-09-07，待烧录验收）
+
+- 在现有 MultiNet5 及默认 `0.7` 阈值改动上，补齐录音和 Azure 识别等待期间的唤醒监听。
+  思考、播报、录音和等待识别均可取消旧轮；旧文字、错误、音量和播报完成不能覆盖新轮。
+- `recognize()` 提交时即采入本轮独立 PSRAM 缓冲，旧 TLS 收尾时不会漏掉开口音频；
+  VAD 处理和下一请求仍按 worker 顺序执行。取消停止对应录音订阅并移除过期排队任务。
+- 静音后刷新模型时由一帧前导音频扩为约 200 ms（512 samples 帧下为 224 ms），
+  保留轻声词首；积压丢帧后清空这段历史。推理耗时统计包含前导帧回放。
+- 本轮本机验证：example07 的 31 项测试、TypeScript 检查、原生回调代数测试、C++
+  核心测试及 `build_mn5q8` 固件构建通过；C++ 测试同时读取实际模型包和已有麦克风 WAV。
+- 本次新增逻辑尚未烧录验证。下方历史真机数据不代表这次改动的准确率；必须补测
+  不同距离和语速下的命中/漏检，以及播报中的唤醒。当前未接入 AEC，回答包含唤醒词
+  时存在扬声器回灌自触发风险。
+
+## PixelBox 唤醒更新（2026-09-07）
+
+以下旧测试结果来自 MultiNet7，不能作为本次 MultiNet5 的性能结果。
+
+- `example07` 的原生 `px.speech` 切换为已有 ESP-SR 2.4.7 的 `mn5q8_cn` 量化拼音模型，
+  唤醒短语仍为“你好小川”。模型包实测从 2,681,351 字节减少为 2,203,819 字节。
+- 模型与命令表保留到语音 worker 退出，取消 60 秒空闲释放，避免设置页停留后重新加载。
+- 原来 16 KiB FIFO 满时丢弃新音频、继续处理约半秒旧数据。现在消费者发现积压超过
+  160 ms 时丢弃旧前缀；溢出出现缺口时清空当时积压并重置上下文。该值是队列边界，
+  不是整句识别延迟。
+- 模型创建与命令表编译分别计时，每 5 秒报告平均/最大推理耗时、帧长、积压和丢弃量。
+- 独立构建 `firmware/build_mn5q8` 通过；实际模型包的目录、截断、错误模型、重复文件、
+  SHA-256 与源模型一致性检查通过；原生取消回调测试及 example07 的 29 项测试通过。
+- 已在真机 PixelBox S3（MAC `28:84:85:90:6e:e8`，USB
+  `/dev/cu.usbmodem2101`）烧录应用和模型分区；应用写入地址 `0x20000`、模型写入地址
+  `0xd00000`，两个镜像均报告 `Hash of data verified`。本次应用 SHA-256 为
+  `29518029a32c32098d54448642b67033fd55c40672e56b1ee63ae6b21941e6ce`，模型 SHA-256
+  为 `0c72e28acaa6a36cd88cec65be32bde8809ab977c809ad52ef9cbb37aed64d76`。
+- 真机冷启动日志：模型目录校验 89–90 ms、MultiNet5 创建 237–238 ms、命令表 0–1 ms，
+  原生唤醒就绪 482–519 ms；缓存后原生就绪 19–138 ms。推理块为 512 samples（32 ms），
+  5 秒窗口平均 13.1–15.3 ms、最大 24.6–25.2 ms，积压 10–24 ms，丢弃 0 ms，未见
+  `panic`、assert 或异常重启。
+- 电脑扬声器播放“你好小川”并由设备麦克风采集时，默认阈值 0.8 命中一次：概率 0.805、
+  单帧推理 25.874 ms、积压 24 ms；负样本“今天天气很好，我们一起去公园散步。”未命中。
+  这是一组功能性样本，不代表各种距离和噪声条件下的准确率。
+- 唤醒停止后空闲 65 秒，PSRAM 空闲值保持不变（约 4.49 MB），再次启动仍走缓存路径，
+  设备 boot 标识不变。电脑和设备当时处于不同网段（`172.20.10.7` 与 `192.168.1.168`），
+  因此本轮 devd 网络探针不可用；串口启动、推理和扬声器/麦克风测试均已完成。
+
+更新需要同时写入配套的应用镜像和 `srmodels.bin`，分区布局不变。构建与迁移方式见
+[独立语音组件说明](../firmware/components/bindings_speech/README.md)。
+`cache-check` 已改为检查空闲 60 秒后模型仍被保留。
+
+MultiNet5 的检测器超时窗口设为 6 秒，并在连续 500 ms 低能量输入时主动清理状态；
+这样长时间待机不会在唤醒短语跨越供应库默认窗口时被截断，短停顿仍保留上下文。
+
+## 历史 MultiNet7 测量
+
 Device: Waveshare ESP32-S3 AMOLED 2.16, 480x480, USB COM3,
 `pixelbox-906ee8` at `192.168.31.100`; ESP-IDF 5.5, 8 MiB PSRAM.
 The existing example7 application and configured Azure eastasia resource were
@@ -29,8 +182,9 @@ used. Subscription keys and account credentials are not included in logs.
   real quiet recording both pass. Up to 200 ms pre-roll is preserved when
   trimming leading silence before upload.
 - MultiNet weights and command table are reused between turns, cleaned before
-  reuse, and released after 60 seconds idle or worker shutdown. Archive hashes
-  are verified once per boot against the firmware's expected model hashes.
+  reuse, and released when the speech worker exits. Archive hashes are verified
+  once per boot against the firmware's expected model hashes. The MultiNet5
+  timeout window is 6 seconds, with a 500 ms quiet-input reset.
   Initialization and speech TLS run above JS rendering priority.
 - Wi-Fi modem sleep is disabled by default (`PX_WIFI_POWER_SAVE` restores it).
   This increases idle power consumption. S3 speech TCP send/receive windows
@@ -100,7 +254,7 @@ the device to Azure. `recognize` captures up to 8 seconds of live microphone
 audio. `mic` additionally saves a diagnostic microphone WAV and sends it to
 Azure from the host to separate capture/VAD failures from transport failures.
 Do not run probes while an application is conducting a conversation.
-`cache-check` tests the 60-second idle eviction, and reports inconclusive if
+`cache-check` tests model retention after 60 seconds idle, and reports inconclusive if
 application speech resumes during that window. `logs` and `status` are passive.
 
 Host regression:

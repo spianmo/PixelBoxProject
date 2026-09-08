@@ -7,17 +7,20 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     PRIV_INCLUDE_DIRS "src"
-    PRIV_REQUIRES jsvm hal_audio esp_http_client esp-tls mbedtls json esp_timer
+    PRIV_REQUIRES jsvm hal_audio hal_net espressif__esp_websocket_client esp_http_client esp-tls mbedtls json esp_timer
                   esp_partition espressif__esp-sr
     WHOLE_ARCHIVE
 )
 
 if(CONFIG_PX_ENABLE_SPEECH)
+    if(NOT CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8)
+        message(FATAL_ERROR "PixelBox speech requires mn5q8_cn. Set CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y and rebuild both firmware and srmodels.bin.")
+    endif()
     idf_component_get_property(sr_dir espressif__esp-sr COMPONENT_DIR)
-    set(model_dir "${sr_dir}/model/multinet_model/mn7_cn")
-    foreach(model_file mn7_index mn7_data vocab _MODEL_INFO_)
+    set(model_dir "${sr_dir}/model/multinet_model/mn5q8_cn")
+    foreach(model_file mn5q8_index mn5q8_data _MODEL_INFO_)
         if(NOT EXISTS "${model_dir}/${model_file}")
-            message(FATAL_ERROR "PixelBox speech: MultiNet7 model file is missing: ${model_dir}/${model_file}")
+            message(FATAL_ERROR "PixelBox speech: MultiNet5 model file is missing: ${model_dir}/${model_file}")
         endif()
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${model_dir}/${model_file}")
         file(SHA256 "${model_dir}/${model_file}" "HASH_${model_file}")

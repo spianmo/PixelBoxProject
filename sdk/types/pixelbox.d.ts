@@ -78,6 +78,7 @@ declare class WebSocket {
   onmessage: ((ev: { type: 'message'; data: string | ArrayBuffer }) => void) | null;
   onclose: ((ev: { type: 'close'; code: number; reason: string }) => void) | null;
   onerror: ((ev: { type: 'error'; message: string }) => void) | null;
+  /** 原生异步有序发送，队列最多16条/64KiB；队满同步抛错，传输失败通过onerror/onclose报告。 */
   send(data: string | BinaryLike): void;
   close(code?: number, reason?: string): void;
 }
@@ -437,19 +438,28 @@ interface PxVoiceEvents {
 interface PxSpeech {
   /** 原生独立语音是否已编译且16k音频硬件可用；模型缺失在wakeword.start时报告。 */
   available(): boolean;
-  /** Azure配置仅在RAM保留；region=1..40小写字母数字；language/voice=1..80字母数字或连字符。仅官方HTTPS域名，校验CA且禁止重定向。 */
+  /** Azure配置仅在RAM保留；region=1..40小写字母数字；language/voice=1..80字母数字或连字符。仅官方HTTPS/WSS域名，校验CA。 */
   configure(opts: { region: string; key: string; language?: string; voice?: string }): void;
   wakeword: {
-    /** MultiNet7中文命令持续检测，不是定制WakeNet；加载模型并启动拾音后resolve。 */
-    start(opts: { phrase?: '你好小川'; threshold?: number; onWake: () => void; onError?: (message: string) => void }): Promise<void>;
-    /** 立即停采音；原生worker退出后释放模型；旧回调失效。 */
+    /** 注册业务唤醒词并监听；重复调用替换旧词和门限。MultiNet5 拼音命令检测，命中一次停止，就绪后 resolve。 */
+    start(opts: {
+      /** 唤醒词显示名，1..96 UTF-8 字节，无控制字符及首尾空格；实际识别使用 pinyin。 */
+      phrase: string;
+      /** 2..63 字节小写无声调拼音，音节用单个空格分隔，由应用明确提供；模型不支持的拼音会报错。 */
+      pinyin: string;
+      /** 必填有限数值，范围 0..0.9999；固件不提供默认值或自动截断。 */
+      threshold: number;
+      onWake: () => void;
+      onError?: (message: string) => void;
+    }): Promise<void>;
+    /** 仅停止唤醒采音并使旧唤醒回调失效；不取消识别/播报，模型保留到worker退出。 */
     stop(): void;
   };
-  /** 本地VAD采集后Azure STT最终文字。maxMs默认15000/1000..30000；silenceMs默认800/300..3000；timeoutMs默认20000/5000..60000，超界钳制。 */
-  recognize(opts?: { maxMs?: number; silenceMs?: number; timeoutMs?: number; onLevel?: (level: number) => void }): Promise<string>;
+  /** 硬件立即采音并通过WSS流式发送；onPartial为累计临时字幕，Promise返回最终文字。maxMs默认15000/1000..30000；silenceMs默认800/300..3000；timeoutMs默认20000/5000..60000，限制输入结束后的等待；建连最多min(timeoutMs,15000)。总截止为max(采音截止,建连截止)+timeoutMs。桌面模拟器使用短音频REST，仅返回最终文字。 */
+  recognize(opts?: { maxMs?: number; silenceMs?: number; timeoutMs?: number; onLevel?: (level: number) => void; onPartial?: (text: string) => void }): Promise<string>;
   /** 文本1..6000 UTF-8字节；Azure原始16k PCM流式播报，扬声器实际播完后resolve，最长120秒。 */
   speak(text: string): Promise<void>;
-  /** 立即停采音/播放、拒绝进行中Promise；TLS读取在下一块或最多5秒socket超时后收尾。 */
+  /** 取消唤醒及前台语音，立即停采音/播放并拒绝Promise；旧TLS由worker在下个I/O边界或socket超时后收尾。 */
   cancel(): void;
 }
 

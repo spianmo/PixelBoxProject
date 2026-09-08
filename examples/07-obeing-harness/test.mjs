@@ -239,9 +239,20 @@ await test('WSS hello/user.turn增量按seq去重，旧request不污染，done�
     assert.equal(await result, '今天晴天');
     assert.deepEqual(answers, ['今天', '今天晴天']);
     assert.deepEqual(progress, ['查询天气完成']);
+    assert.equal(peer.readyState, 1);
+    const next = conversation.ask('明天呢', { answer() {}, progress() {} });
+    await tick();
+    assert.equal(peers.length, 1, '连续问答复用已握手连接');
+    assert.equal(peer.frames.filter((f) => f.type === 'hello').length, 1);
+    const nextId = peer.frames.at(-1).payload.requestId;
+    assert.notEqual(nextId, requestId);
+    peer.receive('assistant.delta', { requestId, seq: 10, textChunk: '迟到旧轮' });
+    peer.receive('assistant.done', { requestId: nextId, finalText: '明天有雨' });
+    assert.equal(await next, '明天有雨');
+    conversation.cancel(true);
     assert.equal(peer.readyState, 3);
 });
-await test('取消发送真实cancel并关闭socket，旧回调不能写入下一轮', async () => {
+await test('取消发送真实cancel，退出关闭socket，旧回调不能写入下一轮', async () => {
     const { auth } = await loggedIn();
     const { factory, peers } = sockets();
     const conversation = new MexusConversation(auth, factory);
@@ -251,10 +262,82 @@ await test('取消发送真实cancel并关闭socket，旧回调不能写入下�
     conversation.cancel();
     await assert.rejects(result, /取消/);
     assert.equal(peer.frames.at(-1).type, 'cancel');
+    assert.equal(peer.readyState, 1);
+    peer.receive('assistant.delta', { requestId: peer.frames.at(-1).payload.requestId, seq: 1, textChunk: '迟到' });
+    conversation.cancel(true);
     assert.equal(peer.onmessage, null);
 });
 
-function runtime() {
+await test('握手中取消立即结束，断线后下一轮重新连接', async () => {
+    const { auth } = await loggedIn();
+    const { factory, peers } = sockets();
+    const conversation = new MexusConversation(auth, factory);
+    const first = conversation.ask('测试', { answer() {}, progress() {} });
+    await tick();
+    conversation.cancel();
+    await assert.rejects(first, /取消/);
+    assert.equal(peers[0].readyState, 3);
+    const next = conversation.ask('重试', { answer() {}, progress() {} });
+    await tick();
+    peers[1].onopen(); peers[1].receive('welcome', { sessionId: 'new-sid' });
+    peers[1].onclose();
+    await assert.rejects(next, /连接/);
+    conversation.cancel(true);
+});
+
+await test('待机处理服务端心跳，凭据轮换关闭旧会话并重新握手', async () => {
+    const { auth } = await loggedIn();
+    const { factory, peers } = sockets();
+    const conversation = new MexusConversation(auth, factory);
+    const first = conversation.ask('第一轮', { answer() {}, progress() {} });
+    await tick();
+    const peer = peers[0]; peer.onopen(); peer.receive('welcome', { sessionId: 'sid' });
+    peer.receive('assistant.done', { requestId: peer.frames.at(-1).payload.requestId, finalText: '答复' });
+    await first;
+    peer.receive('ping', { nonce: 'fixture-nonce' });
+    assert.equal(peer.frames.at(-1).type, 'pong');
+    assert.equal(peer.frames.at(-1).payload.nonce, 'fixture-nonce');
+    const account = { ...auth.current(), token: 'rotated-fixture-token' };
+    auth.valid = async () => account;
+    const second = conversation.ask('第二轮', { answer() {}, progress() {} });
+    await tick();
+    assert.equal(peer.readyState, 3);
+    assert.equal(peers.length, 2);
+    peers[1].onopen();
+    assert.equal(peers[1].frames[0].payload.token, 'rotated-fixture-token');
+    conversation.cancel(true);
+    await assert.rejects(second, /取消/);
+});
+
+await test('复用会话收到鉴权过期时刷新并重连，cancel发送失败不保留连接', async () => {
+    const { auth } = await loggedIn();
+    const { factory, peers } = sockets();
+    const conversation = new MexusConversation(auth, factory);
+    const events = { answer() {}, progress() {} };
+    const first = conversation.ask('第一轮', events);
+    await tick();
+    const peer = peers[0]; peer.onopen(); peer.receive('welcome', { sessionId: 'sid' });
+    peer.receive('assistant.done', { requestId: peer.frames.at(-1).payload.requestId, finalText: '答复' });
+    await first;
+    let refreshes = 0;
+    const account = auth.current();
+    auth.valid = async (rejectedToken) => {
+        if (rejectedToken) { assert.equal(rejectedToken, account.token); refreshes++; }
+        return rejectedToken ? { ...account, token: 'refreshed-fixture' } : account;
+    };
+    const second = conversation.ask('第二轮', events);
+    await tick();
+    peer.receive('assistant.error', { requestId: peer.frames.at(-1).payload.requestId, code: 401 });
+    await tick();
+    assert.equal(refreshes, 1); assert.equal(peers.length, 2); assert.equal(peer.readyState, 3);
+    peers[1].onopen(); peers[1].receive('welcome', { sessionId: 'renewed' });
+    peers[1].send = () => { throw new Error('fixture queue full'); };
+    conversation.cancel();
+    await assert.rejects(second, /取消/);
+    assert.equal(peers[1].readyState, 3);
+});
+
+function runtime(wakeConfig) {
     const speechCalls = [];
     let wake;
     let wakeError;
@@ -262,7 +345,7 @@ function runtime() {
     let playbackResolve;
     const speech = {
         available: () => true, configure(value) { speechCalls.push(['configure', value]); },
-        wakeword: { start(opts) { wake = opts.onWake; wakeError = opts.onError; speechCalls.push(['wake.start', opts.phrase]); return Promise.resolve(); }, stop() { speechCalls.push(['wake.stop']); } },
+        wakeword: { start(opts) { wake = opts.onWake; wakeError = opts.onError; speechCalls.push(['wake.start', opts.phrase, opts.pinyin, opts.threshold]); return Promise.resolve(); }, stop() { speechCalls.push(['wake.stop']); } },
         recognize() { speechCalls.push(['recognize']); return new Promise((resolve) => { transcriptResolve = resolve; }); },
         speak(text) { speechCalls.push(['speak', text]); return new Promise((resolve) => { playbackResolve = resolve; }); },
         cancel() { speechCalls.push(['cancel']); },
@@ -271,10 +354,23 @@ function runtime() {
     let current = null;
     const auth = { current: () => current, clear() { current = null; }, async login() { current = account; return account; } };
     const conversation = { cancel() {}, async ask(text, events) { events.answer('真实协议测试回复'); events.progress('查询完成'); return '真实协议测试回复'; } };
-    const controller = new HarnessController(auth, conversation, speech, () => true);
+    const controller = new HarnessController(auth, conversation, speech, () => true, wakeConfig);
     controller.setPaused(false);
     return { controller, speech, speechCalls, wake: () => wake(), wakeError: (message) => wakeError(message), recognized: (text) => transcriptResolve(text), played: () => playbackResolve() };
 }
+await test('业务自定义唤醒词和阈值在首次注册及重启监听时完整下发', async () => {
+    const wakeConfig = { phrase: '小爱同学', pinyin: 'xiao ai tong xue', threshold: 0.15 };
+    const r = runtime(wakeConfig);
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    r.controller.cancel();
+    await r.controller.standby();
+    assert.deepEqual(r.speechCalls.filter(([name]) => name === 'wake.start'), [
+        ['wake.start', '小爱同学', 'xiao ai tong xue', 0.15],
+        ['wake.start', '小爱同学', 'xiao ai tong xue', 0.15],
+    ]);
+    r.controller.dispose();
+});
 await test('唤醒初始化失败显示内存原因，仍可手动录音', async () => {
     const r = runtime();
     r.speech.wakeword.start = async () => { throw new Error('本地语音缓冲分配失败'); };
@@ -310,20 +406,82 @@ await test('唤醒错误中的服务URL和密钥仍使用通用提示', async ()
     assert.equal(r.controller.view.errorText, '本地唤醒不可用，点击小川开始');
     r.controller.dispose();
 });
-await test('本地你好小川唤醒->单轮ASR->AI->实际播完才重新唤醒', async () => {
+await test('本地你好小川唤醒后在播报期间保持监听，可打断旧轮开始新一轮', async () => {
     const r = runtime();
     r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
     await r.controller.login('ABC123', 'USR123', 'fixture');
-    assert.deepEqual(r.speechCalls.filter(([name]) => name === 'wake.start'), [['wake.start', '你好小川']]);
+    assert.deepEqual(r.speechCalls.filter(([name]) => name === 'wake.start'), [['wake.start', '你好小川', 'ni hao xiao chuan', 0.30]]);
     r.wake();
     assert.equal(r.controller.view.state, 'listening');
     r.recognized('今天天气'); await tick();
     assert.equal(r.controller.view.userText, '今天天气');
     assert.equal(r.controller.view.state, 'speaking');
-    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 1);
+    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2);
+    r.wake();
+    assert.equal(r.controller.view.state, 'listening');
+    assert.equal(r.speechCalls.filter(([name]) => name === 'recognize').length, 2);
+    r.played(); await tick();
+    assert.equal(r.controller.view.state, 'listening', '旧播报结束不能覆盖新一轮状态');
+    r.recognized('明天呢'); await tick();
+    assert.equal(r.controller.view.userText, '明天呢');
+    assert.equal(r.controller.view.state, 'speaking');
+    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 3);
     r.played(); await tick();
     assert.equal(r.controller.view.state, 'idle');
+    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 3);
+    r.controller.dispose();
+});
+await test('云端思考期间唤醒会取消旧请求，迟到回答不能进入播报', async () => {
+    const r = runtime();
+    let finishAnswer;
+    r.controller.conversation.ask = () => new Promise((resolve) => { finishAnswer = resolve; });
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    r.wake();
+    r.recognized('讲一个很长的故事'); await tick();
+    assert.equal(r.controller.view.state, 'thinking');
     assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2);
+    r.wake();
+    assert.equal(r.controller.view.state, 'listening');
+    finishAnswer('已经过期的回答'); await tick();
+    assert.equal(r.controller.view.state, 'listening');
+    assert.equal(r.speechCalls.some(([name, text]) => name === 'speak' && text === '已经过期的回答'), false);
+    r.controller.dispose();
+});
+await test('录音和等待识别期间可重复唤醒，旧识别结果不能发起回答', async () => {
+    const r = runtime();
+    const recordings = [];
+    const asks = [];
+    let cancelCount = 0;
+    r.speech.recognize = (options) => new Promise((resolve, reject) => recordings.push({ options, resolve, reject }));
+    r.controller.conversation.cancel = () => { cancelCount++; };
+    r.controller.conversation.ask = async (text) => { asks.push(text); return ''; };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    r.wake();
+    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2, '录音开始即恢复唤醒');
+    const beforeInterrupt = cancelCount;
+    r.wake();
+    r.wake();
+    assert.equal(recordings.length, 3);
+    recordings[2].options.onPartial('新轮即时字幕');
+    assert.equal(r.controller.view.userText, '新轮即时字幕');
+    assert.deepEqual(asks, [], '中间转写只更新字幕，最终结果才提交 AI');
+    assert.equal(cancelCount, beforeInterrupt + 2);
+    recordings[0].resolve('旧问题');
+    recordings[1].reject(new Error('旧识别失败'));
+    recordings[0].options.onLevel(99);
+    recordings[0].options.onPartial('迟到旧字幕');
+    await tick();
+    assert.deepEqual(asks, []);
+    assert.equal(r.controller.view.level, 0);
+    assert.equal(r.controller.view.userText, '新轮即时字幕');
+    assert.equal(r.controller.view.state, 'listening');
+    assert.equal(r.controller.view.errorText, '');
+    recordings[2].resolve('新问题');
+    await tick();
+    assert.deepEqual(asks, ['新问题']);
+    assert.equal(r.controller.view.state, 'idle');
     r.controller.dispose();
 });
 await test('退出/取消识别后迟到结果不恢复账号或发送问题，内容与身份清零', async () => {
@@ -457,7 +615,7 @@ await test('真实main设置与键盘页gotIp和BOOT双击不开麦，返回和�
     tap(25, 52); await tick();
     assert.equal(wakeStarts, 3);
     tap(335, 48); boot('click'); await tick();
-    assert.equal(wakeStarts, 3, '显式录音不先开启离线唤醒');
+    assert.equal(wakeStarts, 4, '显式录音期间也恢复离线唤醒以便打断');
     assert.equal(recordings, 1);
     exit();
 });

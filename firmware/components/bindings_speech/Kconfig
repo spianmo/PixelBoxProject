@@ -5,7 +5,7 @@ config PX_ENABLE_SPEECH
     depends on PX_ENABLE_AUDIO && IDF_TARGET_ESP32S3
     default n
     help
-        S3 默认配置启用：MultiNet7 中文模型检测你好小川，
+        S3 默认配置启用：MultiNet5 量化拼音模型检测业务动态注册的唤醒词，
         原生 TLS 请求 Azure STT/TTS，不依赖手机。需要 16MB flash、8MB PSRAM。
         使用 partitions_speech.csv，不能通过旧非语音布局单应用 OTA 安装。
 

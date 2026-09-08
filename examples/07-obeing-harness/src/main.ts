@@ -255,7 +255,7 @@ px.screen.onFrame((dt) => {
     if (!controller.view.authenticated && form.page === 'assistant') showPage('login');
     form.speechReady = controller.hasSpeech();
     drawHarness(px.screen, controller.view, { clock, tiltX, tiltY, battery, settings: false, fullscreen, shake: px.system.now() < shakeUntil ? 1 : 0,
-        pose: motion.sample(controller.view.state, clock, tiltX, tiltY, controller.view.level) }, form);
+        pose: motion.sample(controller.view.state, clock, tiltX, tiltY, controller.view.level) }, form, controller.wakeConfig.phrase);
 });
 const batteryTimer = setInterval(() => { battery = px.system.battery().level; void restoreLogin(); }, 10000);
 px.app.onExit(() => {

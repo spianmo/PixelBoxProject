@@ -123,10 +123,29 @@ int main() {
     sources_active = true;
     run_loop_turn();
     assert(frame_value == 10001);
-    assert(uxQueueMessagesWaiting(s_queue) > 0);
+    assert(uxQueueMessagesWaiting(s_queue) == 0);
     sources_active = false;
     empty_queue();
     std::puts("[OK] fresh input precedes frames even with a saturated event queue");
+
+    // 突发的小消息应在一帧内排空；慢回调仍让出执行权，定时器不能饿死。
+    int slow_jobs = 0;
+    for (int i = 0; i < CONFIG_JSVM_QUEUE_DEPTH; ++i)
+        assert(post([&] { slow_jobs++; host::now_us += 30000; }, 0));
+    run("globalThis.eventTimer = 0; setTimeout(() => eventTimer++, 0)");
+    run_loop_turn();
+    assert(slow_jobs > 0 && slow_jobs < CONFIG_JSVM_QUEUE_DEPTH);
+    assert(number("eventTimer") == 1);
+    empty_queue();
+    assert(slow_jobs == CONFIG_JSVM_QUEUE_DEPTH);
+    std::puts("[OK] burst delivery drains quickly and slow callbacks yield to timers");
+
+    sources_active = true;
+    assert(post([&] { samples.publish(next, 10002); }, 0));
+    run_loop_turn();
+    assert(frame_value == 10002);
+    sources_active = false;
+    std::puts("[OK] queued state updates reach the next frame without an extra redraw");
 
     run("globalThis.jobs = 0; queueMicrotask(function again() { jobs++; if (jobs < 10000) queueMicrotask(again); }); globalThis.timerRan = 0; setTimeout(() => timerRan++, 0)");
     pump_jobs();

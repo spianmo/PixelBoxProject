@@ -8,7 +8,8 @@
 #include "quickjs.h"
 
 namespace {
-std::shared_ptr<speech::Engine> engine;
+std::shared_ptr<speech::Engine> operation_engine;
+std::shared_ptr<speech::Engine> wake_engine;
 bool teardown_registered = false;
 
 JSValue error(JSContext* ctx, const char* message) {
@@ -21,8 +22,9 @@ std::string string_prop(JSContext* ctx, JSValueConst options, const char* name, 
     JSValue value = JS_GetPropertyStr(ctx, options, name);
     std::string result = fallback;
     if (JS_IsString(value)) {
-        const char* text = JS_ToCString(ctx, value);
-        if (text) { result = text; JS_FreeCString(ctx, text); }
+        size_t length = 0;
+        const char* text = JS_ToCStringLen(ctx, &length, value);
+        if (text) { result.assign(text, length); JS_FreeCString(ctx, text); }
     }
     JS_FreeValue(ctx, value);
     return result;
@@ -36,14 +38,14 @@ int int_prop(JSContext* ctx, JSValueConst options, const char* name, int fallbac
     return std::max(minimum, std::min(maximum, static_cast<int>(result)));
 }
 
-bool ensure_engine(JSContext* ctx) {
+bool ensure_engine(JSContext* ctx, std::shared_ptr<speech::Engine>& target, speech::Role role) {
     if (!hal_audio::ready() || hal_audio::device_rate() != speech::kRate) {
         error(ctx, "语音音频硬件未就绪，请重启设备");
         return false;
     }
-    if (!engine) engine = speech::Engine::create();
-    if (!engine) error(ctx, "语音线程内存不足，请更新固件后重启");
-    return static_cast<bool>(engine);
+    if (!target) target = speech::Engine::create(role);
+    if (!target) error(ctx, "语音线程内存不足，请更新固件后重启");
+    return static_cast<bool>(target);
 }
 
 JSValue available(JSContext* ctx, JSValueConst, int, JSValueConst*) {
@@ -60,68 +62,76 @@ JSValue configure(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     const bool valid_key = config.key.size() >= 8 && config.key.size() <= 256
         && std::all_of(config.key.begin(), config.key.end(), [](unsigned char c) { return c > 32 && c < 127; });
     if (!speech::valid_region(config.region) || !speech::valid_name(config.language) || !speech::valid_name(config.voice) || !valid_key) return error(ctx, "Azure 区域、密钥或语言格式无效");
-    if (!ensure_engine(ctx)) return JS_EXCEPTION;
-    engine->cancel();
-    std::fill(engine->config.key.begin(), engine->config.key.end(), '\0');
-    engine->config = config;
+    if (!ensure_engine(ctx, operation_engine, speech::Role::Operation)) return JS_EXCEPTION;
+    // 换账号或语音配置时，两条通道的旧任务与回调都必须失效。
+    operation_engine->cancel();
+    if (wake_engine) wake_engine->cancel();
+    std::fill(operation_engine->config.key.begin(), operation_engine->config.key.end(), '\0');
+    operation_engine->config = config;
     return JS_UNDEFINED;
 }
 
-JSValue promise_job(JSContext* ctx, const std::shared_ptr<speech::Job>& job) {
+JSValue promise_job(JSContext* ctx, const std::shared_ptr<speech::Engine>& target,
+                    const std::shared_ptr<speech::Job>& job) {
     JSValue functions[2];
     JSValue promise = JS_NewPromiseCapability(ctx, functions);
     if (JS_IsException(promise)) return promise;
     job->resolve = jsvm::Callback(ctx, functions[0]);
     job->reject = jsvm::Callback(ctx, functions[1]);
     JS_FreeValue(ctx, functions[0]); JS_FreeValue(ctx, functions[1]);
-    engine->submit(job);
+    target->submit(job);
     return promise;
 }
 
 JSValue wake_start(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    if (argc < 1 || !JS_IsObject(argv[0])) return error(ctx, "wakeword.start 需要 onWake");
-    if (string_prop(ctx, argv[0], "phrase", speech::kWakePhrase) != speech::kWakePhrase) return error(ctx, "离线唤醒词固定为你好小川");
+    if (argc < 1 || !JS_IsObject(argv[0])) return error(ctx, "wakeword.start 需要 phrase、pinyin、threshold 和 onWake");
+    auto job = std::make_shared<speech::Job>();
+    job->kind = speech::Kind::Wake;
+    job->wake_config.phrase = string_prop(ctx, argv[0], "phrase");
+    job->wake_config.pinyin = string_prop(ctx, argv[0], "pinyin");
+    JSValue threshold = JS_GetPropertyStr(ctx, argv[0], "threshold");
+    if (JS_IsException(threshold)) return JS_EXCEPTION;
+    if (JS_IsNumber(threshold)) JS_ToFloat64(ctx, &job->wake_config.threshold, threshold);
+    JS_FreeValue(ctx, threshold);
+    // 在启动线程或替换旧任务前校验完整配置；任务持有快照，不受后续 JS 对象修改影响。
+    if (const char* message = speech::validate_wake_config(job->wake_config)) return error(ctx, message);
     JSValue callback = JS_GetPropertyStr(ctx, argv[0], "onWake");
     if (!JS_IsFunction(ctx, callback)) { JS_FreeValue(ctx, callback); return error(ctx, "onWake 必须是函数"); }
-    if (!ensure_engine(ctx)) { JS_FreeValue(ctx, callback); return JS_EXCEPTION; }
+    if (!ensure_engine(ctx, wake_engine, speech::Role::Wake)) { JS_FreeValue(ctx, callback); return JS_EXCEPTION; }
     if (const char* message = speech::Engine::prepare_model_mapping()) {
         JS_FreeValue(ctx, callback);
         return error(ctx, message);
     }
-    auto job = std::make_shared<speech::Job>();
-    job->kind = speech::Kind::Wake;
-    JSValue threshold = JS_GetPropertyStr(ctx, argv[0], "threshold");
-    double number = 0.8;
-    if (JS_IsNumber(threshold)) JS_ToFloat64(ctx, &number, threshold);
-    JS_FreeValue(ctx, threshold);
-    job->threshold = std::isfinite(number) ? std::clamp(static_cast<float>(number), 0.5f, 0.99f) : 0.8f;
     job->callback = jsvm::Callback(ctx, callback);
     JS_FreeValue(ctx, callback);
     JSValue on_error = JS_GetPropertyStr(ctx, argv[0], "onError");
     if (JS_IsFunction(ctx, on_error)) job->error_callback = jsvm::Callback(ctx, on_error);
     JS_FreeValue(ctx, on_error);
-    return promise_job(ctx, job);
+    return promise_job(ctx, wake_engine, job);
 }
 
 JSValue recognize(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    if (!ensure_engine(ctx)) return JS_EXCEPTION;
-    if (engine->config.key.empty()) return error(ctx, "请先配置 Azure 语音区域和密钥");
+    if (!ensure_engine(ctx, operation_engine, speech::Role::Operation)) return JS_EXCEPTION;
+    if (operation_engine->config.key.empty()) return error(ctx, "请先配置 Azure 语音区域和密钥");
     JSValue options = argc && JS_IsObject(argv[0]) ? JS_DupValue(ctx, argv[0]) : JS_NewObject(ctx);
     auto job = std::make_shared<speech::Job>();
     job->kind = speech::Kind::Recognize;
-    job->config = engine->config;
+    job->config = operation_engine->config;
     job->max_ms = int_prop(ctx, options, "maxMs", 15000, 1000, 30000);
     job->silence_ms = int_prop(ctx, options, "silenceMs", 800, 300, 3000);
     job->timeout_ms = int_prop(ctx, options, "timeoutMs", 20000, 5000, 60000);
     JSValue callback = JS_GetPropertyStr(ctx, options, "onLevel");
     if (JS_IsFunction(ctx, callback)) job->callback = jsvm::Callback(ctx, callback);
-    JS_FreeValue(ctx, callback); JS_FreeValue(ctx, options);
-    return promise_job(ctx, job);
+    JS_FreeValue(ctx, callback);
+    JSValue partial = JS_GetPropertyStr(ctx, options, "onPartial");
+    if (JS_IsFunction(ctx, partial)) job->partial_callback = jsvm::Callback(ctx, partial);
+    JS_FreeValue(ctx, partial); JS_FreeValue(ctx, options);
+    return promise_job(ctx, operation_engine, job);
 }
 
 JSValue speak(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    if (!ensure_engine(ctx)) return JS_EXCEPTION;
-    if (engine->config.key.empty()) return error(ctx, "请先配置 Azure 语音区域和密钥");
+    if (!ensure_engine(ctx, operation_engine, speech::Role::Operation)) return JS_EXCEPTION;
+    if (operation_engine->config.key.empty()) return error(ctx, "请先配置 Azure 语音区域和密钥");
     if (argc < 1 || !JS_IsString(argv[0])) return error(ctx, "speak 需要文本");
     const char* text = JS_ToCString(ctx, argv[0]);
     if (!text) return JS_EXCEPTION;
@@ -130,14 +140,26 @@ JSValue speak(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     job->text = text;
     JS_FreeCString(ctx, text);
     if (job->text.empty() || job->text.size() > 6000) return error(ctx, "播报文本须为 1 至 6000 字节");
-    job->config = engine->config;
-    return promise_job(ctx, job);
+    job->config = operation_engine->config;
+    return promise_job(ctx, operation_engine, job);
 }
 
-JSValue cancel(JSContext*, JSValueConst, int, JSValueConst*) { if (engine) engine->cancel(); return JS_UNDEFINED; }
-JSValue wake_stop(JSContext*, JSValueConst, int, JSValueConst*) { if (engine) engine->cancel(true); return JS_UNDEFINED; }
+JSValue cancel(JSContext*, JSValueConst, int, JSValueConst*) {
+    if (operation_engine) operation_engine->cancel();
+    if (wake_engine) wake_engine->cancel();
+    return JS_UNDEFINED;
+}
+JSValue wake_stop(JSContext*, JSValueConst, int, JSValueConst*) {
+    if (wake_engine) wake_engine->cancel();
+    return JS_UNDEFINED;
+}
 
-void teardown(JSContext*) { if (engine) engine->shutdown(); engine.reset(); }
+void teardown(JSContext*) {
+    if (wake_engine) wake_engine->shutdown();
+    if (operation_engine) operation_engine->shutdown();
+    wake_engine.reset();
+    operation_engine.reset();
+}
 void method(JSContext* ctx, JSValue object, const char* name, JSCFunction* function, int length) {
     JS_SetPropertyStr(ctx, object, name, JS_NewCFunction(ctx, function, name, length));
 }
@@ -152,33 +174,41 @@ void init(JSContext* ctx, JSValue root) {
     JS_SetPropertyStr(ctx, root, "speech", speech);
 }
 
-// JS代数门确保已经排入JS队列的旧唤醒/音量回调在停止或换账号后不会再执行。
+// 唤醒和前台语音使用独立代数；识别或播报开始时不能使并行唤醒回调失效。
 const char* prelude = R"JS(
 (() => {
     const speech = px.speech;
     const configure = speech.configure, recognize = speech.recognize, speak = speech.speak;
     const cancel = speech.cancel, start = speech.wakeword.start, stop = speech.wakeword.stop;
-    let epoch = 0;
-    speech.configure = (options) => { ++epoch; return configure(options); };
-    speech.cancel = () => { ++epoch; return cancel(); };
-    speech.wakeword.stop = () => { ++epoch; return stop(); };
+    let wakeEpoch = 0, operationEpoch = 0;
+    speech.configure = (options) => { ++wakeEpoch; ++operationEpoch; return configure(options); };
+    speech.cancel = () => { ++wakeEpoch; ++operationEpoch; return cancel(); };
+    speech.wakeword.stop = () => { ++wakeEpoch; return stop(); };
     speech.wakeword.start = (options) => {
-        const ticket = ++epoch;
-        return start({ ...options,
-            onWake: () => { if (ticket === epoch) options.onWake(); },
-            onError: (message) => { if (ticket === epoch && options.onError) options.onError(message); }
+        if (!options || typeof options.onWake !== 'function') throw new TypeError('onWake 必须是函数');
+        const { onWake, onError } = options;
+        if (onError !== undefined && typeof onError !== 'function') throw new TypeError('onError 必须是函数');
+        const ticket = wakeEpoch + 1;
+        const ready = start({ ...options,
+            onWake: () => { if (ticket === wakeEpoch) onWake(); },
+            onError: (message) => { if (ticket === wakeEpoch && onError) onError(message); }
         });
+        wakeEpoch = ticket;
+        return ready;
     };
     speech.recognize = (options = {}) => {
-        const ticket = ++epoch;
-        return recognize({ ...options, onLevel: (level) => { if (ticket === epoch && options.onLevel) options.onLevel(level); } }).then((text) => {
-            if (ticket !== epoch) throw new Error('语音操作已取消');
+        const ticket = ++operationEpoch;
+        return recognize({ ...options,
+            onLevel: (level) => { if (ticket === operationEpoch && options.onLevel) options.onLevel(level); },
+            onPartial: (text) => { if (ticket === operationEpoch && options.onPartial) options.onPartial(text); }
+        }).then((text) => {
+            if (ticket !== operationEpoch) throw new Error('语音操作已取消');
             return text;
         });
     };
     speech.speak = (text) => {
-        const ticket = ++epoch;
-        return speak(text).then(() => { if (ticket !== epoch) throw new Error('语音操作已取消'); });
+        const ticket = ++operationEpoch;
+        return speak(text).then(() => { if (ticket !== operationEpoch) throw new Error('语音操作已取消'); });
     };
 })();
 )JS";

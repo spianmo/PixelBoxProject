@@ -10,6 +10,7 @@
 #include "freertos/queue.h"
 #include "hal_audio/hal_audio.hpp"
 #include "jsvm/jsvm.hpp"
+#include "speech_core.hpp"
 
 namespace speech {
 
@@ -19,14 +20,17 @@ struct Config {
 };
 
 enum class Kind { Wake, Recognize, Speak };
+enum class Role { Operation, Wake };
+struct Recording;
 struct Job {
     Kind kind;
     uint32_t generation = 0;
     int max_ms = 15000, silence_ms = 800, timeout_ms = 20000;
-    float threshold = 0.8f;
+    WakeConfig wake_config;
     std::string text;
     Config config;
-    jsvm::Callback resolve, reject, callback, error_callback;
+    std::shared_ptr<Recording> recording;
+    jsvm::Callback resolve, reject, callback, error_callback, partial_callback;
     std::atomic<bool> settled{false};
     void done(const std::string& result = "", bool text_result = false);
     void fail(const std::string& error);
@@ -36,10 +40,10 @@ class Engine : public std::enable_shared_from_this<Engine> {
 public:
     // Called on the JS thread's internal stack before posting a wake job.
     static const char* prepare_model_mapping();
-    static std::shared_ptr<Engine> create();
+    static std::shared_ptr<Engine> create(Role role);
     ~Engine();
     bool submit(const std::shared_ptr<Job>& job);
-    void cancel(bool wake_only = false);
+    void cancel();
     void shutdown();
     bool active(const Job& job) const;
     Config config;
@@ -59,6 +63,7 @@ private:
     std::shared_ptr<Job> current_;
     int mic_id_ = -1;
     std::shared_ptr<hal_audio::PcmRingSource> player_;
+    Role role_ = Role::Operation;
 };
 
 }  // namespace speech

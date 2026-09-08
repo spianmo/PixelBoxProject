@@ -9,11 +9,14 @@ let recognizeOptions;
 let woke = 0;
 let errors = 0;
 let levels = 0;
+let partials = 0;
 let finishRecognize;
+let finishSpeak;
+let rejectStart = false;
 const speech = {
-    configure() {}, cancel() {}, speak() { return Promise.resolve(); },
+    configure() {}, cancel() {}, speak() { return new Promise((resolve) => { finishSpeak = resolve; }); },
     recognize(options) { recognizeOptions = options; return new Promise((resolve) => { finishRecognize = resolve; }); },
-    wakeword: { start(options) { wakeOptions = options; return Promise.resolve(); }, stop() {} },
+    wakeword: { start(options) { if (rejectStart) throw new Error('invalid wake config'); wakeOptions = options; return Promise.resolve(); }, stop() {} },
 };
 runInNewContext(prelude, { px: { speech } });
 await speech.wakeword.start({ onWake() { woke++; }, onError() { errors++; } });
@@ -23,16 +26,54 @@ oldWake.onWake(); oldWake.onError('late');
 assert.equal(woke, 0); assert.equal(errors, 0);
 await speech.wakeword.start({ onWake() { woke++; }, onError() { errors++; } });
 wakeOptions.onWake(); assert.equal(woke, 1);
-const recognizing = speech.recognize({ onLevel() { levels++; } });
+const activeWake = wakeOptions;
+const recognitionAcrossWakeStop = speech.recognize({ onLevel() { levels++; }, onPartial() { partials++; } });
+recognizeOptions.onPartial('即时转写'); assert.equal(partials, 1);
 recognizeOptions.onLevel(50); assert.equal(levels, 1);
-speech.cancel(); recognizeOptions.onLevel(50); assert.equal(levels, 1);
+activeWake.onWake(); assert.equal(woke, 2, 'recognize 不应使并行唤醒回调失效');
+speech.wakeword.stop();
+recognizeOptions.onLevel(50); assert.equal(levels, 2, 'wakeword.stop 不应使前台识别回调失效');
+recognizeOptions.onPartial('仍可更新'); assert.equal(partials, 2);
+finishRecognize('仍然有效的识别');
+assert.equal(await recognitionAcrossWakeStop, '仍然有效的识别');
+await speech.wakeword.start({ onWake() { woke++; } });
+const wakeBeforeReplacement = wakeOptions;
+await speech.wakeword.start({ onWake() { woke++; } });
+wakeBeforeReplacement.onWake(); assert.equal(woke, 2, '重复 start 应使旧唤醒回调失效');
+const activeWakeAfterReplacement = wakeOptions;
+const recognizing = speech.recognize({ onLevel() { levels++; }, onPartial() { partials++; } });
+speech.cancel(); recognizeOptions.onLevel(50); assert.equal(levels, 2);
+recognizeOptions.onPartial('旧轮转写'); assert.equal(partials, 2);
+activeWakeAfterReplacement.onWake(); assert.equal(woke, 2, 'cancel 应同时使唤醒回调失效');
 finishRecognize('上一账号的识别');
 await assert.rejects(recognizing, /取消/);
+await speech.wakeword.start({ onWake() { woke++; } });
+const wakeDuringSpeak = wakeOptions;
 const speaking = speech.speak('上一账号的回答');
+wakeDuringSpeak.onWake(); assert.equal(woke, 3, 'speak 不应使并行唤醒回调失效');
 speech.cancel();
+finishSpeak();
 await assert.rejects(speaking, /取消/);
 await speech.wakeword.start({ onWake() { woke++; } });
 const beforeAccount = wakeOptions;
 speech.configure({ region: 'eastasia', key: 'new-account' });
-beforeAccount.onWake(); assert.equal(woke, 1);
-console.log('speech prelude: stop/cancel/configure discard stale wake/error/level callbacks');
+beforeAccount.onWake(); assert.equal(woke, 3);
+// 参数原样传递，换词后旧回调失效；同步校验失败不能使仍在运行的监听失去回调。
+await speech.wakeword.start({ phrase: '你好小川', pinyin: 'ni hao xiao chuan', threshold: 0.30, onWake() { woke++; } });
+const oldPhrase = wakeOptions;
+await speech.wakeword.start({ phrase: '小爱同学', pinyin: 'xiao ai tong xue', threshold: 0.15, onWake() { woke++; } });
+assert.equal(wakeOptions.phrase, '小爱同学');
+assert.equal(wakeOptions.pinyin, 'xiao ai tong xue');
+assert.equal(wakeOptions.threshold, 0.15);
+oldPhrase.onWake(); assert.equal(woke, 3);
+assert.throws(() => speech.wakeword.start({ phrase: '小爱同学', pinyin: 'xiao ai tong xue', threshold: 0.15 }), /onWake/);
+assert.throws(() => speech.wakeword.start({ onWake() {}, onError: true }), /onError/);
+rejectStart = true;
+assert.throws(() => speech.wakeword.start({ threshold: NaN, onWake() {} }), /invalid wake config/);
+wakeOptions.onWake(); assert.equal(woke, 4);
+rejectStart = false;
+const callbackSnapshot = { onWake() { woke++; } };
+await speech.wakeword.start(callbackSnapshot);
+callbackSnapshot.onWake = () => { throw new Error('mutated callback'); };
+wakeOptions.onWake(); assert.equal(woke, 5);
+console.log('speech prelude: independent wake/operation epochs and stale callback guards passed');

@@ -11,7 +11,7 @@ if (process.argv.includes('--configure') || process.argv.includes('--wake')) {
     const config = module.projectSpeechConfig();
     if (!config) throw new Error('Project speech configuration missing');
     code = `JSON.stringify((()=>{try{px.speech.configure(${JSON.stringify(config)});return {configured:true,memory:px.system.memory()}}catch(e){return {configured:false,name:e.name,message:e.message,memory:px.system.memory()}}})())`;
-    if (process.argv.includes('--wake')) code = `(()=>{px.speech.configure(${JSON.stringify(config)});px.speech.wakeword.start({phrase:'你好小川',onWake:()=>console.log('SPEECH_PROBE_WAKE'),onError:()=>console.log('SPEECH_PROBE_ERROR')}).then(()=>{console.log('SPEECH_PROBE_READY');px.speech.wakeword.stop()},e=>console.log('SPEECH_PROBE_FAILED',e.message));return 'wake probe started'})()`;
+    if (process.argv.includes('--wake')) code = `(()=>{px.speech.configure(${JSON.stringify(config)});px.speech.wakeword.start({phrase:'你好小川',pinyin:'ni hao xiao chuan',threshold:0.30,onWake:()=>console.log('SPEECH_PROBE_WAKE'),onError:()=>console.log('SPEECH_PROBE_ERROR')}).then(()=>{console.log('SPEECH_PROBE_READY');px.speech.wakeword.stop()},e=>console.log('SPEECH_PROBE_FAILED',e.message));return 'wake probe started'})()`;
 }
 const socket = new WebSocket(`ws://${host}:8765/devd`, { handshakeTimeout: 5000 });
 const timer = setTimeout(() => { socket.terminate(); process.exitCode = 1; }, 8000);
