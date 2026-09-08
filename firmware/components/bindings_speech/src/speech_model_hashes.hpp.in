@@ -3,8 +3,9 @@
 // 构建时从当前 ESP-SR 依赖生成，不接受与本固件不匹配的模型内容。
 namespace speech {
 inline constexpr const char* kModelHashes[] = {
-    "@HASH_mn5q8_index@",
-    "@HASH_mn5q8_data@",
+    "@HASH_mn7_index@",
+    "@HASH_mn7_data@",
     "@HASH__MODEL_INFO_@",
+    "@HASH_vocab@",
 };
 }

@@ -12,7 +12,7 @@ firmware/
 ├── partitions.csv         # 分区表: OTA 双分区 + littlefs storage
 ├── partitions_wakeword.csv# 唤醒词构建分区表 (storage 压缩, 尾部加 model 分区)
 ├── sdkconfig.defaults     # esp32s3 / 16MB Flash / Octal PSRAM 默认配置
-├── sdkconfig.defaults.esp32s3 # S3 默认独立语音、MultiNet5 量化模型与语音分区
+├── sdkconfig.defaults.esp32s3 # S3 默认独立语音、MultiNet7 中文模型与语音分区
 ├── sdkconfig.wakeword     # 唤醒词叠加配置 (见「启用唤醒词」)
 ├── main/                  # app_main: 板级初始化 → appmgr → devd → jsvm
 └── components/
@@ -36,16 +36,17 @@ firmware/
 ## 构建与烧录
 
 ESP32-S3 默认构建为独立语音版：`sdkconfig.defaults.esp32s3` 自动启用
-`PX_ENABLE_SPEECH`、MultiNet5 量化拼音模型和 `partitions_speech.csv`，JS 堆上限为 2 MiB。
+`PX_ENABLE_SPEECH`、MultiNet7 中文拼音模型和 `partitions_speech.csv`，JS 堆上限为 2 MiB。
 命令行 `idf.py build` 和 IDE 默认构建使用同一配置，产物为 `build/pixelbox.bin`
 及 `build/srmodels/srmodels.bin`；打包 merged.bin 自动包含模型，无需额外传 `sdkconfig.speech`。
 C6/P4 不启用独立语音。
 
 已有旧 `sdkconfig` 不会被默认值覆盖。ESPIDE 的 S3 入口是 `idf.py -B build build/flash`，
-读取 `firmware/sdkconfig`；`build_mn5q8/sdkconfig` 等独立构建的修改不会同步到它。
-若出现 `PixelBox speech requires mn5q8_cn`，在 `firmware/` 运行
-`idf.py -B build menuconfig`，搜索 `SR_MN_CN_MULTINET5_RECOGNITION_QUANT8` 并选中，
-保存后执行 `idf.py -B build build`。这会取消旧 MultiNet7 选择并重新生成配套模型。
+读取 `firmware/sdkconfig`；`build_mn7/sdkconfig` 等独立构建的修改不会同步到它。
+若出现 `PixelBox speech requires mn7_cn`，在 `firmware/` 运行
+`idf.py -B build menuconfig`，搜索 `SR_MN_CN_MULTINET7_QUANT` 并选中，
+保存后执行 `idf.py -B build build`。这会取消旧 MultiNet5 选择并重新生成配套模型。
+从 MultiNet5 升级必须同时写入应用镜像和 `srmodels.bin`，现有语音分区布局不变。
 已有网络配置还需同步下文「HTTPS 内存配置」的 Wi-Fi 缓冲和备用 DNS 参数。
 保留现有板型与其他配置时无需 `set-target` 或清空构建目录。
 语音分区与旧 `partitions.csv` 不同，首次升级需完整烧录分区表、固件和模型，不能单 app OTA；
@@ -180,7 +181,7 @@ wifi_manager strncpy→memcpy 修正所致)。
 
 ## 启用唤醒词 (esp-sr WakeNet)
 
-当前默认语音版通过 MultiNet5 检测业务动态注册的唤醒词，示例应用预设“你好小川”。本节为旧 `px.voice` 手机中继的
+当前默认语音版通过 MultiNet7 检测业务动态注册的唤醒词，示例应用预设“你好小川”。本节为旧 `px.voice` 手机中继的
 WakeNet 可选配置，会关闭独立语音并选用另一套分区；不用于 example07。
 该配置使用独立构建目录 + 叠加配置：
 

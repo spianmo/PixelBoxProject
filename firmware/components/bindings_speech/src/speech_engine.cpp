@@ -241,7 +241,7 @@ struct Model {
             const int64_t started = esp_timer_get_time();
             if (esp_mn_commands_clear() != ESP_OK || esp_mn_commands_add(1, config.pinyin.c_str()) != ESP_OK
                     || esp_mn_commands_update() != nullptr)
-                return "MultiNet5 唤醒词注册失败，请检查 pinyin 是否为模型支持的拼音";
+                return "MultiNet7 唤醒词注册失败，请检查 pinyin 是否为模型支持的拼音";
             registered_pinyin = config.pinyin;
             ESP_LOGI(kTag, "wake commands: %lld ms", (long long)((esp_timer_get_time() - started) / 1000));
         }
@@ -268,7 +268,7 @@ struct Model {
         return models ? nullptr : "语音模型目录分配失败";
     }
     ~Model() {
-        // ESP-SR MultiNet5 的 destroy 同时释放命令表，不能在此之前重复释放。
+        // ESP-SR MultiNet7 的 destroy 同时释放命令表，不能在此之前重复释放。
         if (data && iface) iface->destroy(data);
         if (models) esp_srmodel_deinit(models);
         log_memory("wake model released");
@@ -489,7 +489,7 @@ void Engine::wake(const std::shared_ptr<Job>& job) {
     const bool reused = bool(cached_model);
     log_memory("wake prepare");
     // MultiNet allocates multiple buffers, not a single 4 MiB block.
-    if (!cached_model && heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < kMinModelPsram) { job->fail("MultiNet5 需要至少 4 MiB 空闲 PSRAM 总量"); return; }
+    if (!cached_model && heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < kMinModelPsram) { job->fail("MultiNet7 需要至少 4 MiB 空闲 PSRAM 总量"); return; }
     std::unique_ptr<Model> fresh;
     if (!cached_model) fresh = std::make_unique<Model>();
     Model& model = cached_model ? *cached_model : *fresh;
@@ -498,17 +498,17 @@ void Engine::wake(const std::shared_ptr<Job>& job) {
         if (const char* error = model.load()) { job->fail(error); return; }
         if (!active(*job)) return;
         char* name = esp_srmodel_filter(model.models, ESP_MN_PREFIX, ESP_MN_CHINESE);
-        if (!name || std::strcmp(name, kWakeModelName) != 0) { job->fail("model 分区缺少 mn5q8_cn 拼音模型，请同时更新固件和模型分区"); return; }
+        if (!name || std::strcmp(name, kWakeModelName) != 0) { job->fail("model 分区缺少 mn7_cn 拼音模型，请同时更新固件和模型分区"); return; }
         model.iface = esp_mn_handle_from_name(name);
-        if (!has_required_multinet_api(model.iface)) { job->fail("MultiNet5 接口不可用"); return; }
+        if (!has_required_multinet_api(model.iface)) { job->fail("MultiNet7 接口不可用"); return; }
         const int64_t create_started = esp_timer_get_time();
         // MultiNet 按输入帧数超时；给完整短语留足窗口，待机静音在下方提前刷新。
         model.data = model.iface->create(name, 6000);
-        ESP_LOGI(kTag, "wake model create: %lld ms", (long long)((esp_timer_get_time() - create_started) / 1000));
+        ESP_LOGI(kTag, "wake model create: %lld ms, model=%s", (long long)((esp_timer_get_time() - create_started) / 1000), name);
         log_memory("wake model created");
-        if (!model.data) { job->fail("MultiNet5 工作区分配失败"); return; }
-        // MN5Q8 使用 S3 优化的量化内核，权重由模型加载到 PSRAM；该接口没有 loader mode。
-        if (model.iface->get_samp_rate(model.data) != kRate) { job->fail("MultiNet5 采样率不兼容"); return; }
+        if (!model.data) { job->fail("MultiNet7 工作区分配失败"); return; }
+        // ESP-SR 2.4.7 的 MN7 未实现 switch_loader_mode，使用模型默认加载方式。
+        if (model.iface->get_samp_rate(model.data) != kRate) { job->fail("MultiNet7 采样率不兼容"); return; }
         if (esp_mn_commands_alloc(model.iface, model.data) != ESP_OK) { job->fail("本地语音命令注册被占用"); return; }
         if (!active(*job)) return;
         cached_model = std::move(fresh);
@@ -517,7 +517,7 @@ void Engine::wake(const std::shared_ptr<Job>& job) {
     if (const char* error = model.configure_wake(job->wake_config)) { job->fail(error); return; }
     log_memory("wake commands ready");
     const int samples = model.iface->get_samp_chunksize(model.data);
-    if (samples <= 0 || samples > 4096) { job->fail("MultiNet5 音频块异常"); return; }
+    if (samples <= 0 || samples > 4096) { job->fail("MultiNet7 音频块异常"); return; }
     Buffer pcm(samples * 2), history(samples * sizeof(int16_t) * WakePreroll::frame_capacity(samples));
     auto audio = std::make_shared<AudioQueue>();
     if (!pcm.data || !history.data || !audio->stream) { job->fail("本地语音缓冲分配失败"); return; }

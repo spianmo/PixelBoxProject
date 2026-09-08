@@ -1,5 +1,29 @@
 # Speech and Network Diagnosis (2026-09-06)
 
+## MultiNet7 动态唤醒切换（2026-09-08，未烧录）
+
+当前默认 S3 固件和 `sdkconfig.speech` 已改用 ESP-SR 2.4.7 的 `mn7_cn` 中文模型。
+下方 MultiNet5 与更早 MultiNet7 的真机记录均为历史数据，不代表本次版本的准确率或资源峰值。
+
+- 上层继续调用 `wakeword.start({ phrase, pinyin, threshold, onWake })`，由业务设置词和门限；
+  example07 保留 `src/wakeword-config.ts` 的“你好小川”和 `0.30`，固件不提供业务默认值。
+- 保留模型缓存、换词重建命令表、阈值显式过滤、6 秒检测窗口、静音后前导音频回放，
+  以及录音、识别等待、云端思考和 TTS 播报期间的并行唤醒。
+- 模型目录及 SHA-256 校验覆盖 `mn7_index`、`mn7_data`、`_MODEL_INFO_` 和 `vocab`；
+  拒绝旧 MN5 模型、缺失或误命名的词表、重复文件及损坏目录。
+- 本机 `cmake --build firmware/build` 通过，使用 ESP-IDF 5.5 的 Python 3.13 环境及 S3 工具链。
+  应用为 4,311,376 字节，模型包为 2,681,351 字节；现有 3 MiB 模型分区剩余 464,377 字节。
+  构建产物确认选择 `CONFIG_SR_MN_CN_MULTINET7_QUANT=y`，烧录清单包含
+  `0xd00000` 的 `srmodels/srmodels.bin`，模型包没有残留 `mn5q8_cn`。
+- C++ 核心测试（含 UBSan 和实际新模型包）、`check-model-hashes.mjs firmware/build`、
+  `check-wake-registration.mjs`、`check-prelude.mjs` 及 example07 的 35 项业务测试通过。
+  注册与并行行为由桌面替身测试验证，未在桌面执行 ESP32-S3 的 MN7 推理内核。
+
+本次应用和模型均未烧录。升级需要同时写入 `firmware/build/pixelbox.bin` 和
+`firmware/build/srmodels/srmodels.bin`；原语音分区布局不变，只更新 JS 或单应用 OTA 无法完成迁移。
+待真机验证：不同距离、语速与噪声下的漏唤醒和误唤醒，推理平均/峰值耗时，以及 TTS 并行时内存余量。
+当前没有 AEC，模型切换不解决扬声器回灌。
+
 ## 流式 ASR 与对话延迟修正（2026-09-08）
 
 本次修改在已有 MultiNet5、独立录音缓冲与唤醒打断改动上继续进行，已烧录 PixelBox S3

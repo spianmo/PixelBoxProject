@@ -14,7 +14,7 @@ idf.py build
 ```
 
 先在当前终端加载 ESP-IDF 5.5 环境。构建生成 `build/pixelbox.bin` 和
-`build/srmodels/srmodels.bin`；模型约 2.1 MiB。`partitions_speech.csv`
+`build/srmodels/srmodels.bin`；模型约 2.56 MiB。`partitions_speech.csv`
 包含两个 5 MiB 应用槽、独立存储区和 3 MiB 模型分区，与旧非语音固件布局不同。
 从旧布局升级需要完整分区迁移，不能向旧布局发送单应用 OTA，也不能只更新应用镜像。
 `idf.py merge-bin` 和 IDE 打包会包含模型。`sdkconfig.speech` 仍可用于独立构建目录。
@@ -31,7 +31,7 @@ worker 仅读取已映射的模型并进行网络与音频操作，不能执行 
 配置阶段不会请求 Azure，也不会把线程创建失败当成 Azure 认证失败。
 
 唤醒采音 StreamBuffer 的 16 KiB 数据区显式放在 PSRAM，使用静态创建接口；FreeRTOS 的动态
-StreamBuffer 即使启用 `SPIRAM_USE_MALLOC` 也会占用内部 RAM。MultiNet5 的 `destroy()`
+StreamBuffer 即使启用 `SPIRAM_USE_MALLOC` 也会占用内部 RAM。MultiNet7 的 `destroy()`
 同时释放命令表，调用方不再提前调用 `esp_mn_commands_free()`。
 
 S3 默认及独立 speech 配置使用 `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=256` 和
@@ -45,7 +45,7 @@ S3 默认及独立 speech 配置使用 `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=256`
 固件不内置业务唤醒词或默认阈值。`phrase` 是显示名（1 至 96 UTF-8 字节，不能包含控制字符及首尾空格），
 实际识别使用 `pinyin`（2 至 63 字节的小写无声调拼音，音节间用单个空格分隔）。
 应用需明确提供发音，固件不做汉字转拼音；模型不支持的拼音会使注册失败。
-底层通过 ESP-SR MultiNet5 的 `mn5q8_cn` 量化模型检测拼音命令，这是离线命令识别方案，
+底层通过 ESP-SR MultiNet7 的 `mn7_cn` 中文模型检测拼音命令，这是离线命令识别方案，
 不是定制 WakeNet 模型。真实距离、噪声条件下的漏唤醒和误唤醒率需要在设备上测量。
 
 `wakeword.start()` 成功后持续监听，命中一次便停止采音并触发 `onWake`。
@@ -54,32 +54,34 @@ S3 默认及独立 speech 配置使用 `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=256`
 不会自动截断。重复调用会替换旧监听和阈值，拼音发生变化时重建命令表；相同拼音复用注册结果，
 每轮都重新应用阈值并清空推理上下文。注册失败不会开始采音，下次调用会重新尝试注册。
 同步参数校验失败保留原监听；提交后的模型注册失败会结束本次监听，通过 Promise 报错。
-模型启动保留至少 4 MiB 空闲 PSRAM 总量的资源门；MultiNet5 工作区分多次分配，
+模型启动保留至少 4 MiB 空闲 PSRAM 总量的资源门；MultiNet7 工作区分多次分配，
 不要求一个连续 4 MiB 块。最大连续块仍记录用于诊断，实际模型分配失败会单独报错。
 模型缺失、内存不足和麦克风无数据会显式报错。
 
-首次启动校验模型目录的计数、字符串和数据边界，并核验三个 MultiNet5 文件的 SHA-256。
+首次启动校验模型目录的计数、字符串和数据边界，并核验 `mn7_index`、`mn7_data`、
+`_MODEL_INFO_` 和 `vocab` 四个文件的 SHA-256；缺少分词词表也会拒绝加载。
 只读模型分区每次开机校验一次，后续重用校验结果；升级模型后需重启设备。
 校验值由构建时的 ESP-SR 依赖生成；模型内容损坏或与固件不匹配时拒绝加载。
 映射失败会返回错误，避免进入供应库的 `ESP_ERROR_CHECK` 重启路径。
 4 MiB PSRAM 检查是一道资源门，不代表已验证整机峰值；供应库部分内部申请没有完整的失败恢复，
 仍须在真实设备的显示、Wi-Fi 和 JS VM 同时运行时测量余量。
 
-从旧 MultiNet7 版本升级时，必须同时更新应用镜像和 `model` 分区的 `srmodels.bin`。
+从 MultiNet5 版本升级时，必须同时更新应用镜像和 `model` 分区的 `srmodels.bin`。
 分区布局不变，现有账号、应用数据不需要清除；只更新 JS 或单独 OTA 应用镜像无法迁移模型。
 defaults 不会覆盖已有 `sdkconfig`。推荐使用独立目录采用新的 S3 默认配置：
 
 ```sh
-idf.py -B build_mn5q8 -D SDKCONFIG=build_mn5q8/sdkconfig build
+idf.py -B build_mn7 -D SDKCONFIG=build_mn7/sdkconfig build
 ```
 
-已有自定义板型的构建需在自己的 `sdkconfig` 中将 `CONFIG_SR_MN_CN_MULTINET7_QUANT=y`
-改为 `# CONFIG_SR_MN_CN_MULTINET7_QUANT is not set`，并设置
-`CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y`。构建会拒绝残留的 MultiNet7 配置，
+已有自定义板型的构建需在自己的 `sdkconfig` 中将 `CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y`
+改为 `# CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8 is not set`，并设置
+`CONFIG_SR_MN_CN_MULTINET7_QUANT=y`。构建会拒绝残留的 MultiNet5 配置，
 运行时会拒绝旧模型内容，避免把不匹配的权重交给供应库。
 
 使用项目已有 ESP-SR 2.4.7 的 S3 量化内核，不额外叠加 ESP-NN：ESP-NN 是算子库，
 当前 MultiNet 通过预编译 `libmultinet.a` / `libdl_lib.a` 执行，新增依赖不能替换内部算子。
+该版本 MN7 未实现 `switch_loader_mode`，使用模型默认加载方式，不调用空接口。
 选型参考 [esp-sr-multinet](https://github.com/36dian5hao/esp-sr-multinet) 的拼音命令方案。
 
 采音端仍使用单生产者队列；推理线程发现待处理音频超过 160 ms 时丢弃旧前缀，
@@ -162,16 +164,16 @@ c++ -std=c++17 -pthread -Wall -Wextra -Werror \
   -I firmware/components/bindings_speech/src \
   firmware/components/bindings_speech/tests/speech_core_test.cpp \
     -o /private/tmp/obeing-speech-core-test
-/private/tmp/obeing-speech-core-test firmware/build_mn5q8/srmodels/srmodels.bin
+/private/tmp/obeing-speech-core-test firmware/build/srmodels/srmodels.bin
 node firmware/components/bindings_speech/tests/check-prelude.mjs
 node firmware/components/bindings_speech/tests/check-wake-registration.mjs
-node firmware/components/bindings_speech/tests/check-model-hashes.mjs firmware/build_mn5q8
+node firmware/components/bindings_speech/tests/check-model-hashes.mjs firmware/build
 ```
 
 上述测试覆盖区域与 SSML 校验、WAV 格式、静音截断、瞬时噪声过滤、唤醒前导音频环绕与清空，
 以及参数边界、缓存模型换词、单独修改阈值、注册失败恢复、并行唤醒和取消后的过期回调。
-动态唤醒词注册的真机识别效果尚未验证；桌面测试中的模型接口为替身。
-独立语音配置和默认配置已通过 ESP-IDF 构建。物理麦克风、扬声器、真实 Azure 账号、
-PixelBox S3 已通过实际 Azure WSS 握手、两轮识别与 TTS 播放、并行唤醒及 AI 连接复用检查；
+本次 MN7 切换及动态唤醒词注册的真机识别效果尚未验证；桌面注册测试中的模型接口为替身。
+此前语音版本在 PixelBox S3 的物理麦克风、扬声器和真实 Azure 账号上，
+已通过实际 Azure WSS 握手、两轮识别与 TTS 播放、并行唤醒及 AI 连接复用检查；
 完整数据与网络限制见 [语音与网络诊断](../../../docs/speech-network-performance.md)。
 这组固定句测试不代表长时间稳定性或不同噪声/距离下的识别准确率。

@@ -11,8 +11,8 @@
 
 namespace speech {
 
-constexpr const char* kWakeModelName = "mn5q8_cn";
-constexpr std::array<const char*, 3> kWakeModelFiles = {"mn5q8_index", "mn5q8_data", "_MODEL_INFO_"};
+constexpr const char* kWakeModelName = "mn7_cn";
+constexpr std::array<const char*, 4> kWakeModelFiles = {"mn7_index", "mn7_data", "_MODEL_INFO_", "vocab"};
 constexpr int kRate = 16000;
 
 struct WakeConfig {
@@ -20,7 +20,7 @@ struct WakeConfig {
     double threshold = std::numeric_limits<double>::quiet_NaN();
 };
 
-/** 业务必须显式提供词和门限；这里只限制 MultiNet5 输入格式，不补默认值或截断门限。 */
+/** 业务必须显式提供词和门限；这里只限制 MultiNet7 输入格式，不补默认值或截断门限。 */
 inline const char* validate_wake_config(const WakeConfig& config) {
     if (config.phrase.empty() || config.phrase.size() > 96
             || config.phrase.front() == ' ' || config.phrase.back() == ' '
@@ -38,7 +38,7 @@ inline const char* validate_wake_config(const WakeConfig& config) {
 
 template <typename Interface>
 bool has_required_multinet_api(const Interface* iface) {
-    // MultiNet5 不支持 switch_loader_mode，可选接口不纳入可用性判断或调用。
+    // 当前 MultiNet7 的 switch_loader_mode 是可选空指针，不纳入可用性判断或调用。
     return iface && iface->create && iface->destroy && iface->get_samp_rate && iface->get_samp_chunksize
         && iface->set_det_threshold && iface->detect && iface->get_results && iface->clean
         && iface->set_speech_commands && iface->check_speech_command;
@@ -104,7 +104,7 @@ inline size_t wake_backlog_drop_samples(size_t queued, bool overflow) {
     return overflow ? queued : (queued > max_pending ? queued - max_pending : 0);
 }
 
-/** MN5Q8 可能在结果概率低于设置值时仍返回 DETECTED，最终回调必须再做一次显式门限。 */
+/** DETECTED 候选仍需显式校验业务门限，不能直接触发唤醒回调。 */
 inline bool wake_match(int command_id, float probability, float threshold) {
     return command_id == 1 && std::isfinite(probability) && probability >= threshold;
 }

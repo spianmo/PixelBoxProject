@@ -10,17 +10,17 @@
 #include <vector>
 
 static std::vector<uint8_t> wake_model_fixture() {
-    std::vector<uint8_t> bytes(163, 0);
+    std::vector<uint8_t> bytes(204, 0);
     const auto put_u32 = [&bytes](size_t at, uint32_t value) {
         for (int i = 0; i < 4; i++) bytes[at + i] = uint8_t(value >> (8 * i));
     };
     put_u32(0, 1);
-    std::memcpy(bytes.data() + 4, "mn5q8_cn", 9);
-    put_u32(36, 3);
-    const char* names[] = {"mn5q8_index", "mn5q8_data", "_MODEL_INFO_"};
-    for (size_t i = 0; i < 3; i++) {
+    std::memcpy(bytes.data() + 4, "mn7_cn", sizeof("mn7_cn"));
+    put_u32(36, 4);
+    const char* names[] = {"mn7_index", "mn7_data", "_MODEL_INFO_", "vocab"};
+    for (size_t i = 0; i < 4; i++) {
         std::memcpy(bytes.data() + 40 + 40 * i, names[i], std::strlen(names[i]));
-        put_u32(72 + 40 * i, 160 + i);
+        put_u32(72 + 40 * i, 200 + i);
         put_u32(76 + 40 * i, 1);
     }
     return bytes;
@@ -47,11 +47,20 @@ int main(int argc, char** argv) {
     auto fixture = wake_model_fixture();
     speech::ModelPayloads expected_payloads;
     assert(speech::valid_model_archive(fixture.data(), fixture.size(), &expected_payloads));
-    assert(expected_payloads.size() == 3);
+    assert(expected_payloads.size() == 4);
+    for (size_t i = 0; i < expected_payloads.size(); i++)
+        assert(expected_payloads[i].data == fixture.data() + 200 + i && expected_payloads[i].size == 1);
     auto wrong_model = fixture;
     std::memset(wrong_model.data() + 4, 0, 32);
-    std::memcpy(wrong_model.data() + 4, "mn7_cn", 6);
+    std::memcpy(wrong_model.data() + 4, "mn5q8_cn", sizeof("mn5q8_cn"));
     assert(!speech::valid_model_archive(wrong_model.data(), wrong_model.size()));
+    // MN7 分词依赖 vocab；目录缺少或误命名词表时必须在调用供应库前拒绝。
+    auto missing_vocab = fixture;
+    missing_vocab[36] = 3;
+    assert(!speech::valid_model_archive(missing_vocab.data(), missing_vocab.size()));
+    auto wrong_vocab = fixture;
+    wrong_vocab[160] = 'x';
+    assert(!speech::valid_model_archive(wrong_vocab.data(), wrong_vocab.size()));
     auto duplicate = fixture;
     std::memcpy(duplicate.data() + 80, duplicate.data() + 40, 32);
     assert(!speech::valid_model_archive(duplicate.data(), duplicate.size()));

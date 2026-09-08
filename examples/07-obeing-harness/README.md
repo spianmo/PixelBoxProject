@@ -13,7 +13,7 @@ PixelBox 上独立联网的语音助手。助手形象是三维粒子小猫“�
 
 - ESP32-S3 PixelBox，16 MiB flash、8 MiB PSRAM、16 kHz 麦克风和扬声器。
 - 已联网并完成 NTP 时间同步，TLS 使用设备 CA 证书包校验服务端。
-- S3 默认语音固件，包含 `px.speech` 和 ESP-SR MultiNet5 量化拼音唤醒模型。
+- S3 默认语音固件，包含 `px.speech` 和 ESP-SR MultiNet7 中文拼音唤醒模型。
 - 可用的 V4 企业 ID、账号与密码，以及允许随示例固件分发的 Azure Speech 区域和订阅密钥。
 
 固件构建、模型、分区及边界见
@@ -79,14 +79,16 @@ HTTPS /basestation/api/workbench/user/ucenter/login
 内容来自实际 ASR 和服务端流式响应。服务返回的中间过程在普通模式显示于状态区，
 全屏模式保留在底部单行文字中，中间波形表示活动。没有删除服务端公开的过程更新。
 
-唤醒使用离线 MultiNet5 (`mn5q8_cn`) 拼音命令 `ni hao xiao chuan`，不是专门训练的 WakeNet 模型。
+唤醒使用离线 MultiNet7 (`mn7_cn`)；业务通过 `wakeword.start({ phrase, pinyin, threshold, onWake })`
+动态注册，示例在 `src/wakeword-config.ts` 预设拼音 `ni hao xiao chuan`，不是专门训练的 WakeNet 模型。
 唤醒后边录音边通过 Azure WSS 发送 PCM，约 100 毫秒一包；本地 VAD 判断输入结束。
 `speech.hypothesis` 通过 `onPartial` 更新累计字幕，`speech.phrase` 确认最终文字，`turn.end` 结束本轮。
 录音、识别等待、云端思考和回答播报期间保持离线唤醒，喊“你好小川”会取消旧轮并开始新一轮录音。
 新录音在调用 `recognize()` 时就开始缓冲，避免等待旧 TLS 请求收尾时漏掉开头；VAD 处理及新云端请求仍按 worker 顺序执行。
-默认命中阈值为 `0.7`；静音后刷新模型时保留约 200 毫秒完整帧前导音频，减少轻声词首被截断。
+示例命中阈值为 `0.30`，由业务配置，固件没有默认阈值；静音后刷新模型时保留约 200 毫秒完整帧前导音频，减少轻声词首被截断。
 MultiNet 模型跨轮复用，语音线程退出时释放，设置页停留超过 60 秒后也无需重新加载。
-旧 MultiNet7 固件必须同时更新应用镜像和模型分区；只更新本示例的 JS 不生效。
+从 MultiNet5 升级必须同时更新应用镜像和模型分区；只更新本示例的 JS 不生效。
+本次 MN7 的中文唤醒效果、误唤醒率和并行播报时的资源峰值尚未在真机验证。
 录音默认最多 15 秒、静音 800 毫秒结束、输入结束后等待识别最多 20 秒；建连最多 15 秒，
 总截止为采音截止与建连截止中较晚者再加 20 秒。只有最终文字提交给 AI，临时字幕不触发请求。
 

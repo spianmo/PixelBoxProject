@@ -441,7 +441,7 @@ interface PxSpeech {
   /** Azure配置仅在RAM保留；region=1..40小写字母数字；language/voice=1..80字母数字或连字符。仅官方HTTPS/WSS域名，校验CA。 */
   configure(opts: { region: string; key: string; language?: string; voice?: string }): void;
   wakeword: {
-    /** 注册业务唤醒词并监听；重复调用替换旧词和门限。MultiNet5 拼音命令检测，命中一次停止，就绪后 resolve。 */
+    /** 注册业务唤醒词并监听；重复调用替换旧词和门限。MultiNet7 拼音命令检测，命中一次停止，就绪后 resolve。 */
     start(opts: {
       /** 唤醒词显示名，1..96 UTF-8 字节，无控制字符及首尾空格；实际识别使用 pinyin。 */
       phrase: string;
