@@ -684,6 +684,10 @@ interface PxProjectionOptions {
 }
 
 interface PxUtil {
+  /** 按权重混合 xyz 点集，逐次累加保留 Float32 舍入。
+   * 1–32 个等长点集，每组最多 8192 点；权重数量等于点集数量且必须有限。
+   * output 必须等长，且不得与权重或输入共用 ArrayBuffer。 */
+  blendPoints(pointSets: Float32Array[], weights: Float32Array, output: Float32Array): void;
   /** Project packed xyz points into reusable xy grid indices, max 8192 points.
    * Output must fit 2 integers per point and use a different backing buffer.
    * Round to pixels, then round to the grid. Invalid values throw RangeError.

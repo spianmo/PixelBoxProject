@@ -1,5 +1,31 @@
 type ProjectionOptions = Partial<Record<'yaw' | 'pitch' | 'squash' | 'lift' | 'scale' | 'cx' | 'cy' | 'distance' | 'grid', number>>
 
+export function blendPoints(pointSets: Float32Array[], weights: Float32Array, output: Float32Array): void {
+  if (!Array.isArray(pointSets) || !(weights instanceof Float32Array) || !(output instanceof Float32Array))
+    throw new TypeError('blendPoints needs point sets, weights and Float32Array output')
+  if (!pointSets.length || pointSets.length > 32) throw new RangeError('blendPoints accepts 1 to 32 point sets')
+  // 先读完数组 getter，再检查视图，保持与固件的 buffer 脱离检查顺序一致。
+  const sources = Array.from(pointSets)
+  new Uint8Array(weights.buffer)
+  new Uint8Array(output.buffer)
+  if (weights.length !== sources.length || output.length % 3 || output.length > 8192 * 3 ||
+    (output.length && output.buffer === weights.buffer)) throw new RangeError('invalid blend lengths or aliased output')
+  for (let i = 0; i < sources.length; i++) {
+    const points = sources[i]
+    if (!(points instanceof Float32Array)) throw new TypeError('point sets must be Float32Array')
+    new Uint8Array(points.buffer)
+    if (points.length !== output.length || (output.length && points.buffer === output.buffer) || !Number.isFinite(weights[i]))
+      throw new RangeError('invalid point set, weight or aliased output')
+  }
+  output.fill(0)
+  for (let i = 0; i < sources.length; i++) {
+    const weight = weights[i]
+    if (!weight) continue
+    const points = sources[i]
+    for (let j = 0; j < output.length; j++) output[j] += points[j] * weight
+  }
+}
+
 export function projectPoints(points: Float32Array, options: ProjectionOptions, output: Int32Array): void {
   if (!(points instanceof Float32Array) || !options || typeof options !== 'object' || !(output instanceof Int32Array))
     throw new TypeError('projectPoints needs Float32Array, options, Int32Array')

@@ -175,6 +175,7 @@ const shapeCache: Partial<Record<CatShape, Float32Array>> = {};
 const projectedGrid = new Int32Array(CAT_SURFACE.length * 2);
 const projectedRuns = new Int32Array(CAT_SURFACE.length * 3);
 const blendedPoints = new Float32Array(CAT_SURFACE.length * 3);
+let packedShapes: Float32Array[] | undefined;
 function packedShape(shape: CatShape): Float32Array {
     let points = shapeCache[shape];
     if (points) return points;
@@ -187,7 +188,7 @@ function packedShape(shape: CatShape): Float32Array {
     return points;
 }
 export function prepareCat(): void {
-    for (const shape of CAT_SHAPES) packedShape(shape);
+    packedShapes = CAT_SHAPES.map(packedShape);
 }
 let occupancy = new Uint8Array(4096);
 const raster = {
@@ -202,12 +203,19 @@ const raster = {
 export function rasterizeCat(pose: Pose, scale: number, cx: number, cy: number): typeof raster {
     let packedPoints = packedShape(pose.shape || 'idle');
     if (pose.weights) {
-        blendedPoints.fill(0);
-        for (let i = 0; i < CAT_SHAPES.length; i++) {
-            const weight = pose.weights[i];
-            if (!weight) continue;
-            const points = packedShape(CAT_SHAPES[i]);
-            for (let j = 0; j < points.length; j++) blendedPoints[j] += points[j] * weight;
+        if (typeof px !== 'undefined' && px.util && typeof px.util.blendPoints === 'function') {
+            // 形态过渡的逐坐标混合移入原生循环，06/07 共用同一组预计算点集。
+            if (!packedShapes) prepareCat();
+            px.util.blendPoints(packedShapes!, pose.weights, blendedPoints);
+        } else {
+            // 独立运行的离线模型/图片工具没有设备 API，保留同一 Float32 数学定义。
+            blendedPoints.fill(0);
+            for (let i = 0; i < CAT_SHAPES.length; i++) {
+                const weight = pose.weights[i];
+                if (!weight) continue;
+                const points = packedShape(CAT_SHAPES[i]);
+                for (let j = 0; j < points.length; j++) blendedPoints[j] += points[j] * weight;
+            }
         }
         packedPoints = blendedPoints;
     }

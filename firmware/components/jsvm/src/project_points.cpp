@@ -3,6 +3,7 @@
 #include <cmath>
 #include <climits>
 #include <algorithm>
+#include <array>
 
 namespace {
 
@@ -19,6 +20,109 @@ bool option(JSContext *ctx, JSValueConst options, const char *key, double fallba
         return false;
     }
     return true;
+}
+
+struct FastProjection {
+    bool enabled;
+    float ca, sa, cb, sb, squash, lift, scale, cx, cy, distance;
+    int grid;
+
+    bool project(const float *p, int32_t &gx, int32_t &gy) const
+    {
+        // S3 只有单精度 FPU。限制坐标/相机范围后，远离半像素边界的点
+        // 使用硬件 float；边界及范围外的点交回 double，保持原 API 的取整结果。
+        if (!enabled || !(std::fabs(p[0]) <= 32 && std::fabs(p[1]) <= 32 && std::fabs(p[2]) <= 32)) return false;
+        const float x = p[0] * ca + p[2] * sa;
+        const float z = -p[0] * sa + p[2] * ca;
+        const float y = p[1] * squash * cb - z * sb;
+        const float depth = p[1] * sb + z * cb;
+        if (std::fabs(depth) > 32) return false;
+        const float perspective = distance / (distance - depth);
+        const float sx = cx + x * scale * perspective, sy = cy + y * scale * perspective + lift;
+        const float px = std::floor(sx + 0.5f), py = std::floor(sy + 0.5f);
+        // 1/32 像素保护带覆盖上述有界运算的累计浮点误差。
+        if (std::fabs(sx - px) > 0.46875f || std::fabs(sy - py) > 0.46875f) return false;
+        // 二次网格舍入只涉及整数，避免再次进入软件 double 除法。
+        auto snap = [this](int pixel) {
+            const int numerator = pixel * 2 + grid, denominator = grid * 2;
+            return numerator / denominator - (numerator < 0 && numerator % denominator != 0);
+        };
+        gx = snap(static_cast<int>(px)); gy = snap(static_cast<int>(py));
+        return true;
+    }
+};
+
+struct FloatBuffer {
+    JSContext *ctx;
+    JSValue owner = JS_UNDEFINED;
+    uint8_t *base = nullptr;
+    float *data = nullptr;
+    size_t count = 0;
+
+    explicit FloatBuffer(JSContext *context = nullptr) : ctx(context) {}
+    ~FloatBuffer() { if (ctx) JS_FreeValue(ctx, owner); }
+    bool read(JSContext *context, JSValueConst value)
+    {
+        ctx = context;
+        if (JS_GetTypedArrayType(value) != JS_TYPED_ARRAY_FLOAT32) return false;
+        size_t offset, bytes, element_bytes, capacity;
+        owner = JS_GetTypedArrayBuffer(ctx, value, &offset, &bytes, &element_bytes);
+        if (JS_IsException(owner)) return false;
+        base = JS_GetArrayBuffer(ctx, &capacity, owner);
+        if (JS_HasException(ctx) || offset > capacity || bytes > capacity - offset || (bytes && !base)) return false;
+        count = bytes / sizeof(float);
+        data = base ? reinterpret_cast<float *>(base + offset) : nullptr;
+        return true;
+    }
+};
+
+JSValue blend_points(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv)
+{
+    if (argc < 3 || !JS_IsArray(argv[0]))
+        return JS_ThrowTypeError(ctx, "blendPoints needs an array of Float32Array, weights and output");
+    JSValue length_value = JS_GetPropertyStr(ctx, argv[0], "length");
+    uint32_t length = 0;
+    const int length_error = JS_ToUint32(ctx, &length, length_value);
+    JS_FreeValue(ctx, length_value);
+    if (length_error) return JS_EXCEPTION;
+    if (length < 1 || length > 32) return JS_ThrowRangeError(ctx, "blendPoints accepts 1 to 32 point sets");
+
+    // 数组 getter 能执行 JS；先取齐并保留所有对象，再获得底层指针。
+    struct Sources {
+        JSContext *ctx;
+        std::array<JSValue, 32> values;
+        explicit Sources(JSContext *c) : ctx(c) { values.fill(JS_UNDEFINED); }
+        ~Sources() { for (JSValue value : values) JS_FreeValue(ctx, value); }
+    } sources(ctx);
+    for (uint32_t i = 0; i < length; ++i) {
+        sources.values[i] = JS_GetPropertyUint32(ctx, argv[0], i);
+        if (JS_IsException(sources.values[i])) return JS_EXCEPTION;
+    }
+    FloatBuffer weights, output;
+    std::array<FloatBuffer, 32> inputs;
+    if (!weights.read(ctx, argv[1]) || !output.read(ctx, argv[2]))
+        return JS_HasException(ctx) ? JS_EXCEPTION : JS_ThrowTypeError(ctx, "blendPoints needs Float32Array buffers");
+    if (weights.count != length || output.count % 3 || output.count > 8192 * 3 ||
+        (output.count && output.base == weights.base))
+        return JS_ThrowRangeError(ctx, "invalid blend lengths or aliased output");
+    for (uint32_t i = 0; i < length; ++i) {
+        if (!inputs[i].read(ctx, sources.values[i]))
+            return JS_HasException(ctx) ? JS_EXCEPTION : JS_ThrowTypeError(ctx, "point sets must be Float32Array");
+        if (inputs[i].count != output.count || (output.count && inputs[i].base == output.base) ||
+            !std::isfinite(weights.data[i]))
+            return JS_ThrowRangeError(ctx, "point sets must match output, weights must be finite, output cannot alias inputs");
+    }
+    // 保留每次 TypedArray 写入的 Float32 舍入顺序；将成千上万次 JS
+    // 取下标/装箱/算术移入原生循环，状态过渡无需阻塞整帧。
+    for (size_t j = 0; j < output.count; ++j) {
+        float value = 0;
+        for (uint32_t i = 0; i < length; ++i) {
+            if (weights.data[i] != 0)
+                value = static_cast<float>(double(value) + double(inputs[i].data[j]) * double(weights.data[i]));
+        }
+        output.data[j] = value;
+    }
+    return JS_UNDEFINED;
 }
 
 JSValue project_points(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv, int runs)
@@ -57,8 +161,19 @@ JSValue project_points(JSContext *ctx, JSValueConst, int argc, JSValueConst *arg
         const auto *points = reinterpret_cast<const float *>(input_data + input_offset);
         auto *output = reinterpret_cast<int32_t *>(output_data + output_offset);
         const double ca = std::cos(yaw), sa = std::sin(yaw), cb = std::cos(pitch), sb = std::sin(pitch);
+        const bool fast_enabled = std::fabs(squash) <= 2 && std::fabs(lift) <= 512 && scale <= 32 &&
+            std::fabs(cx) <= 2048 && std::fabs(cy) <= 2048 && distance >= 64 && distance <= 1024 &&
+            grid <= 1024 && std::floor(grid) == grid;
+        const FastProjection fast = fast_enabled ? FastProjection{true, float(ca), float(sa), float(cb), float(sb),
+            float(squash), float(lift), float(scale), float(cx), float(cy), float(distance),
+            static_cast<int>(grid)} : FastProjection{};
         int32_t min_x = INT32_MAX, min_y = INT32_MAX, max_x = INT32_MIN, max_y = INT32_MIN;
         for (size_t i = 0, j = 0; i < input_bytes / sizeof(float); i += 3, j += 2) {
+            if (fast.project(points + i, output[j], output[j + 1])) {
+                min_x = std::min(min_x, output[j]); max_x = std::max(max_x, output[j]);
+                min_y = std::min(min_y, output[j + 1]); max_y = std::max(max_y, output[j + 1]);
+                continue;
+            }
             const double x = points[i] * ca + points[i + 2] * sa;
             const double z = -points[i] * sa + points[i + 2] * ca;
             const double y = points[i + 1] * squash * cb - z * sb;
@@ -121,6 +236,7 @@ JSValue project_points(JSContext *ctx, JSValueConst, int argc, JSValueConst *arg
 namespace jsvm::internal {
 void install_projection_util(JSContext *ctx, JSValue util)
 {
+    JS_SetPropertyStr(ctx, util, "blendPoints", JS_NewCFunction(ctx, blend_points, "blendPoints", 3));
     JS_SetPropertyStr(ctx, util, "projectPoints", JS_NewCFunctionMagic(ctx, project_points, "projectPoints", 3, JS_CFUNC_generic_magic, 0));
     JS_SetPropertyStr(ctx, util, "projectPointRuns", JS_NewCFunctionMagic(ctx, project_points, "projectPointRuns", 3, JS_CFUNC_generic_magic, 1));
 }

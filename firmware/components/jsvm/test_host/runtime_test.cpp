@@ -93,7 +93,63 @@ int main() {
             }
         }
     )JS");
+    run(R"JS(
+        // 覆盖半像素舍入边界、负坐标及超出快速投影范围的输入。
+        const reference = (points,o) => {
+            const out=[];
+            for(let i=0;i<points.length;i+=3){
+                const x=points[i]*Math.cos(o.yaw)+points[i+2]*Math.sin(o.yaw);
+                const z=-points[i]*Math.sin(o.yaw)+points[i+2]*Math.cos(o.yaw);
+                const y=points[i+1]*o.squash*Math.cos(o.pitch)-z*Math.sin(o.pitch);
+                const depth=points[i+1]*Math.sin(o.pitch)+z*Math.cos(o.pitch);
+                const p=o.distance/(o.distance-depth);
+                out.push(Math.round(Math.round(o.cx+x*o.scale*p)/o.grid),
+                    Math.round(Math.round(o.cy+y*o.scale*p+o.lift)/o.grid));
+            }
+            return out;
+        };
+        let seed=27;
+        const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296};
+        for(let k=0;k<800;k++){
+            const p=new Float32Array(120);
+            for(let i=0;i<p.length;i++)p[i]=(random()-.5)*(k%7===0 && k%4!==0?80:64);
+            const o={yaw:random()*6,pitch:random()*6,squash:random()*2,
+                scale:random()*32+.001,distance:[64,128,1024,1025][k%4],
+                cx:(random()-.5)*4096,cy:(random()-.5)*4096,lift:(random()-.5)*1024,
+                grid:k%3===0?7.5:1+Math.floor(random()*16)};
+            const expected=reference(p,o),out=new Int32Array(expected.length);
+            projectPoints(p,o,out);
+            if(expected.some((n,i)=>n!==out[i]))throw Error('random projection mismatch '+k);
+        }
+        for(const grid of [1,2,3,8,11])for(const sign of [-1,1])for(const delta of [-1e-7,0,1e-7]){
+            const p=new Float32Array([0,0,0, 1,2,0]);
+            const o={yaw:0,pitch:0,squash:1,scale:8,distance:64,
+                cx:sign*32+.5+delta,cy:sign*16+.5-delta,lift:0,grid};
+            const out=new Int32Array(4),expected=reference(p,o);
+            projectPoints(p,o,out);
+            if(expected.some((n,i)=>n!==out[i]))throw Error('half pixel rounding mismatch');
+        }
+    )JS");
     std::puts("[OK] native projection validates types, subarrays, ranges and buffer ownership");
+
+    run(R"JS(
+        // 形态混合必须逐项按 Float32 舍入，与模型原来的 TypedArray 累加一致。
+        const shapes=Array.from({length:4},(_,k)=>Float32Array.from({length:300},(_,i)=>Math.sin(i*3+k)*20));
+        const weights=new Float32Array([.13,.27,.2,.4]), storage=new Float32Array(306);
+        const mixed=storage.subarray(3,303),expected=new Float32Array(300);
+        for(let k=0;k<shapes.length;k++)for(let i=0;i<expected.length;i++)expected[i]+=shapes[k][i]*weights[k];
+        blendPoints(shapes,weights,mixed);
+        if(expected.some((n,i)=>n!==mixed[i]) || storage[0]!==0 || storage[305]!==0)throw Error('blend mismatch');
+        blendPoints([new Float32Array(0)],new Float32Array([1]),new Float32Array(0));
+        let rejected=0;
+        for(const args of [[[],new Float32Array(0),mixed], [shapes,[],mixed],
+            [shapes,new Float32Array([NaN,.2,.3,.5]),mixed], [shapes,weights,new Float32Array(3)],
+            [shapes,weights,shapes[0]], [[new Float32Array(4)],new Float32Array([1]),new Float32Array(4)]]){
+            try{blendPoints(...args)}catch{rejected++}
+        }
+        if(rejected!==6)throw Error('invalid blend accepted');
+    )JS");
+    std::puts("[OK] native shape blending preserves Float32 results and buffer boundaries");
 
     const auto epoch = samples.reset();
     assert(samples.publish(epoch, 1));

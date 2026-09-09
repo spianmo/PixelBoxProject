@@ -133,8 +133,11 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     const painted: Bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
     const paint = (x: number, y: number, w: number, h: number, color: number) => {
         x += dx; y += dy;
-        painted.left = Math.min(painted.left, x); painted.top = Math.min(painted.top, y);
-        painted.right = Math.max(painted.right, x + w); painted.bottom = Math.max(painted.bottom, y + h);
+        // 热路径用比较直接更新包围盒，避免每个小矩形反复跨入 Math 原生函数。
+        if (x < painted.left) painted.left = x;
+        if (y < painted.top) painted.top = y;
+        if (x + w > painted.right) painted.right = x + w;
+        if (y + h > painted.bottom) painted.bottom = y + h;
         screen.fillRect(x, y, w, h, color);
     };
     for (const layer of [{ dx: step, dy: -step, color: 0x2050ef }, { dx: -step, dy: step, color: 0xe31c35 }, { dx: Math.ceil(step / 2), dy: 0, color: 0x17f5f5 }, { dx: -Math.ceil(step / 2), dy: 1, color: 0xf9fb54 }]) {
@@ -147,9 +150,11 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
             let leftCut = 0, topCut = 0, rightCut = 0, bottomCut = 0, area = 0;
             // 白色主体最后覆盖：只减去同一栅格行中最大遮挡矩形，保留色边与耳间空隙。
             for (let j = row; j < runs.count && runs.y[j] === gridY; j++) {
-                const left = Math.max(x, runs.x[j]), top = Math.max(y, runs.y[j]);
-                const end = Math.min(right, runs.x[j] + runs.width[j] + 1), base = Math.min(bottom, runs.y[j] + step + 1);
-                const overlap = Math.max(0, end - left) * Math.max(0, base - top);
+                const bx = runs.x[j], by = runs.y[j], br = bx + runs.width[j] + 1, bb = by + step + 1;
+                const left = x > bx ? x : bx, top = y > by ? y : by;
+                const end = right < br ? right : br, base = bottom < bb ? bottom : bb;
+                if (end <= left || base <= top) continue;
+                const overlap = (end - left) * (base - top);
                 if (overlap > area) { area = overlap; leftCut = left; topCut = top; rightCut = end; bottomCut = base; }
             }
             if (!area) paint(x, y, right - x, bottom - y, layer.color);
