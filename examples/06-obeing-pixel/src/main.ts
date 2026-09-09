@@ -1,5 +1,6 @@
 import { CatMotion, clamp, imuGlitch, prepareCat } from './model';
-import { drawScene, fullscreenAt, pairingKeyAt } from './render';
+import { characterAt, drawScene, fullscreenAt, pairingKeyAt } from './render';
+import { CharacterTouch, nextCharacter, readCharacter } from './characters';
 import { layoutPoint } from './layout';
 import { BufferedPcmPlayback } from './playback';
 import { BufferedUplink } from './uplink';
@@ -8,6 +9,7 @@ import { applyMessage, disconnect, initialState, parseMessage, rmsLevel, SAMPLE_
 
 const view = initialState();
 view.theme = px.storage.kv.get('ob.theme') === 'light' ? 'light' : 'dark';
+let character = readCharacter(px.storage.kv.get('ob.character'));
 const info = px.system.info();
 let socket: WebSocket | null = null;
 let phone: PxMdnsService | null = null;
@@ -338,9 +340,24 @@ function listen(): void {
     send({ type: 'listen' });
 }
 
+const characterTouch = new CharacterTouch(() => px.system.now(),
+    () => running && !settings && (fullscreen || (view.state !== 'pairing' && !(view.state === 'error' && !view.authenticated && phone))),
+    () => {
+        if (view.authenticated) listen();
+        else if (!view.connected) { reconnectPaused = false; reconnectAt = 0; void discover(); }
+    },
+    () => {
+        character = nextCharacter(character);
+        px.storage.kv.set('ob.character', character);
+        lastActivityAt = px.system.now();
+    });
+
 px.input.onTouch((touch) => {
-    if (touch.type !== 'down') return;
     const event = layoutPoint(px.screen, touch.x, touch.y);
+    // 只延迟角色上的短按；顶部按钮和配对键盘仍按下即响应。
+    const hitCharacter = event.y >= (fullscreen ? 42 : 83) && characterAt(px.screen, event.x, event.y);
+    if (characterTouch.handle({ ...touch, x: event.x, y: event.y }, hitCharacter)) return;
+    if (touch.type !== 'down') return;
     lastActivityAt = px.system.now();
     if (fullscreenAt(event.x, event.y, event.width)) { fullscreen = !fullscreen; return; }
     if (fullscreen) { if (event.y >= 42) listen(); return; }
@@ -370,6 +387,7 @@ px.input.onTouch((touch) => {
 
 px.input.onButton((event) => {
     if (event.id !== 'boot') return;
+    characterTouch.cancel();
     if (event.type === 'click') listen();
     else if (event.type === 'doubleClick') toggleMute();
     else if (event.type === 'longPress') { fullscreen = false; settings = !settings; }
@@ -400,7 +418,7 @@ px.screen.onFrame((dt) => {
     if ((micActive || (playback && !playbackEnded))
         && (uplink?.pendingAudio() || px.system.now() - audioDrawAt < Math.max(64, audioDrawCost))) return;
     const drawStarted = px.system.now();
-    drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings, fullscreen, shake,
+    drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings, fullscreen, shake, character,
         pose: motion.sample(view.state, clock, tiltX, tiltY, view.level) });
     audioDrawAt = px.system.now();
     audioDrawCost = audioDrawAt - drawStarted;
@@ -414,6 +432,7 @@ const heartbeatTimer = setInterval(() => {
 }, 10000);
 px.app.onExit(() => {
     running = false;
+    characterTouch.cancel();
     clearInterval(discoverTimer);
     clearInterval(heartbeatTimer);
     closeConnection();

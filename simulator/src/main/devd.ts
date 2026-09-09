@@ -368,14 +368,19 @@ function stopLogSubscription(key: string): void {
 
 // ---------------- 推送流程 ----------------
 
-/** 递归收集 dist 下的所有文件(相对路径统一为 / 分隔) */
-async function collectFiles(dir: string, base: string): Promise<string[]> {
+/** 只收集构建入口及assets运行资源，预览图、报告和旧构建杂项不进入设备包。 */
+async function collectFiles(dir: string, base: string, entry: string): Promise<string[]> {
   const out: string[] = []
   const items = await fsp.readdir(dir, { withFileTypes: true })
   for (const it of items) {
+    if (it.name === '.DS_Store' || it.name === '.gitkeep') continue
     const p = join(dir, it.name)
-    if (it.isDirectory()) out.push(...(await collectFiles(p, base)))
-    else out.push(relative(base, p).split(sep).join('/'))
+    const rel = relative(base, p).split(sep).join('/')
+    if (it.isDirectory()) {
+      if (rel === 'assets' || rel.startsWith('assets/') || entry.startsWith(`${rel}/`)) {
+        out.push(...(await collectFiles(p, base, entry)))
+      }
+    } else if (it.isFile() && (rel === entry || rel.startsWith('assets/'))) out.push(rel)
   }
   return out
 }
@@ -396,7 +401,7 @@ async function pushToDevice(root: string, host: string, port: number): Promise<v
     await client.call('hello', {})
 
     // 3) push_begin:manifest + 文件清单(size/sha256)
-    const relFiles = await collectFiles(build.outDir, build.outDir)
+    const relFiles = await collectFiles(build.outDir, build.outDir, build.manifest.entry)
     const metas: Array<{ path: string; size: number; sha256: string }> = []
     const contents = new Map<string, Buffer>()
     for (const rel of relFiles) {

@@ -1,10 +1,12 @@
 import { clamp, facePoints, imuGlitch, poseFor, rasterizeCat, projectPoint, posedShapePoint, type AssistantState, type Pose } from './model';
 import type { ViewState } from './state';
 import { layoutScreen, lineHeight, textHeight, type Screen } from './layout';
+import { CHARACTER_NAMES, type Character } from './characters';
+import { drawKitty } from './kitty';
 
 export type { Screen } from './layout';
 // shake 为 0..1 连续故障强度；离线预览未传入时从倾角输入计算。
-export interface RenderInput { clock: number; tiltX: number; tiltY: number; battery: number; settings: boolean; fullscreen?: boolean; pose?: Pose; shake?: number }
+export interface RenderInput { clock: number; tiltX: number; tiltY: number; battery: number; settings: boolean; fullscreen?: boolean; pose?: Pose; shake?: number; character?: Character }
 
 interface Bounds { left: number; top: number; right: number; bottom: number }
 interface SceneFrame {
@@ -14,6 +16,12 @@ interface SceneFrame {
 }
 const frames = new WeakMap<Screen, SceneFrame>();
 const glyphWidths = new WeakMap<Screen, Map<string, number>>();
+
+// 使用最近一帧的真实主体包围盒命中；坐标与 layoutPoint 保持同一布局空间。
+export function characterAt(target: Screen, x: number, y: number): boolean {
+    const box = frames.get(layoutScreen(target))?.cat;
+    return Boolean(box && x >= box.left - 8 && x <= box.right + 8 && y >= box.top - 8 && y <= box.bottom + 8);
+}
 
 // 静态布局变化才整屏刷新；字幕增量和 IMU 帧复用现有背景。
 export function beginScene(screen: Screen, key: string, background: number): boolean {
@@ -104,6 +112,11 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     // 位移幅度增加 50%；后续仍按主体区域校正，避免挤入字幕和按钮。
     const cx = screen.width / 2 + clamp(input.tiltX, -1, 1) * 18;
     cy += clamp(input.tiltY, -1, 1) * 12;
+    if (input.character && input.character !== 'cat') {
+        const box = drawKitty(screen, input.character, view.state, input.clock, pose, cx, cy, scale, region);
+        if (frame) frame.cat = box;
+        return (box.right - box.left) * (box.bottom - box.top);
+    }
     let runs = rasterizeCat(pose, scale, cx, cy);
     const bounds = () => {
         const edge = runs.step + Math.round(runs.step * glitch);
@@ -264,7 +277,8 @@ export function companionBody(screen: Screen, view: ViewState, input: RenderInpu
         if (frame && !frame.redraw) screen.fillRect(screen.width / 2 - 80, captionTop - 27, 165, 17, frame.background);
         waveform(screen, view, input, captionTop - 19, view.state === 'error' ? 0xf07979 : accent);
     }
-    const captionKey = JSON.stringify([progress, status, fallback, view.errorText, view.assistantText, view.userText]);
+    const hint = view.state === 'idle' || view.state === 'sleep' ? `${CHARACTER_NAMES[input.character || 'cat']} · 长按换装` : '';
+    const captionKey = JSON.stringify([progress, status, fallback, hint, view.errorText, view.assistantText, view.userText]);
     if (frame && !frame.redraw && frame.captionKey === captionKey) return;
     if (frame) {
         if (!frame.redraw) screen.fillRect(0, input.fullscreen ? captionTop : statusY, screen.width, screen.height - (input.fullscreen ? captionTop : statusY), frame.background);
@@ -281,7 +295,7 @@ export function companionBody(screen: Screen, view: ViewState, input: RenderInpu
         label(screen, wrapText(screen, view.userText, screen.width - 40, 1)[0] || '', 20, y, quiet);
         y += line;
     }
-    const text = reply || view.userText || fallback;
+    const text = reply || view.userText || fallback || hint;
     const available = Math.max(1, Math.min(2, Math.floor((screen.height - y - 8) / line)));
     wrapText(screen, text, screen.width - 40, available).forEach((value, i) => label(screen, value, 20, y + i * line, !view.assistantText && view.errorText ? 0xf07979 : fg));
 }

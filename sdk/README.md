@@ -38,6 +38,9 @@ node dist/cli.js --help
 | `pixelbox devices` | 列出局域网内的 PixelBox 设备(mDNS) |
 | `pixelbox eval "<code>" [--device ...]` | 在设备 JS VM 中执行一段代码并打印字符串化结果 |
 
+设备包只包含 manifest 指定的程序入口及 `assets/` 运行资源，`--no-build` 也遵守此规则。
+预览截图和报告应写到 `.artifacts/`，避免与 `dist/` 发布产物混放。
+
 `--device` 支持三种写法:`192.168.1.10`、`192.168.1.10:8765`、`pixelbox-abcd.local`,或 mDNS 实例名称(模糊匹配)。
 
 ## 典型工作流

@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.OBEING_PLAYWRIGHT || 'playwright');
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const output = resolve(process.argv[2] || join(root, '06-obeing-pixel', 'dist', 'screenshots'));
+const output = resolve(process.argv[2] || join(root, '06-obeing-pixel', '.artifacts', 'screenshots'));
 mkdirSync(output, { recursive: true });
 const bundle = await build({
     stdin: { contents: "export { drawScene } from './render'; export { initialState } from './state'; export { CatMotion, poseFor } from './model';", resolveDir: join(root, '06-obeing-pixel', 'src'), loader: 'ts' },
@@ -25,6 +25,10 @@ try {
     await page.evaluate(async () => { await document.fonts.load('12px Pixel'); });
     const results = await page.evaluate(() => {
         const variants = [
+            ...['dark', 'light'].flatMap(theme => ['idle', 'listening', 'thinking', 'speaking', 'sleep'].map(state =>
+                ({ character: 'cat', state, theme, tiltX: 0, tiltY: 0, clock: 1700 }))),
+            ...['kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf'].flatMap(character =>
+                ['dark', 'light'].flatMap(theme => [false, true].map(fullscreen => ({ character, state: 'idle', theme, fullscreen, tiltX: 0, tiltY: 0, clock: 1700 })))),
             { state: 'idle', shake: 1, theme: 'dark', tiltX: 0.4, tiltY: 0, clock: 1700 },
             ...['idle', 'peek', 'stretch', 'curl', 'sit'].map(shape => ({ state: 'idle', shape, theme: 'dark', tiltX: 0, tiltY: 0, clock: 1700 })),
             ...['idle', 'listening', 'thinking', 'speaking', 'sleep'].map(state => ({ state, fullscreen: true, theme: 'dark', tiltX: 0, tiltY: 0, clock: 1700 })),
@@ -75,7 +79,7 @@ try {
                 view.assistantText = variant.state === 'speaking' ? '今天晴，气温 24°C。很适合散步，记得带水，也可以和我聊聊。' : '';
             }
             Obeing.drawScene(screen, view, { clock: variant.clock, tiltX: variant.tiltX, tiltY: variant.tiltY, battery: 86, settings: variant.settings === true,
-                fullscreen: variant.fullscreen, shake: variant.shake, pose: variant.pose || Obeing.poseFor(view.state, variant.clock, variant.tiltX, variant.tiltY, view.level, variant.shape) });
+                character: variant.character, fullscreen: variant.fullscreen, shake: variant.shake, pose: variant.pose || Obeing.poseFor(view.state, variant.clock, variant.tiltX, variant.tiltY, view.level, variant.shape) });
             const data = ctx.getImageData(0, 0, width, height).data;
             let whitePixels = 0;
             let chromaticPixels = 0;
@@ -84,7 +88,7 @@ try {
                 if (data[i] > 248 && data[i + 1] > 248 && data[i + 2] > 248) whitePixels++;
                 if (Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]) > 100) chromaticPixels++;
             }
-            return { state: variant.state, shake: variant.shake, shape: variant.shape, fullscreen: Boolean(variant.fullscreen), theme: variant.theme, settings: variant.settings === true, pending: variant.pairingPending === true, width, height, fontHeight: texts[0]?.h, whitePixels, chromaticPixels, violations, calls, png: canvas.toDataURL() };
+            return { character: variant.character, state: variant.state, shake: variant.shake, shape: variant.shape, fullscreen: Boolean(variant.fullscreen), theme: variant.theme, settings: variant.settings === true, pending: variant.pairingPending === true, width, height, fontHeight: texts[0]?.h, whitePixels, chromaticPixels, violations, calls, png: canvas.toDataURL() };
         };
         return [368, 320, 480].flatMap((width) => variants.map((variant) => {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448; document.body.append(canvas);
@@ -95,7 +99,7 @@ try {
         assert.deepEqual(result.violations, []);
         if (result.fontHeight) assert.equal(result.fontHeight, result.width === 480 ? 24 : 12);
         if (result.state !== 'pairing' || result.pending) {
-            assert.ok(result.whitePixels > (result.settings ? 2000 : 5000), `${result.state}: 主体不为空`);
+            assert.ok(result.whitePixels > (result.settings || result.character ? 2000 : 5000), `${result.character || result.state}: 主体不为空`);
             assert.ok(result.chromaticPixels > (result.settings ? 500 : 900), `${result.state}: 参考彩色边缘可见`);
         }
     }
@@ -103,7 +107,7 @@ try {
     const canvases = page.locator('canvas');
     for (let i = 0; i < results.length; i++) {
         const result = results[i];
-        const name = result.settings ? 'connection' : result.pending ? 'pairing-pending' : result.state + (result.shape ? '-' + result.shape : '') + (result.fullscreen ? '-fullscreen' : '') + (result.shake ? '-shake' : '');
+        const name = result.settings ? 'connection' : result.pending ? 'pairing-pending' : (result.character === 'cat' ? `cat-${result.state}` : result.character || result.state) + (result.shape ? '-' + result.shape : '') + (result.fullscreen ? '-fullscreen' : '') + (result.shake ? '-shake' : '');
         await canvases.nth(i).screenshot({ path: join(output, `${name}-${result.theme}-${result.width}.png`) });
     }
     const moving = await page.evaluate(() => {
@@ -130,5 +134,21 @@ try {
     await page.setViewportSize({ width: 368, height: 448 });
     await page.addStyleTag({ content: 'body{display:block}canvas{display:none}canvas:first-child{display:block}' });
     await page.screenshot({ path: join(output, 'device-368x448.png') });
+    // 每行三款造型，同一主题占两行，便于审阅源图比例与真实设备效果。
+    const kittyImages = ['light', 'dark'].flatMap(theme => results.filter(result => result.character && result.character !== 'cat' && result.width === 368 && !result.fullscreen && result.theme === theme));
+    await page.setViewportSize({ width: 1104, height: 1792 });
+    await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(3,368px)}img{display:block}</style>' + kittyImages.map(result => `<img src="${result.png}">`).join(''));
+    await page.screenshot({ path: join(output, 'kitty-collection.png') });
+    // 对照用户选定的四款截图，保持相同顺序和368px单屏尺寸。
+    const referenceImages = ['kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf'].map(character =>
+        results.find(result => result.character === character && result.width === 368 && !result.fullscreen && result.theme === 'light'));
+    await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(4,368px);background:#eff1f1}img{display:block}</style>' + referenceImages.map(result => `<img src="${result.png}">`).join(''));
+    await page.setViewportSize({ width: 1472, height: 448 });
+    await page.screenshot({ path: join(output, 'kitty-reference-version.png') });
+    const characterImages = ['cat', 'kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf'].map(character =>
+        results.find(result => result.character === character && result.state === 'idle' && result.width === 368 && !result.fullscreen && result.theme === 'light'));
+    await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(4,368px);background:#eff1f1}img{display:block}</style>' + characterImages.map(result => `<img src="${result.png}">`).join(''));
+    await page.setViewportSize({ width: 1472, height: 896 });
+    await page.screenshot({ path: join(output, 'character-collection.png') });
     console.log(JSON.stringify({ output, count: results.length, moving, transition, violations: results.reduce((n, r) => n + r.violations.length, 0) }));
 } finally { await browser.close(); }

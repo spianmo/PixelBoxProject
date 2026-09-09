@@ -2,6 +2,8 @@
 node_modules/
 dist/
 out/
+.artifacts/
+*.tsbuildinfo
 build/
 managed_components/
 sdkconfig

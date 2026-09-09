@@ -320,6 +320,11 @@ OFL 允许自由使用/内嵌/再分发(不得单独出售字体本身);完整�
 
 ## 真机推送
 
+推送清单仅包含 `pixelbox.json` 指定的程序入口和 `dist/assets/` 运行资源；清单通过协议单独发送，
+`dist/screenshots/` 等预览产物不会进入设备包。示例视觉截图统一写入 `.artifacts/screenshots/`。
+遇到 `No more free space` 时先检查推送文件数量；下一次推送会自动清理上次失败的 staging。
+运行 `node scripts/devd-push-check.mjs` 可通过本地 WebSocket 验证真实推送入口的文件筛选、分块和校验。
+
 标题栏「推送到设备」:mDNS 扫描 `_pixelbox._tcp` → 设备下拉选择真机 → esbuild 构建 →
 按 devd 协议(docs/architecture.md §5)`hello → app.push_begin → app.push_chunk → app.push_end`
 分块上传,设备校验后原子切换并热重启 JS VM。

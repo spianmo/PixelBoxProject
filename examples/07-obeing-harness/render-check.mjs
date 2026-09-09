@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.OBEING_PLAYWRIGHT || 'playwright');
 const root = dirname(fileURLToPath(import.meta.url));
-const output = resolve(process.argv[2] || join(root, 'dist', 'screenshots'));
+const output = resolve(process.argv[2] || join(root, '.artifacts', 'screenshots'));
 mkdirSync(output, { recursive: true });
 const bundle = await build({ stdin: { contents: "export { drawHarness } from './render'; export { initialState } from '../../06-obeing-pixel/src/state';",
     resolveDir: join(root, 'src'), loader: 'ts' }, bundle: true, format: 'iife', globalName: 'Harness', write: false, target: 'es2020' });
@@ -43,9 +43,9 @@ try {
                 userText: '今天适合去公园散步吗？', thinkingText: '天气查询已完成', assistantText: '今天晴，气温适宜。很适合散步，记得带水。', level: 62 };
             const form = { page: variant.page, returnPage: 'login', field: 'password', upper: false, symbols: false, busy: false, speechReady: true,
                 values: { tenant: 'OBEING', account: 'USER01', password: 'fixture-password', region: 'eastasia', key: 'x'.repeat(32), origin: 'https://v4.teamhelper.cn', oem: '', domain: '', question: '' } };
-            if (variant.page !== 'assistant' || variant.wakePhrase) { view.userText = ''; view.assistantText = ''; view.thinkingText = ''; }
+            if (variant.page !== 'assistant' || variant.wakePhrase || (variant.character === 'cat' && ['idle', 'sleep'].includes(variant.state))) { view.userText = ''; view.assistantText = ''; view.thinkingText = ''; }
             if (variant.error) view.errorText = '设备 TLS 内存不足，请更新固件后重新登录企业账号';
-            Harness.drawHarness(screen, view, { clock: 1800, tiltX: tilt, tiltY: -0.4, battery: 86, settings: false, fullscreen: variant.fullscreen }, form, variant.wakePhrase);
+            Harness.drawHarness(screen, view, { clock: 1800, tiltX: variant.tiltX ?? tilt, tiltY: variant.tiltY ?? -0.4, battery: 86, settings: false, fullscreen: variant.fullscreen, character: variant.character }, form, variant.wakePhrase);
             const pixels = ctx.getImageData(0, 0, width, height).data;
             let white = 0;
             let colors = 0;
@@ -60,6 +60,17 @@ try {
             return { ...variant, width, height, fontHeight: texts[0].h, violations, white, colors, png: canvas.toDataURL() };
         };
         const results = [];
+        // 默认小猫的正面与睡眠图用于对照原素材，避免全部截图倾斜而掩盖比例问题。
+        for (const width of [320, 368, 480]) for (const state of ['idle', 'listening', 'thinking', 'speaking', 'sleep']) for (const theme of ['dark', 'light']) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448;
+            document.body.append(canvas);
+            results.push(window.renderHarnessVariant(canvas, { page: 'assistant', state, character: 'cat', theme, tiltX: 0, tiltY: 0 }));
+        }
+        for (const width of [320, 368, 480]) for (const character of ['kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf']) for (const theme of ['dark', 'light']) for (const fullscreen of [false, true]) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448;
+            document.body.append(canvas);
+            results.push(window.renderHarnessVariant(canvas, { page: 'assistant', state: 'idle', character, theme, fullscreen }, 0.25));
+        }
         for (const width of [368, 320, 480]) for (const theme of ['dark', 'light']) for (const page of ['login', 'speech', 'server', 'settings', 'editor', 'assistant']) {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448;
             document.body.append(canvas);
@@ -81,8 +92,9 @@ try {
         const result = results[i];
         assert.deepEqual(result.violations, [], `${result.page} ${result.theme} ${result.width}`);
         assert.equal(result.fontHeight, result.width === 480 ? 24 : 12);
-        if (result.page === 'assistant') { assert.ok(result.white > 5000); assert.ok(result.colors > 900); }
-        await page.locator('canvas').nth(i).screenshot({ path: join(output, `${result.page}${result.fullscreen ? '-fullscreen-' + result.state : ''}-${result.theme}-${result.width}.png`) });
+        if (result.page === 'assistant') { assert.ok(result.white > (result.character ? 2000 : 5000)); assert.ok(result.colors > 900); }
+        const name = result.character === 'cat' ? `cat-${result.state}` : result.character || result.page;
+        await page.locator('canvas').nth(i).screenshot({ path: join(output, `${name}${result.fullscreen ? '-fullscreen-' + result.state : ''}-${result.theme}-${result.width}.png`) });
     }
     const moving = await page.evaluate(() => {
         const canvas = document.querySelector('canvas');

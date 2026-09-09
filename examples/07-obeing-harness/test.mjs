@@ -810,6 +810,8 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
     let exit;
     let requests = 0;
     let recordings = 0;
+    let now = 100;
+    let holdTimer;
     const data = new Map(Object.entries({ 'h.tenant': 'ABC123', 'h.account': 'USR123', 'h.origin': config.origin }));
     const speechConfigs = [];
     const fetcher = async (url) => {
@@ -821,7 +823,7 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
         throw new Error('unexpected fixture path');
     };
     const px = {
-        system: { info: () => ({ deviceId: 'test-box' }), now: () => 100, battery: () => ({ level: 86 }), ntpSync: async () => {} },
+        system: { info: () => ({ deviceId: 'test-box' }), now: () => now, battery: () => ({ level: 86 }), ntpSync: async () => {} },
         storage: { kv: { get: name => data.get(name), set: (key, value) => data.set(key, value) } },
         speech: { available: () => true, configure: (value) => speechConfigs.push(value), cancel() {},
             wakeword: { stop() {}, start: async () => {} }, recognize: () => { recordings++; return new Promise(() => {}); }, speak: async () => {} },
@@ -834,14 +836,16 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
         app: { onExit(cb) { exit = cb; } },
     };
     const start = () => runInNewContext(configuredMainBundle.outputFiles[0].text, { px, TextEncoder, Date, fetch: fetcher, WebSocket: class {},
-        setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {}, console: { log() {} } });
+        setTimeout(cb, ms) { if (ms === 700) { holdTimer = cb; return -1; } return setTimeout(cb, ms); },
+        clearTimeout(id) { if (id === -1) holdTimer = undefined; else clearTimeout(id); },
+        setInterval: () => 1, clearInterval() {}, console: { log() {} } });
     start();
     assert.equal(speechConfigs.length, 1);
     assert.equal(speechConfigs[0].region, 'eastasia');
     assert.equal(speechConfigs[0].key, 'fixture-project-key-1234567890');
     assert.equal(speechConfigs[0].language, 'zh-CN');
     assert.equal(speechConfigs[0].voice, 'zh-CN-XiaoxiaoNeural');
-    const tap = (x, y) => touch({ type: 'down', x, y });
+    const tap = (x, y) => { touch({ type: 'down', x, y }); touch({ type: 'up', x, y }); };
     if (width === 480) {
         tap(86, 269); for (let i = 0; i < 16; i++) tap(46, 307); tap(420, 436); tap(240, 359);
     } else {
@@ -850,8 +854,24 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
     await tick(); await tick();
     // 登录后处于 assistant，点击顶部设置区才会打开 settings；若落到 speech，此坐标不会进入 settings。
     const frame = () => { drawn = []; renderFrame(200); return drawn.join('|'); };
+    frame();
+    const hold = () => {
+        touch({ type: 'down', x: width / 2, y: height / 2 });
+        assert.equal(typeof holdTimer, 'function', '真实角色命中建立长按计时器');
+        now += 700; const fire = holdTimer; holdTimer = undefined; fire();
+        touch({ type: 'up', x: width / 2, y: height / 2 });
+    };
+    for (const character of ['kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf']) {
+        hold();
+        assert.equal(data.get('h.character'), character);
+        assert.equal(recordings, 0, '长按切换不启动录音');
+        frame();
+    }
     assert.ok(!drawn.includes('小川'), 'account name removed from assistant header');
     tap(width - 33, 24); assert.equal(frame().includes('ObeingHarness'), false);
+    hold(); assert.equal(data.get('h.character'), 'cat'); frame();
+    hold(); assert.equal(data.get('h.character'), 'kitty-classic'); frame();
+    assert.equal(recordings, 0, '全屏长按仍不启动录音');
     tap(20, 24); assert.equal(recordings, 0);
     tap(width - 33, height === 480 ? 51 : 48);
     assert.equal(recordings, 1); assert.equal(frame().includes('企业服务器'), false);
@@ -860,7 +880,9 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
     const loginRequests = requests;
     start(); await tick(); await tick();
     assert.equal(requests, loginRequests, 'hot reload restores saved access token without login requests');
-    assert.ok(!frame().includes('企业登录'));
+    const restoredFrame = frame();
+    assert.ok(!restoredFrame.includes('企业登录'));
+    assert.ok(restoredFrame.includes('经典 Kitty'), '重新启动真实入口恢复角色');
     tap(width - 33, height === 480 ? 51 : 48);
     drawn = [];
     renderFrame(16);

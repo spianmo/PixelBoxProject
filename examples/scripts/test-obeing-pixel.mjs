@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
@@ -15,6 +16,9 @@ async function moduleAt(name) {
 const model = await moduleAt('model.ts');
 const state = await moduleAt('state.ts');
 const render = await moduleAt('render.ts');
+const characters = await moduleAt('characters.ts');
+const kitty = await moduleAt('kitty.ts');
+const { KITTY_PATTERNS, KITTY_PALETTE } = await moduleAt('kitty-patterns.ts');
 const { encodeImaAdpcm } = await moduleAt('../../../simulator/src/renderer/src/device-sim/sandbox/runtime/ima-adpcm.ts');
 const harnessBundle = await build({ entryPoints: [join(examples, '07-obeing-harness/src/render.ts')], bundle: true, format: 'esm', target: 'es2020', write: false, logLevel: 'silent' });
 const harnessRender = await import(`data:text/javascript;base64,${Buffer.from(harnessBundle.outputFiles[0].text).toString('base64')}`);
@@ -43,8 +47,18 @@ await test('猫为有厚度的三维体素，外壳少于实体并保留双耳',
     const filled = volume.flat(2).filter(Boolean).length;
     assert.ok(filled > 2500);
     assert.ok(model.CAT_SURFACE.length < filled / 2);
-    assert.ok(volume[6][1][3] && volume[6][1][17]);
-    assert.equal(volume[6][1][10], 0);
+    const ears = volume[6].find(row => row.some(Boolean));
+    assert.ok(ears[3] && ears[17]);
+    assert.equal(ears[10], 0);
+});
+await test('默认小猫轮廓、全部形变和表情与中午原版0935617一致', () => {
+    // 快照独立提取自2026-09-09中午前的0935617，防止重新引入后加的半身和微笑。
+    const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    assert.equal(hash(model.CAT_VOLUME), '1a9be89e7babdd16c16d50781387cb7072e1f4ed2b73a20aa5b7aa7302aeeb1a');
+    assert.equal(hash(model.CAT_SHAPES.map(shape => model.CAT_SURFACE.map(p => model.shapePoint(p, shape)))), '705213cb5e95bb0602b6b0274340b8a8ab20af40c1a3dfed5678411f5a5f4c35');
+    const states = ['idle', 'sleep', 'wake', 'listening', 'thinking', 'speaking', 'muted', 'error'];
+    const faces = states.flatMap(state => [100, 1700, 2650].flatMap(clock => [0, 50, 100].map(level => model.facePoints(state, clock, level))));
+    assert.equal(hash(faces), 'b58e0b3dffc9fc4d5bbea9f6c43539a4b87057a02a8351f0d248c6701d5bddb8');
 });
 await test('IMU投影改变三维视角与深度，倾角钳制后不出主体区', () => {
     const poses = [-1, 0, 1].map((tilt) => model.poseFor('idle', 500, tilt, tilt, 0));
@@ -54,7 +68,7 @@ await test('IMU投影改变三维视角与深度，倾角钳制后不出主体�
         for (let i = 0; i < projection.length; i++) {
             const point = projection[i];
             assert.ok(point.sx > 50 && point.sx < 320);
-            assert.ok(point.sy > 55 && point.sy < 275);
+            assert.ok(point.sy > 55 && point.sy < 295);
             if (i) assert.ok(point.depth >= projection[i - 1].depth);
         }
     }
@@ -381,7 +395,8 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
         get audioUnderrunMs() { return audioUnderrunMs; },
         get screenWrites() { return screenWrites; },
         get micStarts() { return micStarts; }, get micStops() { return micStops; }, get audioFeeds() { return audioFeeds; },
-        touch(x, y) { touch({ type: 'down', x, y }); },
+        touch(x, y) { touch({ type: 'down', x, y }); touch({ type: 'up', x, y }); },
+        touchEvent(type, x = width / 2, y = height / 2) { touch({ type, x, y }); },
         button(type) { button({ id: 'boot', type }); },
         open() { sockets.at(-1).onopen(); },
         message(message) { sockets.at(-1).onmessage({ data: message instanceof ArrayBuffer ? message : JSON.stringify(message.type === 'hello.ok' ? { ...testPair, ...message } : message) }); },
@@ -971,6 +986,149 @@ await test('语音恢复时用户手动静音仍优先，迟到 idle 不能重�
     assert.equal(r.micStarts, 1);
     assert.equal(r.sockets[0].readyState, 1);
     r.exit();
+});
+
+await test('Kitty保留选定版本的头像、完整身体和配件，各图纸眼位有效', () => {
+    // 尺寸和豆数来自改半身前的原始网格提取，女巫包含整把扫帚及侧坐身体。
+    const originals = { 'kitty-classic': [42, 34], 'kitty-witch': [46, 47, 1092], 'kitty-fish': [30, 23, 450], 'kitty-scarf': [21, 22, 284] };
+    for (const [character, pattern] of Object.entries(KITTY_PATTERNS)) {
+        assert.ok(pattern.rows.every(row => row.length === pattern.rows[0].length));
+        assert.ok(Array.from(pattern.rows.join('')).every(pixel => pixel === '.' || pixel in KITTY_PALETTE));
+        const original = originals[character];
+        if (original) {
+            assert.deepEqual([pattern.rows[0].length, pattern.rows.length], original.slice(0, 2), `${character}: 恢复原图范围，不截身体或追加胸部`);
+            if (original[2]) assert.equal(pattern.rows.join('').replaceAll('.', '').length, original[2], `${character}: 完整保留原图豆数`);
+        }
+        for (const eye of pattern.eyes) for (let y = eye.y; y < eye.y + eye.height; y++) for (let x = eye.x; x < eye.x + eye.width; x++) {
+            assert.equal(pattern.rows[y][x], '#', `${character}眼睛坐标必须落在原图黑豆上`);
+        }
+    }
+});
+
+await test('Kitty正面严格等比还原图纸，语音挤压不拉伸脸型且闭眼只改变眼睛', () => {
+    const background = 0xabcdef;
+    for (const character of Object.keys(KITTY_PATTERNS)) for (const scale of [4.4, 11, 14]) {
+        const pattern = KITTY_PATTERNS[character];
+        let left = 100, top = 100, right = 0, bottom = 0;
+        pattern.rows.forEach((row, y) => Array.from(row).forEach((pixel, x) => {
+            if (pixel === '.') return;
+            left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x + 1); bottom = Math.max(bottom, y + 1);
+        }));
+        const screen = pixelScreen(368, 448);
+        screen.clear(background);
+        const pose = { yaw: 0, pitch: 0, lift: 0, squash: 1 };
+        kitty.drawKitty(screen, character, 'idle', 1700, pose, 184, 210, scale, { top: 83, bottom: 342 });
+        const occupied = [];
+        screen.pixels.forEach((pixel, i) => { if (pixel !== background) occupied.push(i); });
+        const x0 = Math.min(...occupied.map(i => i % 368)), y0 = Math.floor(occupied[0] / 368);
+        const x1 = Math.max(...occupied.map(i => i % 368)) + 1, y1 = Math.floor(occupied.at(-1) / 368) + 1;
+        const step = (x1 - x0) / (right - left);
+        assert.ok(Number.isInteger(step) && step > 0, '宽度必须按整格放大');
+        assert.equal(y1 - y0, (bottom - top) * step, `${character}宽高缩放必须相同`);
+        const expected = pixelScreen(368, 448); expected.clear(background);
+        for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+            const pixel = pattern.rows[y][x];
+            if (pixel !== '.') expected.fillRect(x0 + (x - left) * step, y0 + (y - top) * step, step, step, KITTY_PALETTE[pixel]);
+        }
+        assert.deepEqual(screen.pixels, expected.pixels, `${character}实际渲染逐格还原源图`);
+        for (const squash of [0.92, 1.08]) {
+            const speaking = pixelScreen(368, 448); speaking.clear(background);
+            kitty.drawKitty(speaking, character, 'speaking', 1700, { ...pose, squash }, 184, 210, scale, { top: 83, bottom: 342 });
+            assert.deepEqual(speaking.pixels, expected.pixels, '只改变小猫挤压参数不能拉伸Kitty');
+        }
+        const sleeping = pixelScreen(368, 448); sleeping.clear(background);
+        kitty.drawKitty(sleeping, character, 'sleep', 1700, pose, 184, 210, scale, { top: 83, bottom: 342 });
+        const changed = sleeping.pixels.reduce((n, pixel, i) => n + (pixel !== expected.pixels[i] ? 1 : 0), 0);
+        assert.equal(changed, pattern.eyes.reduce((n, eye) => n + eye.width * (eye.height - 1), 0) * step * step);
+    }
+});
+
+await test('角色长按边界、拖动取消、延迟调度、换页和退出均不误触发短按', async () => {
+    const bundle = await build({ entryPoints: [join(source, 'characters.ts')], bundle: true, format: 'iife', globalName: 'Characters', write: false });
+    let now = 0, timerId = 0, taps = 0, holds = 0, active = true;
+    const timers = new Map();
+    const { CharacterTouch } = runInNewContext(bundle.outputFiles[0].text + '; Characters', {
+        setTimeout(cb, ms) { const id = ++timerId; timers.set(id, { cb, at: now + ms }); return id; },
+        clearTimeout(id) { timers.delete(id); },
+    });
+    const gesture = new CharacterTouch(() => now, () => active, () => taps++, () => holds++);
+    const event = (type, x = 100, y = 100, hit = true) => gesture.handle({ type, x, y }, hit);
+    const advance = ms => { now += ms; for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.cb(); } };
+    assert.equal(event('down', 0, 0, false), false);
+    event('down'); advance(699); assert.equal(taps + holds, 0); event('up'); assert.equal(taps, 1);
+    event('down'); advance(700); assert.equal(holds, 1); advance(3000); event('up'); event('up');
+    assert.equal(holds, 1); assert.equal(taps, 1, '持续长按和松手都不能重复触发');
+    event('down'); event('move', 120); event('move'); advance(700); event('up');
+    assert.equal(holds + taps, 2, '滑出再滑回也不换装或开麦');
+    event('down'); now += 800; event('up'); assert.equal(holds, 2, '繁忙时松手补判长按');
+    event('down'); active = false; advance(700); event('up'); active = true;
+    event('down'); gesture.cancel(); advance(700); event('up');
+    assert.equal(timers.size, 0); assert.equal(taps, 1); assert.equal(holds, 2);
+    assert.equal(characters.readCharacter('invalid'), 'cat');
+    assert.equal(characters.readCharacter(null), 'cat');
+    assert.equal(characters.nextCharacter('kitty-scarf'), 'cat');
+});
+
+await test('06真实入口长按循环全部形象、保存恢复、普通/全屏短按与BOOT退出清理', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.frameText();
+    const before = r.sent.filter(m => m.type === 'listen').length;
+    const starts = r.micStarts;
+    for (const character of characters.CHARACTERS.slice(1)) {
+        r.touchEvent('down', 184, 215); r.advance(699); r.flushTimers();
+        assert.notEqual(r.storage.get('ob.character'), character);
+        r.advance(1); r.flushTimers();
+        assert.equal(r.storage.get('ob.character'), character);
+        r.advance(800); r.flushTimers(); r.touchEvent('up', 184, 215);
+        assert.equal(r.sent.filter(m => m.type === 'listen').length, before);
+        assert.equal(r.micStarts, starts, '换装不改变采音生命周期');
+        assert.ok(r.frameText().includes(characters.CHARACTER_NAMES[character]));
+    }
+    const saved = r.storage;
+    r.exit();
+    const restored = runtime(368, 448, saved);
+    await new Promise(setImmediate); restored.open();
+    restored.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    assert.ok(restored.frameText().includes('围巾 Kitty'), '重启恢复已选角色');
+    restored.touch(337, 24); restored.frameText();
+    restored.touchEvent('down', 184, 215); restored.advance(700); restored.flushTimers(); restored.touchEvent('up', 184, 215);
+    assert.equal(saved.get('ob.character'), 'cat');
+    restored.frameText();
+    restored.touchEvent('down', 184, 215);
+    assert.equal(restored.sent.filter(m => m.type === 'listen').length, 0);
+    restored.advance(100); restored.touchEvent('up', 184, 215);
+    assert.equal(restored.sent.filter(m => m.type === 'listen').length, 1, '短按仅在松手时开始语音');
+    restored.touchEvent('down', 184, 215); restored.button('longPress'); restored.advance(700); restored.flushTimers(); restored.touchEvent('up', 184, 215);
+    assert.equal(saved.get('ob.character'), 'cat', 'BOOT切页取消角色长按');
+    restored.button('longPress'); restored.frameText(); restored.touchEvent('down', 184, 215);
+    restored.exit(); restored.advance(700); restored.flushTimers();
+    assert.equal(saved.get('ob.character'), 'cat', '应用退出清除长按定时器');
+});
+
+await test('06/07全部形象切换、眨眼和倾斜的增量绘制与整屏重绘逐像素一致', () => {
+    const form = { page: 'assistant' };
+    for (const harness of [false, true]) for (const width of [320, 368, 480]) for (const theme of ['dark', 'light']) for (const fullscreen of [false, true]) {
+        const height = width === 480 ? 480 : 448;
+        const view = { ...state.initialState(), state: 'idle', authenticated: true, connected: true, theme };
+        const incremental = pixelScreen(width, height);
+        const draw = (screen, input) => harness ? harnessRender.drawHarness(screen, view, input, form) : render.drawScene(screen, view, input);
+        const fingerprints = new Set();
+        for (const character of [...characters.CHARACTERS, 'cat']) for (const tilt of [0, -1, 1]) {
+            for (const clock of [100, 1700]) {
+                const fresh = pixelScreen(width, height);
+                const input = { character, clock, tiltX: tilt, tiltY: -tilt, battery: 86, settings: false, fullscreen };
+                draw(incremental, input); draw(fresh, input);
+                assert.deepEqual(incremental.pixels, fresh.pixels, `${harness ? '07' : '06'} ${character} ${width} ${theme} ${fullscreen} ${tilt} ${clock}`);
+                if (!tilt && clock === 1700) fingerprints.add(Buffer.from(fresh.pixels.buffer).toString('base64'));
+                if (character !== 'cat') {
+                    assert.ok(fresh.pixels.filter(p => p === 0xffffff).length > 1000, 'Kitty白色脸部可见');
+                    assert.ok(fresh.pixels.includes(KITTY_PALETTE.N) || fresh.pixels.includes(KITTY_PALETTE.y), `${character} ${width} ${tilt}: Kitty黄色鼻子可见`);
+                }
+            }
+        }
+        assert.equal(fingerprints.size, characters.CHARACTERS.length, '全部形象确实绘制不同像素');
+    }
 });
 
 console.log(`\nObeing Pixel 验证通过：${passed} 项`);

@@ -1,5 +1,6 @@
 import { CatMotion, clamp, imuGlitch, prepareCat } from '../../06-obeing-pixel/src/model';
-import { fullscreenAt } from '../../06-obeing-pixel/src/render';
+import { characterAt, fullscreenAt } from '../../06-obeing-pixel/src/render';
+import { CharacterTouch, nextCharacter, readCharacter } from '../../06-obeing-pixel/src/characters';
 import { layoutPoint } from '../../06-obeing-pixel/src/layout';
 import { EnterpriseAuth, validateOrigin } from './auth';
 import { MexusConversation } from './conversation';
@@ -27,6 +28,7 @@ let controller = createController();
 let restorePending = Boolean(controller.auth.current());
 let running = true;
 let fullscreen = false;
+let character = readCharacter(px.storage.kv.get('h.character'));
 const motion = new CatMotion();
 let clock = 0;
 let lastActivity = px.system.now();
@@ -62,6 +64,7 @@ function createController(): HarnessController {
 }
 
 function showPage(page: Page, resumeWake = true): void {
+    characterTouch.cancel();
     if (page !== 'assistant') fullscreen = false;
     form.page = page;
     controller.setPaused(page !== 'assistant');
@@ -174,9 +177,20 @@ function theme(): void {
     px.storage.kv.set('h.theme', controller.view.theme);
 }
 
+const characterTouch = new CharacterTouch(() => px.system.now(), () => running && form.page === 'assistant',
+    () => { lastActivity = px.system.now(); void controller.listen(); },
+    () => {
+        character = nextCharacter(character);
+        px.storage.kv.set('h.character', character);
+        lastActivity = px.system.now();
+    });
+
 const unsubTouch = px.input.onTouch((touch) => {
-    if (touch.type !== 'down') return;
     const event = layoutPoint(px.screen, touch.x, touch.y);
+    // 即使角色随 IMU 靠近顶部，也不拦截全屏、静音和设置按钮。
+    const hitCharacter = event.y >= (fullscreen ? 42 : 83) && characterAt(px.screen, event.x, event.y);
+    if (characterTouch.handle({ ...touch, x: event.x, y: event.y }, hitCharacter)) return;
+    if (touch.type !== 'down') return;
     lastActivity = px.system.now();
     if (form.page === 'assistant') {
         if (fullscreenAt(event.x, event.y, event.width)) { fullscreen = !fullscreen; return; }
@@ -224,6 +238,7 @@ const unsubTouch = px.input.onTouch((touch) => {
 
 const unsubButton = px.input.onButton((event) => {
     if (event.id !== 'boot') return;
+    characterTouch.cancel();
     lastActivity = px.system.now();
     if (event.type === 'click' && controller.view.authenticated) { showPage('assistant', false); void controller.listen(); }
     else if (event.type === 'doubleClick') controller.toggleMute();
@@ -255,12 +270,13 @@ px.screen.onFrame((dt) => {
     if (controller.view.state === 'idle' && px.system.now() - lastActivity > 45000) controller.view.state = 'sleep';
     if (!controller.view.authenticated && form.page === 'assistant') showPage('login');
     form.speechReady = controller.hasSpeech();
-    drawHarness(px.screen, controller.view, { clock, tiltX, tiltY, battery, settings: false, fullscreen, shake,
+    drawHarness(px.screen, controller.view, { clock, tiltX, tiltY, battery, settings: false, fullscreen, shake, character,
         pose: motion.sample(controller.view.state, clock, tiltX, tiltY, controller.view.level) }, form, controller.wakeConfig.phrase);
 });
 const batteryTimer = setInterval(() => { battery = px.system.battery().level; void restoreLogin(); }, 10000);
 px.app.onExit(() => {
     running = false;
+    characterTouch.cancel();
     loginEpoch++;
     controller.dispose();
     form.values.password = ''; form.values.key = ''; form.values.question = '';

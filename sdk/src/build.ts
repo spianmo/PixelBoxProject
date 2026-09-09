@@ -120,10 +120,11 @@ export async function buildApp(projectDir: string, opts: BuildOptions = {}): Pro
 /**
  * 把构建结果转为待推送文件列表。
  * 注意:manifest 内容经 app.push_begin 的 manifest 参数下发(devd 自行落盘 manifest.json),
- * 因此 dist/pixelbox.json 不重复推送。
+ * 因此只推送入口与assets运行资源，dist/pixelbox.json及预览截图不重复推送。
  */
 export function collectPushFiles(build: BuildResult): PushFile[] {
   return build.files
-    .filter((f) => f.relPath !== 'pixelbox.json')
+    .filter((f) => (f.relPath === build.manifest.entry || f.relPath.startsWith('assets/'))
+      && !f.relPath.split('/').some((part) => part === '.DS_Store' || part === '.gitkeep'))
     .map((f) => ({ path: f.relPath, data: fs.readFileSync(f.absPath) }));
 }
