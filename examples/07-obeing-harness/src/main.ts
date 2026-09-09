@@ -241,8 +241,9 @@ const unsubOnline = px.wifi.on('gotIp', () => {
 void restoreLogin();
 
 if (px.sensors.imu.available()) px.sensors.imu.start({ rateHz: 50, onData(data) {
-    if (Math.abs(data.ax + targetX) + Math.abs(data.ay - targetY) > 0.35) shakeUntil = px.system.now() + 180;
-    targetX = clamp(-data.ax, -1, 1); targetY = clamp(data.ay, -1, 1);
+    // 水平倾斜与 ax 同号，反转小猫的左右转向和位移；摇晃检测使用同方向差值。
+    if (Math.abs(data.ax - targetX) + Math.abs(data.ay - targetY) > 0.35) shakeUntil = px.system.now() + 180;
+    targetX = clamp(data.ax, -1, 1); targetY = clamp(data.ay, -1, 1);
 } });
 prepareCat();
 px.screen.setFps(30);
