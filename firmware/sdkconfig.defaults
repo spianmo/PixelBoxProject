@@ -70,3 +70,8 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # 崩溃黑匣子: panic 时 coredump (ELF, base64) 经控制台输出, 离线 espcoredump 解全线程栈
 CONFIG_ESP_COREDUMP_ENABLE_TO_UART=y
+
+# LVGL 同步 RGB565 渲染（保持屏幕与离屏画布同一像素格式）
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_USE_DRAW_SW=y
+CONFIG_LV_DRAW_SW_SUPPORT_RGB565=y

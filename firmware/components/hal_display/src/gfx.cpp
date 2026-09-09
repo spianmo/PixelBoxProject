@@ -1,16 +1,14 @@
 /**
- * gfx.cpp — PixelBox 软件绘图引擎实现
- *
- * 设计要点:
- *   - 全部函数先做矩形裁剪, 内层循环无边界判断、无虚调用;
- *   - fill_rect: 首行铺满后逐行 memcpy (行拷贝比逐像素快一个量级);
- *   - blit: 无缩放/无键/无掩码时按行 memcpy; 缩放用定点最近邻;
- *   - 大缓冲 (画布) 分配优先 PSRAM (MALLOC_CAP_SPIRAM), 宿主机退化为 malloc。
+ * gfx.cpp — LVGL 9 软件渲染适配。
+ * 填色、位图合成和二值透明蒙版交给 LVGL RGB565 渲染器；整数几何、像素字体和
+ * 最近邻采样沿用 JS API 的像素规则。同步直接绘制到调用者画布，不建立逐像素控件。
  */
 #include "hal_display/gfx.hpp"
 
 #include <cstring>
 #include <cstdlib>
+#include "src/draw/sw/blend/lv_draw_sw_blend_private.h"
+#include "src/draw/sw/blend/lv_draw_sw_blend_to_rgb565.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
@@ -59,34 +57,51 @@ void destroy_surface(Surface *s)
  * 基础绘图
  * ------------------------------------------------------------ */
 
-static inline void fill_row(uint16_t *dst, int n, uint16_t c)
+namespace {
+
+// 使用 LVGL 软件渲染单元的同步 RGB565 入口，无全局显示对象、任务队列或每笔分配。
+// 参数已完成裁剪；字体、几何及批量 fillRects 共用同一个渲染入口。
+void render_fill(uint16_t *dst, int stride, int w, int h, uint16_t color)
 {
-    // 黑白等双字节相同的 RGB565 色直接批量写入，避免逐像素存储。
-    if (static_cast<uint8_t>(c) == static_cast<uint8_t>(c >> 8)) {
-        memset(dst, static_cast<uint8_t>(c), static_cast<size_t>(n) * sizeof(uint16_t));
-        return;
-    }
-    for (int i = 0; i < n; ++i) dst[i] = c;
+    lv_draw_sw_blend_fill_dsc_t dsc{};
+    dsc.dest_buf = dst;
+    dsc.dest_w = w;
+    dsc.dest_h = h;
+    dsc.dest_stride = stride * sizeof(uint16_t);
+    dsc.color = lv_color_hex(to888(color));
+    dsc.opa = LV_OPA_COVER;
+    lv_draw_sw_blend_color_to_rgb565(&dsc);
 }
+
+void render_image(uint16_t *dst, int stride, const uint16_t *src, int src_stride,
+                  int w, int h, const uint8_t *mask = nullptr)
+{
+    lv_draw_sw_blend_image_dsc_t dsc{};
+    dsc.dest_buf = dst;
+    dsc.dest_w = w;
+    dsc.dest_h = h;
+    dsc.dest_stride = stride * sizeof(uint16_t);
+    dsc.src_buf = src;
+    dsc.src_stride = src_stride * sizeof(uint16_t);
+    dsc.src_color_format = LV_COLOR_FORMAT_RGB565;
+    dsc.opa = LV_OPA_COVER;
+    dsc.blend_mode = LV_BLEND_MODE_NORMAL;
+    dsc.mask_buf = mask;
+    dsc.mask_stride = w;
+    lv_draw_sw_blend_image_to_rgb565(&dsc);
+}
+
+void fill_row(uint16_t *dst, int n, uint16_t color)
+{
+    render_fill(dst, n, n, 1, color);
+}
+
+}  // namespace
 
 void clear(Surface &s, uint16_t c565)
 {
-    if (!s.px) return;
-    if (s.stride == s.w) {
-        const size_t total = static_cast<size_t>(s.w) * s.h;
-        if (total == 0) return;
-        // 常用黑底清屏只写 PSRAM，避免指数拷贝再读一遍整帧像素。
-        if (static_cast<uint8_t>(c565) == static_cast<uint8_t>(c565 >> 8)) {
-            memset(s.px, static_cast<uint8_t>(c565), total * sizeof(uint16_t));
-            return;
-        }
-        // 其他颜色反复复制同一缓存行带，避免指数拷贝的大源区域挤出 PSRAM cache。
-        fill_row(s.px, s.w, c565);
-        const size_t row_bytes = static_cast<size_t>(s.w) * sizeof(uint16_t);
-        for (int y = 1; y < s.h; ++y) memcpy(s.row(y), s.px, row_bytes);
-    } else {
-        for (int y = 0; y < s.h; ++y) fill_row(s.row(y), s.w, c565);
-    }
+    if (!s.px || s.w <= 0 || s.h <= 0) return;
+    render_fill(s.px, s.stride, s.w, s.h, c565);
 }
 
 void gather_rotated_rect(const Surface &source, uint16_t *destination, int rotation,
@@ -189,18 +204,7 @@ void fill_rect(Surface &s, int x, int y, int w, int h, uint16_t c565)
     if (x1 > s.w) x1 = s.w;
     if (y1 > s.h) y1 = s.h;
     if (x0 >= x1 || y0 >= y1) return;
-    const int n = x1 - x0;
-    if (n == s.stride) {
-        Surface region{s.row(y0), n, y1 - y0, n};
-        clear(region, c565);
-        return;
-    }
-    uint16_t *first = s.row(y0) + x0;
-    fill_row(first, n, c565);  // 首行铺满
-    const size_t row_bytes = static_cast<size_t>(n) * sizeof(uint16_t);
-    for (int yy = y0 + 1; yy < y1; ++yy) {
-        memcpy(s.row(yy) + x0, first, row_bytes);  // 后续行整行拷贝
-    }
+    render_fill(s.row(y0) + x0, s.stride, x1 - x0, y1 - y0, c565);
 }
 
 void draw_circle(Surface &s, int cx, int cy, int r, uint16_t c565)
@@ -288,11 +292,8 @@ void blit(Surface &dst, const Surface &src, int dx, int dy, const BlitOpts &opts
 
     const bool plain = (dw == sw && dh == sh && opts.color_key < 0 && !opts.alpha);
     if (plain) {
-        // 快路径: 尺寸一致、无键无掩码 → 按行 memcpy
-        const size_t row_bytes = static_cast<size_t>(cx1 - cx0) * sizeof(uint16_t);
-        for (int y = cy0; y < cy1; ++y) {
-            memcpy(dst.row(dy + y) + dx + cx0, src.row(sy + y) + sx + cx0, row_bytes);
-        }
+        render_image(dst.row(dy + cy0) + dx + cx0, dst.stride,
+                     src.row(sy + cy0) + sx + cx0, src.stride, cx1 - cx0, cy1 - cy0);
         return;
     }
 
@@ -302,28 +303,24 @@ void blit(Surface &dst, const Surface &src, int dx, int dy, const BlitOpts &opts
     const uint16_t key = static_cast<uint16_t>(opts.color_key & 0xFFFF);
     const bool has_key = opts.color_key >= 0;
 
+    // 固定小行块限制 JS 线程栈用量；采样/透明判断只准备数据，像素合成由 LVGL 完成。
+    constexpr int kChunk = 128;
+    uint16_t colors[kChunk];
+    uint8_t mask[kChunk];
     for (int y = cy0; y < cy1; ++y) {
         const int syy = sy + static_cast<int>((static_cast<uint32_t>(y) * y_step) >> 16);
         const uint16_t *srow = src.row(syy);
-        uint16_t *drow = dst.row(dy + y) + dx;
-        uint32_t fx = static_cast<uint32_t>(cx0) * x_step;
-        if (opts.alpha) {
-            for (int x = cx0; x < cx1; ++x, fx += x_step) {
+        for (int x = cx0; x < cx1; x += kChunk) {
+            const int n = cx1 - x < kChunk ? cx1 - x : kChunk;
+            uint32_t fx = static_cast<uint32_t>(x) * x_step;
+            for (int i = 0; i < n; ++i, fx += x_step) {
                 const int sxx = sx + static_cast<int>(fx >> 16);
-                const uint16_t c = srow[sxx];
-                if (!alpha_test(opts.alpha, src.w, sxx, syy)) continue;
-                if (has_key && c == key) continue;
-                drow[x] = c;
+                colors[i] = srow[sxx];
+                mask[i] = ((!opts.alpha || alpha_test(opts.alpha, src.w, sxx, syy))
+                           && (!has_key || colors[i] != key)) ? 255 : 0;
             }
-        } else if (has_key) {
-            for (int x = cx0; x < cx1; ++x, fx += x_step) {
-                const uint16_t c = srow[sx + static_cast<int>(fx >> 16)];
-                if (c != key) drow[x] = c;
-            }
-        } else {
-            for (int x = cx0; x < cx1; ++x, fx += x_step) {
-                drow[x] = srow[sx + static_cast<int>(fx >> 16)];
-            }
+            render_image(dst.row(dy + y) + dx + x, dst.stride, colors, n, n, 1,
+                         opts.alpha || has_key ? mask : nullptr);
         }
     }
 }

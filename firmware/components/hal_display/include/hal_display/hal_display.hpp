@@ -1,19 +1,9 @@
 /**
- * hal_display/hal_display.hpp — AMOLED 显示 HAL (SH8601 QSPI, 368x448 RGB565)
- *
- * 架构 (architecture.md §3/§4):
- *   - 面板: esp_lcd + 组件注册表 espressif/esp_lcd_sh8601 (QSPI 接口);
- *   - 引脚/时钟等全部来自 boards 组件 (hal_common/board.h 的
- *     board_display_config()), 本组件不硬编码任何引脚;
- *   - 逻辑帧缓冲位于 PSRAM (368*448*2 ≈ 322KB), 绘图引擎 (gfx) 直接
- *     操作它; flush 时按合并后的脏矩形分块推送 (QSPI 80MHz, 全帧约 8ms);
- *   - 旋转采用软件坐标变换: 逻辑帧缓冲按旋转后尺寸布局, flush 时把脏
- *     区变换回面板物理方向写入 PSRAM 中转缓冲再 draw_bitmap;
- *   - 亮度走 SH8601 亮度命令 0x51 (QSPI 需 0x02 前导操作码, 组件 io 已
- *     配置 32bit cmd, 见实现); 电源开关 = sleep in/out + display on/off。
- *
- * 线程约定: 本 HAL 的全部接口默认由单一线程 (JS 线程) 调用;
- * flush 内部等待 DMA 完成后才返回, 保证帧缓冲可立即复用。
+ * hal_display.hpp — LVGL RGB565 绘图与 AMOLED/SPI 面板提交。
+ * 帧缓冲在 PSRAM（无 PSRAM 时使用内部堆），两个内部 DMA 行带交替打包和发送。
+ * 绘图、浮层与刷新都由单一 JS 线程调用；成功 flush 返回前最后一笔 DMA 已完成。
+ * 超时返回错误并保留脏区及在途缓冲，后续刷新先等待回收，再安全重试。
+ * init 在启动线程中先于 JS 任务执行，不与绘图并发。
  */
 #pragma once
 
@@ -30,7 +20,7 @@ esp_err_t init();
 bool ready();
 
 /**
- * 逻辑帧缓冲表面 (尺寸随旋转变化: 0/180 → 368x448, 90/270 → 448x368)。
+ * 逻辑帧缓冲表面（原生 RGB565；尺寸来自板型配置，90/270 度时交换宽高）。
  * 绘图后需调用 mark_dirty 声明改动区域, flush 才会推送。
  */
 gfx::Surface &framebuffer();
@@ -42,7 +32,7 @@ int height();
 /** 声明逻辑坐标系中的脏矩形 (自动裁剪/合并, 槽满时并入最近矩形) */
 void mark_dirty(int x, int y, int w, int h);
 
-/** 推送脏区到面板并等待完成; 无脏区时直接返回 ESP_OK */
+/** 推送脏区到面板并等待完成；每笔 DMA 等待上限 250ms，失败保留脏区 */
 esp_err_t flush();
 
 /**

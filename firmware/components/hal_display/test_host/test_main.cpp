@@ -171,6 +171,41 @@ static void test_blit()
     gfx::destroy_surface(&dst);
 }
 
+static void test_lvgl_color_and_mask()
+{
+    // 覆盖所有 RGB565 位模式，捕获 LVGL 颜色转换及字节序的任何量化回归。
+    uint16_t pixel = 0;
+    gfx::Surface single{&pixel, 1, 1, 1};
+    for (unsigned color = 0; color < 65536; ++color) {
+        gfx::fill_rect(single, 0, 0, 1, 1, static_cast<uint16_t>(color));
+        CHECK(pixel == color);
+    }
+
+    // 跨越多个 128 像素行块：缩放、源裁剪、负目标坐标、colorKey 与 1bpp alpha 同时生效。
+    constexpr int sw = 173, sh = 5, dw = 383, dh = 11, stride = 391;
+    std::vector<uint16_t> source(sw * sh), target(stride * dh, 0x4567);
+    std::vector<uint8_t> alpha(((sw + 7) / 8) * sh, 0);
+    for (int y = 0; y < sh; ++y) for (int x = 0; x < sw; ++x) {
+        source[y * sw + x] = static_cast<uint16_t>((x + y) % 9 ? x * 71 + y * 13 : 0xf800);
+        if ((x + y) % 3) alpha[y * ((sw + 7) / 8) + x / 8] |= 1 << (7 - x % 8);
+    }
+    gfx::Surface src{source.data(), sw, sh, sw}, dst{target.data(), dw, dh, stride};
+    gfx::BlitOpts opts;
+    opts.sx = 3; opts.sy = 1; opts.sw = 169; opts.sh = 4;
+    opts.dw = 389; opts.dh = 13; opts.color_key = 0xf800; opts.alpha = alpha.data();
+    gfx::blit(dst, src, -3, -2, opts);
+    for (int y = 0; y < dh; ++y) for (int x = 0; x < stride; ++x) {
+        uint16_t expected = 0x4567;
+        if (x < dw) {
+            const int sx = 3 + ((x + 3) * ((169 << 16) / 389) >> 16);
+            const int sy = 1 + ((y + 2) * ((4 << 16) / 13) >> 16);
+            const uint16_t color = source[sy * sw + sx];
+            if ((sx + sy) % 3 && color != 0xf800) expected = color;
+        }
+        CHECK(dst.row(y)[x] == expected);
+    }
+}
+
 static void test_fill_fast_paths()
 {
     const uint16_t sentinel = 0x1234;
@@ -245,13 +280,13 @@ static void test_font(const char *fonts_dir)
     const pxfont_glyph_t *gx = pxfont_find(&g_font16, 'x');
     CHECK(gx && gx->advance == 8);
 
-    // pixel12: 缤纷像素 12px, ASCII 6 宽 / 汉字 12 宽
+    // pixel12 使用 proportional 字体；仓库字表中 A 步进为 8，汉字步进为 12。
     static std::vector<uint8_t> font12_data = read_file(std::string(fonts_dir) + "/pixel12.pxf");
     static pxfont_t font12;
     CHECK(pxfont_load(font12_data.data(), font12_data.size(), &font12));
     CHECK(font12.height == 12);
     const pxfont_glyph_t *g12a = pxfont_find(&font12, 'A');
-    CHECK(g12a && g12a->advance == 6);
+    CHECK(g12a && g12a->advance == 8);
     const pxfont_glyph_t *g12z = pxfont_find(&font12, 0x4E2D);  // 中
     CHECK(g12z && g12z->advance == 12);
     CHECK(pxfont_find(&font12, 0x3002) != nullptr);  // 。 (标点集)
@@ -421,6 +456,7 @@ int main(int argc, char **argv)
     test_primitives();
     test_blit();
     test_fill_fast_paths();
+    test_lvgl_color_and_mask();
     test_rotated_gather();
     if (!gfx_only) {
         test_font(fonts_dir);

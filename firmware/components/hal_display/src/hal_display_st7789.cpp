@@ -1,23 +1,11 @@
 /**
- * hal_display_st7789.cpp — 通用 SPI 屏后端 (BOARD_GENERIC_SPI, ST7789)
- *
- * 与 QSPI 后端 (hal_display.cpp, 微雪 SH8601) 互斥编译, 公开接口一致
- * (hal_display.hpp), 由 CMakeLists 按 CONFIG_BOARD_* 选择源文件。
- *
- * 面向无 PSRAM 的小内存目标 (ESP32-C6, ~512KB HP SRAM) 的内存策略:
- *   - 逻辑帧缓冲 240x240x2 = 112.5KB, 经 px_alloc 分配 (无 PSRAM 落内部堆),
- *     绘图引擎 (gfx) 直接操作, 与 QSPI 后端一致;
- *   - 中转缓冲不再整帧 (QSPI 后端为全帧 322KB), 改为「行带 (strip)」:
- *     每次最多 CONFIG_PX_DISPLAY_STRIP_LINES 行 (默认 40 行 = 18.75KB,
- *     DMA 内部内存), 脏矩形按行带分段 gather → draw_bitmap → 等 DMA 完成,
- *     以 ~19KB 常驻换掉 112.5KB 的整帧中转;
- *   - 面板驱动用 IDF 内置 esp_lcd_new_panel_st7789 (无额外组件依赖);
- *   - 亮度: 背光 GPIO 走 LEDC PWM (ST7789 无亮度命令); 无背光脚时仅记值。
- *
- * 脏矩形/旋转逻辑与 QSPI 后端保持同构 (两后端互斥编译, 允许少量重复,
- * 修改时请两侧同步)。线程约定同 hal_display.hpp: 仅 JS 线程调用。
+ * ST7789 单线 SPI 面板后端，与 QSPI 后端使用同一 LVGL 画布和双 DMA 管线。
+ * 行带高度来自 CONFIG_PX_DISPLAY_STRIP_LINES，并限制单带不超过 32KB。
+ * 无 PSRAM 板型的逻辑帧缓冲使用内部堆，DMA 缓冲固定分配两份。
  */
 #include "hal_display/hal_display.hpp"
+#include "hal_display/dma_pipeline.hpp"
+#include "src/draw/sw/lv_draw_sw.h"
 
 #include <cstring>
 
@@ -58,7 +46,7 @@ struct State {
     bool has_backlight = false;
 
     gfx::Surface fb;              // 逻辑帧缓冲 (px_alloc: 无 PSRAM 落内部堆)
-    uint16_t *staging = nullptr;  // 行带中转缓冲 (DMA 内部内存)
+    DmaPipeline dma;             // 两个 64 字节对齐的内部 DMA 行带
     int strip_lines = 0;          // 行带高度 (行)
 
     Rect dirty[kMaxDirty];
@@ -115,10 +103,23 @@ Rect to_physical(const Rect &r)
     }
 }
 
-/** 把物理矩形 p (≤ 行带高度) 的像素从逻辑帧缓冲收集进 staging */
-void gather_rect(const Rect &p)
+// ISR 通知 DMA 完成；超时保留缓冲，下一次操作先回收。
+esp_err_t wait_transfer()
 {
-    gfx::gather_rotated_rect(s.fb, s.staging, s.rotation, p.x, p.y, p.w, p.h);
+    if (xSemaphoreTake(s.trans_done, pdMS_TO_TICKS(250)) == pdTRUE) return ESP_OK;
+    ESP_LOGE(TAG, "DMA 等待超时，保留在途缓冲和脏区待重试");
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t send_rect(const Rect &p)
+{
+    return s.dma.submit([&](uint16_t *buffer) {
+        gfx::gather_rotated_rect(s.fb, buffer, s.rotation, p.x, p.y, p.w, p.h);
+        // LVGL 画布使用原生 RGB565；只交换待发送行带，getPixel/图片/浮层共用原始画布。
+        lv_draw_sw_rgb565_swap(buffer, static_cast<uint32_t>(p.w * p.h));
+    }, [&](uint16_t *buffer) {
+        return esp_lcd_panel_draw_bitmap(s.panel, p.x, p.y, p.x + p.w, p.y + p.h, buffer);
+    }, wait_transfer);
 }
 
 /* ------------------------------------------------------------
@@ -178,6 +179,8 @@ esp_err_t init()
     s.strip_lines = CONFIG_PX_DISPLAY_STRIP_LINES;
     if (s.strip_lines > s.panel_h) s.strip_lines = s.panel_h;
     if (s.strip_lines < 1) s.strip_lines = 1;
+    // 单笔颜色事务不超过 32KB，避免驱动内部拆包后出现部分提交。
+    if (s.strip_lines > 32768 / (s.panel_w * 2)) s.strip_lines = 32768 / (s.panel_w * 2);
     const size_t strip_bytes =
         static_cast<size_t>(s.panel_w) * s.strip_lines * sizeof(uint16_t);
 
@@ -232,12 +235,18 @@ esp_err_t init()
         ESP_LOGE(TAG, "帧缓冲分配失败 (%dx%d)", s.panel_w, s.panel_h);
         return ESP_ERR_NO_MEM;
     }
-    s.staging = static_cast<uint16_t *>(
-        heap_caps_aligned_alloc(64, strip_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    if (!s.staging) {
-        gfx::destroy_surface(&s.fb);
-        ESP_LOGE(TAG, "行带缓冲分配失败 (%u B)", static_cast<unsigned>(strip_bytes));
-        return ESP_ERR_NO_MEM;
+    for (auto &buffer : s.dma.buffers) {
+        buffer = static_cast<uint16_t *>(heap_caps_aligned_alloc(
+            64, strip_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (!buffer) {
+            for (auto &allocated : s.dma.buffers) {
+                heap_caps_free(allocated);
+                allocated = nullptr;
+            }
+            gfx::destroy_surface(&s.fb);
+            ESP_LOGE(TAG, "双 DMA 行带分配失败 (每带 %zu B)", strip_bytes);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // 5) 背光 + 点亮
@@ -303,6 +312,8 @@ void mark_dirty(int x, int y, int w, int h)
 esp_err_t flush()
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (!s.power) {  // 熄屏时丢弃推送, 保留脏区待亮屏 (浮层同样跳过)
         return ESP_OK;
     }
@@ -313,20 +324,16 @@ esp_err_t flush()
     for (int i = 0; i < s.dirty_count && err == ESP_OK; ++i) {
         const Rect p = to_physical(s.dirty[i]);
         if (p.empty()) continue;
-        // 行带分段: 每段 ≤ strip_lines 行, gather → draw_bitmap → 等 DMA
+        // 准备下一行带时，上一行带仍可由 DMA 发送。
         for (int y = p.y; y < p.y + p.h && err == ESP_OK; y += s.strip_lines) {
             int hh = p.y + p.h - y;
             if (hh > s.strip_lines) hh = s.strip_lines;
             const Rect strip{p.x, y, p.w, hh};
-            gather_rect(strip);
-            err = esp_lcd_panel_draw_bitmap(s.panel, strip.x, strip.y, strip.x + strip.w,
-                                            strip.y + strip.h, s.staging);
-            if (err == ESP_OK) {
-                xSemaphoreTake(s.trans_done, portMAX_DELAY);
-            }
+            err = send_rect(strip);
         }
     }
-    s.dirty_count = 0;
+    if (err == ESP_OK) err = s.dma.drain(wait_transfer);
+    if (err == ESP_OK) s.dirty_count = 0;
 
     if (ov && ov->post) ov->post(s.fb, s.fb.w, s.fb.h);  // 恢复被浮层覆盖的像素
     return err;
@@ -337,6 +344,8 @@ void set_overlay(const Overlay *ov) { s.overlay = ov; }
 esp_err_t set_brightness(int percent)
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     s.brightness = percent;
@@ -350,6 +359,8 @@ int get_brightness() { return s.brightness; }
 esp_err_t set_power(bool on)
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (on == s.power) return ESP_OK;
     esp_err_t err;
     if (on) {
@@ -378,6 +389,8 @@ bool get_power() { return s.power; }
 esp_err_t set_rotation(int deg)
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (deg != 0 && deg != 90 && deg != 180 && deg != 270) return ESP_ERR_INVALID_ARG;
     if (deg == s.rotation) return ESP_OK;
     s.rotation = deg;

@@ -1,19 +1,12 @@
 /**
- * hal_display.cpp — SH8601 QSPI AMOLED 显示 HAL 实现
- *
- * 数据通路:
- *   gfx 绘图 → 逻辑帧缓冲 (PSRAM, 旋转后坐标系) → mark_dirty 记录脏矩形
- *   → flush(): 脏区(软件旋转)按行带打包进内部 DMA 中转缓冲
- *   → esp_lcd draw_bitmap → QSPI DMA → 面板, 每带等 trans_done 后复用。
- *
- * 中转缓冲必须是内部 (非 PSRAM) DMA 内存: S3 的 GPSPI 驱动对非
- * esp_ptr_dma_capable 缓冲会逐事务临时 malloc 内部副本 (失败静默
- * NO_MEM, 见 spi_master setup_priv_desc), PSRAM 整帧缓冲在内存压力下
- * 必然间歇丢帧。行带取 32 行 (480 宽 × 32 × 2B = 30KB), 恰低于单笔
- * SPI DMA 事务 32KB 上限, 每带一笔事务、零运行时分配。
- * 经中转缓冲的另两个理由: 旋转重排像素; 发送期间 JS 可继续绘制。
+ * SH8601/CO5300 QSPI 面板后端。
+ * LVGL 绘制逻辑画布 → 脏区旋转/字节交换 → 两个内部 DMA 行带交替发送。
+ * 每带 32 行（480 宽时各 30KB），低于单事务 32KB，避免 PSRAM 临时中转分配。
+ * CPU 准备下一带与当前带的 DMA 重叠；JS 在同步 flush 返回后继续执行。
  */
 #include "hal_display/hal_display.hpp"
+#include "hal_display/dma_pipeline.hpp"
+#include "src/draw/sw/lv_draw_sw.h"
 
 #include <cstring>
 
@@ -65,7 +58,7 @@ struct State {
     bool power = true;
 
     gfx::Surface fb;              // 逻辑帧缓冲 (PSRAM)
-    uint16_t *staging = nullptr;  // Internal DMA strip, 64-byte aligned
+    DmaPipeline dma;             // 两个 64 字节对齐的内部 DMA 行带
 
     Rect dirty[kMaxDirty];
     int dirty_count = 0;
@@ -74,7 +67,6 @@ struct State {
     esp_lcd_panel_handle_t panel = nullptr;
     spi_host_device_t spi_host = SPI2_HOST;
     SemaphoreHandle_t trans_done = nullptr;
-    bool transfer_pending = false;
 
     const Overlay *overlay = nullptr;  // 系统浮层 (错误卡片/横幅), 见 flush()
 };
@@ -198,10 +190,23 @@ Rect to_physical(const Rect &r)
     }
 }
 
-/** 把物理矩形 p 的像素从逻辑帧缓冲收集进 staging (行优先紧凑排列) */
-void gather_rect(const Rect &p)
+// 只等待由 on_color_trans_done 释放的事务，不允许超时后复用在途缓冲。
+esp_err_t wait_transfer()
 {
-    gfx::gather_rotated_rect(s.fb, s.staging, s.rotation, p.x, p.y, p.w, p.h);
+    if (xSemaphoreTake(s.trans_done, pdMS_TO_TICKS(250)) == pdTRUE) return ESP_OK;
+    ESP_LOGE(TAG, "DMA 等待超时，保留在途缓冲和脏区待重试");
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t send_rect(const Rect &p)
+{
+    return s.dma.submit([&](uint16_t *buffer) {
+        gfx::gather_rotated_rect(s.fb, buffer, s.rotation, p.x, p.y, p.w, p.h);
+        // LVGL 画布使用原生 RGB565；只交换待发送行带，getPixel/图片/浮层共用原始画布。
+        lv_draw_sw_rgb565_swap(buffer, static_cast<uint32_t>(p.w * p.h));
+    }, [&](uint16_t *buffer) {
+        return esp_lcd_panel_draw_bitmap(s.panel, p.x, p.y, p.x + p.w, p.y + p.h, buffer);
+    }, wait_transfer);
 }
 
 }  // namespace
@@ -242,7 +247,7 @@ esp_err_t init()
     io_cfg.spi_mode = 0;
     io_cfg.pclk_hz = static_cast<unsigned int>(cfg->pclk_hz);
 #if CONFIG_BOARD_WAVESHARE_AMOLED_216
-    io_cfg.trans_queue_depth = 3;  // 官方 BSP 值 (整帧 450KB DMA, 深队列无意义)
+    io_cfg.trans_queue_depth = 3;  // 最多一笔颜色事务在途，其余空间用于窗口命令
 #else
     io_cfg.trans_queue_depth = 10;
 #endif
@@ -293,12 +298,18 @@ esp_err_t init()
         ESP_LOGE(TAG, "帧缓冲分配失败 (%dx%d)", s.panel_w, s.panel_h);
         return ESP_ERR_NO_MEM;
     }
-    s.staging = static_cast<uint16_t *>(
-        heap_caps_aligned_alloc(64, strip_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    if (!s.staging) {
-        gfx::destroy_surface(&s.fb);
-        ESP_LOGE(TAG, "行带中转缓冲分配失败 (%zu B 内部 DMA)", strip_bytes);
-        return ESP_ERR_NO_MEM;
+    for (auto &buffer : s.dma.buffers) {
+        buffer = static_cast<uint16_t *>(heap_caps_aligned_alloc(
+            64, strip_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (!buffer) {
+            for (auto &allocated : s.dma.buffers) {
+                heap_caps_free(allocated);
+                allocated = nullptr;
+            }
+            gfx::destroy_surface(&s.fb);
+            ESP_LOGE(TAG, "双 DMA 行带分配失败 (每带 %zu B)", strip_bytes);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // 5) 点亮: display on + 默认亮度
@@ -359,11 +370,9 @@ void mark_dirty(int x, int y, int w, int h)
 esp_err_t flush()
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
-    // A timed-out DMA may still own staging. Do not reuse it until completion.
-    if (s.transfer_pending) {
-        if (xSemaphoreTake(s.trans_done, pdMS_TO_TICKS(250)) != pdTRUE) return ESP_ERR_TIMEOUT;
-        s.transfer_pending = false;
-    }
+    // 上次超时的 DMA 仍拥有行带缓冲，先回收再开始本次刷新。
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (!s.power) {  // 熄屏时丢弃推送, 保留脏区待亮屏 (浮层同样跳过)
         return ESP_OK;
     }
@@ -392,20 +401,10 @@ esp_err_t flush()
         for (int row = 0; row < p.h && err == ESP_OK; row += band_rows) {
             const int band_h = (p.h - row < band_rows) ? (p.h - row) : band_rows;
             const Rect band{p.x, p.y + row, p.w, band_h};
-            gather_rect(band);
-            err = esp_lcd_panel_draw_bitmap(s.panel, band.x, band.y, band.x + band.w,
-                                            band.y + band.h, s.staging);
-            if (err == ESP_OK) {
-                s.transfer_pending = true;
-                if (xSemaphoreTake(s.trans_done, pdMS_TO_TICKS(250)) == pdTRUE) {
-                    s.transfer_pending = false;
-                } else {
-                    err = ESP_ERR_TIMEOUT;
-                    ESP_LOGE(TAG, "Display DMA timeout; retaining dirty regions for retry");
-                }
-            }
+            err = send_rect(band);
         }
     }
+    if (err == ESP_OK) err = s.dma.drain(wait_transfer);
     if (err == ESP_OK) s.dirty_count = 0;
 
     if (ov && ov->post) ov->post(s.fb, s.fb.w, s.fb.h);  // 恢复被浮层覆盖的像素
@@ -417,6 +416,8 @@ void set_overlay(const Overlay *ov) { s.overlay = ov; }
 esp_err_t set_brightness(int percent)
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     s.brightness = percent;
@@ -429,6 +430,8 @@ int get_brightness() { return s.brightness; }
 esp_err_t set_power(bool on)
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (on == s.power) return ESP_OK;
     esp_err_t err;
     if (on) {
@@ -457,6 +460,8 @@ bool get_power() { return s.power; }
 esp_err_t set_rotation(int deg)
 {
     if (!s.ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t pending = s.dma.drain(wait_transfer);
+    if (pending != ESP_OK) return pending;
     if (deg != 0 && deg != 90 && deg != 180 && deg != 270) return ESP_ERR_INVALID_ARG;
     if (deg == s.rotation) return ESP_OK;
     s.rotation = deg;

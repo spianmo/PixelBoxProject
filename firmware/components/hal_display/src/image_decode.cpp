@@ -136,11 +136,7 @@ static bool decode_png(const uint8_t *data, size_t len, Decoded *out)
 static bool decode_jpeg(const uint8_t *data, size_t len, Decoded *out)
 {
     jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-#if PX_GFX_SWAP16
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;  // 帧缓冲即面板字节序
-#else
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
-#endif
+    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;  // 与 LVGL 画布一致，DMA 提交时统一交换字节。
     jpeg_dec_handle_t dec = nullptr;
     if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK || !dec) return false;
 

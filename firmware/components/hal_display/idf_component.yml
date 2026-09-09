@@ -1,6 +1,8 @@
 # hal_display 组件依赖(ESP 组件注册表)
 dependencies:
   idf: ">=5.3"
+  # 固定软件绘图 ABI；画布统一 RGB565，面板发送时交换字节。
+  lvgl/lvgl: "9.2.2"
   # SH8601 AMOLED 面板驱动(QSPI 接口,Waveshare ESP32-S3-Touch-AMOLED-1.8)
   espressif/esp_lcd_sh8601: "^1.0.0"
   # CO5300 AMOLED 面板驱动(QSPI 接口,Waveshare ESP32-S3-Touch-AMOLED-2.16)

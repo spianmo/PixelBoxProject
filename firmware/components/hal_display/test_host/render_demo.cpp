@@ -3,8 +3,7 @@
  * 输出 PPM), 人工核对字体/图形效果。
  *
  * 编译运行 (build_run.sh 之后):
- *   c++ -std=c++17 -O1 -I../include render_demo.cpp build/gfx.o build/pxfont.o -o build/demo
- *   ./build/demo ../fonts demo.ppm
+ *   ./build/lvgl-host/render_demo ../fonts demo.ppm
  */
 #include <cstdio>
 #include <cstdlib>

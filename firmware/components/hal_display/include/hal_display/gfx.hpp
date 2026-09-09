@@ -1,15 +1,7 @@
 /**
- * hal_display/gfx.hpp — PixelBox 软件绘图引擎 (RGB565)
- *
- * 纯 C++ 像素操作, 不依赖 esp_lcd / FreeRTOS, 可在宿主机单测
- * (test_host/)。热路径无虚函数, 全部直接操作行优先 uint16_t 缓冲。
- *
- * 颜色约定:
- *   - JS/API 层颜色为 24 位 0xRRGGBB (Color);
- *   - 帧缓冲存储 RGB565 "面板字节序": SH8601 经 SPI 期望高字节先行,
- *     而 ESP32 为小端, 故存储时按字节交换 (PX_GFX_SWAP16=1), DMA 直发无需
- *     再逐像素转换。转换只发生在每次绘图调用入口 (to565) 与 getPixel (to888)。
- *   - 表面 (Surface) 间的拷贝/混合全部在 565 空间进行, colorKey 比较同理。
+ * gfx.hpp — LVGL RGB565 即时绘图适配层。
+ * JS 颜色仍为 0xRRGGBB，画布保存 LVGL 原生 RGB565；面板行带在发送前交换字节。
+ * 像素字体、整数几何与最近邻采样保持现有规则，可在宿主机验证。
  */
 #pragma once
 
@@ -18,18 +10,11 @@
 
 #include "hal_display/pxfont.h"
 
-// 帧缓冲是否按面板字节序 (大端 565) 存储; 宿主测试也用同一策略保证一致性
-#ifndef PX_GFX_SWAP16
-#define PX_GFX_SWAP16 1
-#endif
-
 namespace gfx {
 
 /* ------------------------------------------------------------
  * 颜色转换
  * ------------------------------------------------------------ */
-
-constexpr uint16_t swap16(uint16_t v) { return static_cast<uint16_t>((v << 8) | (v >> 8)); }
 
 /** 0xRRGGBB → 帧缓冲 565 值 */
 constexpr uint16_t to565(uint32_t rgb888)
@@ -37,21 +22,13 @@ constexpr uint16_t to565(uint32_t rgb888)
     const uint16_t c = static_cast<uint16_t>(((rgb888 >> 8) & 0xF800) |
                                              ((rgb888 >> 5) & 0x07E0) |
                                              ((rgb888 >> 3) & 0x001F));
-#if PX_GFX_SWAP16
-    return swap16(c);
-#else
     return c;
-#endif
 }
 
 /** 帧缓冲 565 值 → 0xRRGGBB (低位按 565 量化损失) */
 constexpr uint32_t to888(uint16_t c565)
 {
-#if PX_GFX_SWAP16
-    const uint16_t c = swap16(c565);
-#else
     const uint16_t c = c565;
-#endif
     uint32_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
     // 位复制展宽, 保证 0/满量程精确还原
     r = (r << 3) | (r >> 2);

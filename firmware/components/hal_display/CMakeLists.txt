@@ -1,10 +1,10 @@
 # ============================================================
-# hal_display — 显示 HAL (多后端) + 软件绘图引擎
+# hal_display — 显示 HAL (多后端) + LVGL 9 RGB565 软件渲染
 #
 #   - 面板后端按板型 Kconfig 三选一 (公开接口 hal_display.hpp 一致):
 #       BOARD_GENERIC_SPI → hal_display_st7789.cpp (单线 SPI + 行带 flush)
 #       BOARD_HEADLESS    → hal_display_none.cpp   (无屏, ENOTSUP stub)
-#       其他 (微雪/定制)  → hal_display.cpp        (SH8601 QSPI, 整帧中转)
+#       其他 (微雪/定制)  → hal_display.cpp        (SH8601/CO5300 QSPI, 双 DMA 行带)
 #   - gfx.cpp / pxfont.c / image_decode.cpp 与 esp_lcd 解耦,
 #     可在宿主机单测 (见 test_host/);
 #   - 内置字体 (tools/fontgen 产物) 经 EMBED_FILES 编入 flash;
@@ -36,7 +36,7 @@ idf_component_register(
         "fonts/pixel12.pxf"
         "fonts/pixel16.pxf"
     REQUIRES hal_common
-    PRIV_REQUIRES driver esp_lcd esp_common log freertos heap esp_driver_ledc
+    PRIV_REQUIRES driver esp_lcd esp_common log freertos heap esp_driver_ledc lvgl__lvgl
 )
 
 # miniz 裁剪: 只需要 tinfl (PNG inflate) 与 mz_crc32; 两个 TU 的宏必须一致
