@@ -50,6 +50,11 @@ WiFi 凭据存 NVS 命名空间 `px_wifi`(`connect(..., {save:false})` 可跳过
 电池优先的项目可启用 `CONFIG_PX_WIFI_POWER_SAVE`。S3 speech 默认 TCP 收发窗口为 16 KiB，
 接收队列为 14；已有 sdkconfig 需同步配置并重新烧录，不能仅推送 JS 生效。
 
+静态 Wi-Fi TX 缓冲至少保留 16 个，HAL 初始化也会将旧配置的 8 个提升到 16 个。
+8 个槽无法承接 16 KiB TCP 窗口的突发发送；实机可在内部 RAM 尚有余量时出现发送池
+`fail_oom`，导致 TCP 等待重传、应用 PCM 队列周期性溢出。显示 QSPI 双 DMA 行带
+限制为 8 行（480 宽合计 15 KiB），为网络和语音保留内部 RAM，不能只看 PSRAM 余量。
+
 ## 依赖
 
 - 托管组件:`espressif/mdns`、`espressif/esp_websocket_client`(见 idf_component.yml)
@@ -57,8 +62,10 @@ WiFi 凭据存 NVS 命名空间 `px_wifi`(`connect(..., {save:false})` 可跳过
 
 ## 实时 WebSocket 发送
 
-WebSocket 使用显式持有的标准 TCP/TLS transport，在 CONNECTED 事件中对底层 socket 设置 `TCP_NODELAY`。ESP-IDF 把帧头和负载分两次写入，Nagle 与手机延迟 ACK 叠加会拖慢持续 PCM；服务端设置 TCP_NODELAY 仅影响下行。TLS 仍使用系统 CA 证书包，路径、查询、Basic 认证、子协议和控制帧按标准 transport 处理。客户端销毁完成后再释放 transport。
+WebSocket 使用显式持有的标准 TCP/TLS transport，在 CONNECTED 事件中对底层 socket 设置 `TCP_NODELAY`。固件对自己登记的 transport 合并帧头与掩码负载，在客户端既有 TX 锁内一次提交；部分写继续同一帧的剩余字节，并共用总截止时间。通过链接器 `--wrap=esp_transport_ws_send_raw` 接入，不修改本机 IDF 或托管依赖；未登记的 transport 仍调用 IDF 原函数。服务端设置 TCP_NODELAY 仅影响下行。TLS 仍使用系统 CA 证书包，路径、查询、Basic 认证、子协议和控制帧按标准 transport 处理。客户端销毁完成后再释放 transport。
 
 原生发送队列仍限制为 65536 字节/16 条，每 5 秒输出累计发送字节、待发队列和最大写入耗时，不记录内容。`node tools/check-websocket-transport.mjs <设备地址> <本机IPv4>` 覆盖真实路径/查询、认证、子协议、8192 字节二进制及分片重组。
 
 发送 worker 在写帧前按 100ms 轮询可写状态，最多等待 10 秒，期间不持有客户端发送锁。避免底层库将暂时不可写当作传输错误直接销毁连接。进入写帧后沿用 10 秒网络操作超时，失败立即停止队列并关闭，不能重发部分写入的整帧。`node tools/check-websocket-backpressure.mjs <设备地址> <本机IPv4>` 验证接收窗口暂停 4 秒后仍保持连接和数据顺序。错误日志只记录类型、可用 errno/TLS 错误码与内部堆余量。
+
+`bash firmware/components/bindings_net/test_host/build_run.sh` 覆盖帧长度边界、掩码、控制帧、延续帧、部分写、内存失败和超时。完整帧发送的实机拥堵改善效果尚未验证，见 `docs/pixelbox-voice-congestion.md`。

@@ -54,6 +54,7 @@ void set_method(JSContext* ctx, JSValue obj, const char* name, JSCFunction* fn, 
 void audio_native_init(JSContext* ctx, JSValue px)
 {
     JSValue audio = JS_NewObject(ctx);
+    set_method(ctx, audio, "encodeImaAdpcm", js_throw_enotsup, 1);
     set_method(ctx, audio, "setVolume", js_throw_enotsup, 1);
     set_method(ctx, audio, "getVolume", js_zero, 0);
 

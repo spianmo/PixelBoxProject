@@ -1,7 +1,7 @@
 /**
  * SH8601/CO5300 QSPI 面板后端。
  * LVGL 绘制逻辑画布 → 脏区旋转/字节交换 → 两个内部 DMA 行带交替发送。
- * 每带 32 行（480 宽时各 30KB），低于单事务 32KB，避免 PSRAM 临时中转分配。
+ * 每带 8 行（480 宽时各 7.5KB），为 Wi-Fi 和语音任务保留内部 RAM。
  * CPU 准备下一带与当前带的 DMA 重叠；JS 在同步 flush 返回后继续执行。
  */
 #include "hal_display/hal_display.hpp"
@@ -45,8 +45,10 @@ struct Rect {
 
 constexpr int kMaxDirty = 8;
 
-/* 行带高度: 面板宽 × 32 行 × 2B ≤ 30KB, 低于 S3 单笔 SPI DMA 事务上限 (32KB) */
-constexpr int kStripRows = 32;
+// DMA 必须使用内部 RAM。两块 32 行缓冲在 480 宽屏幕上占 60 KiB，
+// 采音及 WebSocket 启动后会挤尽 Wi-Fi 收发所需内存，引发重传和周期性拥堵。
+// 保留双缓冲流水线，只将行带缩到 8 行，总计 15 KiB，释放 45 KiB 给网络。
+constexpr int kStripRows = 8;
 
 struct State {
     bool ready = false;

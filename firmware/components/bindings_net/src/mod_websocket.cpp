@@ -32,6 +32,7 @@
 #include "js_helpers.hpp"
 #include "jsvm/jsvm.hpp"
 #include "net_worker.hpp"
+#include "ws_frame_transport.hpp"
 
 static const char* TAG = "px_ws";
 static constexpr int kNetworkTimeoutMs = 10000;
@@ -57,10 +58,14 @@ struct WsClient {
   esp_transport_handle_t stream_transport = nullptr, ws_transport = nullptr;
   uint64_t sent_bytes = 0;
   int64_t send_max_ms = 0, send_report_us = 0;
+  int64_t diagnostic_us = 0;
 
   ~WsClient() {
     // ext_transport 由调用方拥有，必须等客户端任务销毁后再释放。
-    if (ws_transport) esp_transport_destroy(ws_transport);
+    if (ws_transport) {
+      ws_frame_transport_unregister(ws_transport);
+      esp_transport_destroy(ws_transport);
+    }
     if (stream_transport) esp_transport_destroy(stream_transport);
   }
 
@@ -85,6 +90,7 @@ static bool ws_create_transport(const WsPtr& ws, const std::string& subprotocol)
   if (secure) esp_transport_ssl_crt_bundle_attach(ws->stream_transport, esp_crt_bundle_attach);
   ws->ws_transport = esp_transport_ws_init(ws->stream_transport);
   if (!ws->ws_transport) return false;
+  ws_frame_transport_register(ws->ws_transport, ws->stream_transport);
   esp_transport_set_default_port(ws->ws_transport, secure ? 443 : 80);
   std::string path = field(UF_PATH);
   if (path.empty()) path = "/";
@@ -343,6 +349,7 @@ static JSValue js_ws_send(JSContext* ctx, JSValueConst this_val, int argc, JSVal
   const bool queued = ws_submit_work(ws, [ws, handle, bytes = std::move(bytes), is_text]() {
     int sent = int(bytes.size());
     const int64_t started = esp_timer_get_time();
+    int64_t ready_us = started;
     if (!pxjs::vm_stale(ws->gen) && ws->state.load() != 3) {
       // ESP 客户端把 poll_write 超时也当作传输错误并销毁 TCP。尚未写帧时先在
       // worker 等待可写，让 TCP 重传和 JS 背压恢复有机会完成，不占住收发锁。
@@ -352,6 +359,7 @@ static JSValue js_ws_send(JSContext* ctx, JSValueConst this_val, int argc, JSVal
         writable = esp_transport_poll_write(ws->stream_transport, 100);
         if (writable != 0) break;
       }
+      ready_us = esp_timer_get_time();
       if (writable > 0 && ws->state.load() != 3) {
         const char* data = bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data());
         // 一旦开始写帧便不能重发整包，否则会破坏帧边界；沿用完整网络操作的超时。
@@ -360,6 +368,14 @@ static JSValue js_ws_send(JSContext* ctx, JSValueConst this_val, int argc, JSVal
       } else if (ws->state.load() != 3 && !pxjs::vm_stale(ws->gen)) {
         sent = -1;
       }
+    }
+    const int64_t completed_us = esp_timer_get_time();
+    if (completed_us - started >= 1000000 && completed_us - ws->diagnostic_us >= 15000000) {
+      ws->diagnostic_us = completed_us;
+      ESP_LOGW(TAG, "slow send: wait=%lld write=%lld ms internal=%u largest=%u",
+          (long long)((ready_us - started) / 1000), (long long)((completed_us - ready_us) / 1000),
+          unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
     }
     {
       std::lock_guard<std::mutex> lock(ws->work_mutex);

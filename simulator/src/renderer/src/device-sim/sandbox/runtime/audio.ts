@@ -8,6 +8,7 @@
  *   - record() = 采集 + WAV 封装 + 写入虚拟 /data
  */
 import type { HostLink } from './rpc'
+import { encodeImaAdpcm } from './ima-adpcm'
 import { Emitter } from './events'
 import { clamp, toArrayBufferCopy } from './util'
 import type { Vfs } from './storage'
@@ -337,6 +338,7 @@ export function createAudio(link: HostLink, vfs: Vfs, logWarn: (msg: string) => 
   }
 
   const audio = {
+    encodeImaAdpcm,
     setVolume(percent: number): void {
       volume = clamp(percent, 0, 100)
       void link.call('player.setVolume', { volume }).catch(() => undefined)

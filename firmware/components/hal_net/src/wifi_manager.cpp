@@ -58,6 +58,10 @@ esp_err_t WifiManager::ensure_init() {
   }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  // 16 KiB TCP 窗口可同时发出超过 8 个 Wi-Fi 帧。只有 8 个静态 TX 缓冲时，
+  // 驱动会因池耗尽拒收帧，TCP 只能等待重传，表现为周期性语音积压。
+  // 同时覆盖旧 sdkconfig 中的 8 槽配置；动态 TX 模式仍按 IDF 配置分配。
+  if (cfg.tx_buf_type == 0 && cfg.static_tx_buf_num < 16) cfg.static_tx_buf_num = 16;
   err = esp_wifi_init(&cfg);
   if (err != ESP_OK && err != ESP_ERR_WIFI_INIT_STATE) return err;
 

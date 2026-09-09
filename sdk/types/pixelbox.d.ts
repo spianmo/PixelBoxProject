@@ -376,6 +376,8 @@ interface PxPlayHandle {
 }
 
 interface PxAudio {
+  /** 将 1–4096 个 PCM16LE 样本编码为独立 IMA ADPCM 块（6 字节头 + 4bit/样本）。 */
+  encodeImaAdpcm(pcm: BinaryLike): ArrayBuffer;
   /** 扬声器音量 0-100 */
   setVolume(percent: number): void;
   getVolume(): number;

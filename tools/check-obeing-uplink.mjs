@@ -32,7 +32,9 @@ server.on('connection', ws => {
         try {
             if (binary) {
                 assert.ok(acknowledged, '有效账号 ACK 必须先于音频');
-                assert.equal(data.length, 4096, '每包应为 128ms PCM');
+                assert.equal(data.length, 1030, '每包应为 128ms IMA ADPCM');
+                assert.equal(data.readUInt16LE(0), 2048, '编码必须保持 2048 个采样');
+                assert.ok(data[4] <= 88 && data[5] === 0, 'ADPCM 头必须有效');
                 if (index !== 1) return;
                 const now = performance.now();
                 if (!report.first) report.first = now;
@@ -48,7 +50,7 @@ server.on('connection', ws => {
                     assert.equal(message.phoneId, phoneId);
                     assert.equal(message.pairKey, pairKey);
                 }
-                ws.send(JSON.stringify({ type: 'hello.ok', protocol: 1, phoneId, pairKey, authenticated: true, accountEpoch: 1 }));
+                ws.send(JSON.stringify({ type: 'hello.ok', protocol: 1, phoneId, pairKey, inputFormat: 'ima_adpcm', authenticated: true, accountEpoch: 1 }));
                 if (index === 1) scheduled.push(setTimeout(() => {
                     intentionalDisconnect = true;
                     ws.terminate();
@@ -81,7 +83,7 @@ try {
     })()`, 8000));
     timeout = setTimeout(() => reject(new Error('采音/自动重连超时')), (seconds + 15) * 1000);
     await done;
-    const audioMs = report.bytes / 32;
+    const audioMs = report.packets * 128;
     const observedMs = report.last - report.first + 128;
     console.log(JSON.stringify({ connections: report.connections, packets: report.packets, bytes: report.bytes,
         audioMs, observedMs: Math.round(observedMs), maxGapMs: Math.round(report.maxGapMs) }));

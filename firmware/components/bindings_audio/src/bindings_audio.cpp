@@ -27,6 +27,7 @@
 #include "freertos/task.h"
 #include "hal_audio/decode_stream.hpp"
 #include "hal_audio/hal_audio.hpp"
+#include "hal_audio/ima_adpcm.hpp"
 #include "hal_audio/wav.hpp"
 #include "js_util.hpp"
 #include "jsvm/jsvm.hpp"
@@ -965,6 +966,15 @@ void register_classes(JSContext* ctx) {
     JS_SetClassProto(ctx, g_pcm_stream_cid, sproto);
 }
 
+JSValue js_encode_ima_adpcm(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const uint8_t* data = nullptr;
+    size_t length = 0;
+    if (!jsvm::get_binary(ctx, argc ? argv[0] : JS_UNDEFINED, &data, &length)) return JS_EXCEPTION;
+    const auto encoded = hal_audio::encode_ima_adpcm(data, length);
+    if (encoded.empty()) return pxjs::throw_error(ctx, "PCM 必须包含 1 至 4096 个完整的 16 位样本");
+    return JS_NewArrayBufferCopy(ctx, encoded.data(), encoded.size());
+}
+
 void audio_native_init(JSContext* ctx, JSValue px) {
     // 懒初始化:main/boards 若尚未初始化音频 HAL,这里按板级配置兜底一次
     if (!hal_audio::ready()) {
@@ -982,6 +992,7 @@ void audio_native_init(JSContext* ctx, JSValue px) {
     }
 
     JSValue audio = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, audio, "encodeImaAdpcm", JS_NewCFunction(ctx, js_encode_ima_adpcm, "encodeImaAdpcm", 1));
     JS_SetPropertyStr(ctx, audio, "setVolume",
                       JS_NewCFunction(ctx, js_audio_set_volume, "setVolume", 1));
     JS_SetPropertyStr(ctx, audio, "getVolume",

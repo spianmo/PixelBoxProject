@@ -33,16 +33,16 @@ try {
         globalThis.__uplinkObserveRestore?.();
         const oldAudio=BufferedUplink.prototype.audio, oldFlush=BufferedUplink.prototype.flush, oldFail=BufferedUplink.prototype.fail, oldClose=closeConnection;
         const initialSocket=socket;
-        const p=globalThis.__uplinkObserve={start:px.system.now(),frames:0,bytes:0,maxQueueBytes:0,busyFlushes:0,audioRecoveries:0,failures:[],disconnects:[]};
+        const p=globalThis.__uplinkObserve={start:px.system.now(),frames:0,bytes:0,pcmBytes:0,maxQueueBytes:0,busyFlushes:0,audioRecoveries:0,failures:[],disconnects:[]};
         closeConnection=function(reason) {
             if(p.disconnects.length<10)p.disconnects.push({afterMs:px.system.now()-p.start,reason});
             return oldClose(reason);
         };
         p.sameSocket=()=>socket===initialSocket;
-        BufferedUplink.prototype.audio=function(pcm) {
-            p.frames++;p.bytes+=pcm.byteLength;
-            if(this.audioBytes+pcm.byteLength>64000)p.audioRecoveries++;
-            const result=oldAudio.call(this,pcm);
+        BufferedUplink.prototype.audio=function(packet,pcmBytes=packet.byteLength) {
+            p.frames++;p.bytes+=packet.byteLength;p.pcmBytes+=pcmBytes;
+            if(this.audioBytes+pcmBytes>64000)p.audioRecoveries++;
+            const result=oldAudio.call(this,packet,pcmBytes);
             p.maxQueueBytes=Math.max(p.maxQueueBytes,this.audioBytes);
             return result;
         };
@@ -68,9 +68,10 @@ try {
     let report;
     do {
         await new Promise(resolve => setTimeout(resolve, Math.min(30000, deadline - Date.now())));
-        report = JSON.parse(await read('JSON.stringify({...__uplinkObserve,sameSocket:__uplinkObserve.sameSocket(),elapsedMs:px.system.now()-__uplinkObserve.start,connected:view.connected,mic:px.audio.mic.active,queuedBytes:uplink?.audioBytes||0,runtime:__pxRuntimeStats()})'));
+        report = JSON.parse(await read('JSON.stringify({...__uplinkObserve,sameSocket:__uplinkObserve.sameSocket(),elapsedMs:px.system.now()-__uplinkObserve.start,connected:view.connected,mic:px.audio.mic.active,queuedBytes:uplink?.audioBytes||0,memory:px.system.memory(),runtime:__pxRuntimeStats()})'));
         console.log(JSON.stringify(report));
         assert.equal(report.failures.length, 0, '真实连接出现发送拥堵或传输失败');
+        assert.equal(report.audioRecoveries, 0, '真实采音出现媒体拥堵恢复，不能把保留连接视为通过');
         assert.equal(report.disconnects.length, 0, '真实手机连接发生断线');
         assert.ok(report.sameSocket, '观测期间不得靠重新连接掩盖中断');
         assert.ok(report.connected, '真实手机连接断开');

@@ -1,6 +1,6 @@
 /** 原生 WS 只有 16 个发送槽。暂时满时保留顺序重试，不把背压当作断线。 */
 export class BufferedUplink {
-    private queue: (string | ArrayBuffer)[] = [];
+    private queue: { data: string | ArrayBuffer; pcmBytes: number }[] = [];
     private audioBytes = 0;
     private timer = 0;
     private busySince: number | null = null;
@@ -10,17 +10,18 @@ export class BufferedUplink {
         private failed: (reason: string) => void,
         private audioCongested: () => void) {}
 
-    audio(pcm: ArrayBuffer): void {
+    audio(packet: ArrayBuffer, pcmBytes = packet.byteLength): void {
         if (this.closed) return;
-        if (this.audioBytes + pcm.byteLength > 64000) {
+        if (this.audioBytes + pcmBytes > 64000) {
             // 实时语音不能无限排队，也不应因媒体积压撤掉正常的设备连接。
             // 丢弃本轮尚未发送的 PCM，由上层显式重置识别，控制消息仍按序发送。
             this.clearAudio();
             this.audioCongested();
             return;
         }
-        this.queue.push(pcm.slice(0));
-        this.audioBytes += pcm.byteLength;
+        // 传输压缩后仍按原始 PCM 计两秒上限，不能把减少字节变成延长积压。
+        this.queue.push({ data: packet.slice(0), pcmBytes });
+        this.audioBytes += pcmBytes;
         // 缓冲同一轮 JS 调度里到达的采音回调，给网络任务留出执行机会。
         this.schedule();
     }
@@ -28,7 +29,7 @@ export class BufferedUplink {
     control(message: Record<string, unknown>): void {
         if (this.closed) return;
         if (this.queue.length >= 80) { this.fail('手机连接持续拥堵，正在重新连接'); return; }
-        this.queue.push(JSON.stringify(message));
+        this.queue.push({ data: JSON.stringify(message), pcmBytes: 0 });
         if (!this.timer) this.flush();
     }
 
@@ -36,7 +37,7 @@ export class BufferedUplink {
 
     clearAudio(): void {
         // 切账号/取消时丢弃尚未提交的旧 PCM；后续 ACK 仍排在已提交消息之后。
-        this.queue = this.queue.filter((item) => typeof item === 'string');
+        this.queue = this.queue.filter((item) => typeof item.data === 'string');
         this.audioBytes = 0;
     }
 
@@ -55,7 +56,7 @@ export class BufferedUplink {
     private flush(): void {
         for (let sent = 0; sent < 4 && this.queue.length && !this.closed; sent++) {
             const item = this.queue[0];
-            try { this.write(item); }
+            try { this.write(item.data); }
             catch (error) {
                 if (String(error).includes('WebSocket 发送队列已满')) {
                     const now = px.system.now();
@@ -71,7 +72,7 @@ export class BufferedUplink {
             }
             this.busySince = null;
             this.queue.shift();
-            if (typeof item !== 'string') this.audioBytes -= item.byteLength;
+            this.audioBytes -= item.pcmBytes;
         }
         if (this.queue.length) this.schedule();
     }

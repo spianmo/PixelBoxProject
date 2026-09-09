@@ -16,6 +16,7 @@ if(CONFIG_SOC_WIFI_SUPPORTED)
         "src/mod_wifi.cpp"
         "src/mod_fetch.cpp"
         "src/mod_websocket.cpp"
+        "src/ws_frame_transport.cpp"
         "src/mod_net.cpp"
         "src/mod_system_net.cpp")
 else()
@@ -43,3 +44,7 @@ idf_component_register(
         esp_hw_support
     WHOLE_ARCHIVE
 )
+
+if(CONFIG_SOC_WIFI_SUPPORTED)
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_transport_ws_send_raw")
+endif()

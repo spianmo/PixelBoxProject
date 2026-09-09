@@ -25,8 +25,10 @@ SH8601 / CO5300 QSPI 和 ST7789 SPI 共用 `dma_pipeline.hpp#DmaPipeline`：
 3. 交替复用 A/B，最后等待在途事务完成，再从 `flush` 返回。
 
 缓冲固定为内部 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` 内存，64 字节对齐。
-CO5300 480×480 使用两个 480×32×2 字节缓冲，共 **60 KiB**；相对原单缓冲增加 30 KiB。
-SH8601 使用两个 368×32×2 字节缓冲，共 46 KiB。主画布仍优先 PSRAM。
+CO5300 480×480 使用两个 480×8×2 字节缓冲，共 **15 KiB**；SH8601 使用两个
+368×8×2 字节缓冲，共 11.5 KiB。主画布仍优先 PSRAM。行带预算必须同时考虑 Wi-Fi、
+采音和 WebSocket 的内部 RAM 需求：PSRAM 有余量不能代替这些内部内存，
+原 32 行双缓冲在 CO5300 上占用 60 KiB，会挤压持续语音所需的网络资源。
 ST7789 行带高度来自 `CONFIG_PX_DISPLAY_STRIP_LINES`，单带上限 32 KiB。
 
 每次等待 DMA 的上限为 250ms；超时或提交失败保留脏区。超时仍保留在途缓冲所有权，

@@ -72,7 +72,7 @@ function startMic(): void {
         return;
     }
     // 只有配对验证通过且手机账号有效时才采音；PCM 由手机执行唤醒词、STT、AI 和 TTS。
-    send({ type: 'mic.start', sampleRate: SAMPLE_RATE, channels: 1, format: 'pcm_s16le', wakeWord: WAKE_WORD });
+    send({ type: 'mic.start', sampleRate: SAMPLE_RATE, channels: 1, format: 'ima_adpcm', wakeWord: WAKE_WORD });
     if (!view.connected || !view.authenticated) return;
     const generation = ++micGeneration;
     const epoch = accountEpoch;
@@ -84,7 +84,7 @@ function startMic(): void {
             onData(pcm) {
                 if (generation !== micGeneration || epoch !== accountEpoch || !micActive || !view.authenticated || view.muted || playback || socket?.readyState !== WebSocket.OPEN) return;
                 view.level = rmsLevel(pcm);
-                uplink?.audio(pcm);
+                uplink?.audio(px.audio.encodeImaAdpcm(pcm), pcm.byteLength);
             },
         });
         micActive = true;
@@ -137,6 +137,11 @@ function onMessage(raw: string | ArrayBuffer): void {
     const message = parseMessage(raw);
     if (!message) return;
     if (message.type === 'hello.ok') {
+        if (message.inputFormat !== 'ima_adpcm' || typeof px.audio.encodeImaAdpcm !== 'function') {
+            reconnectPaused = true;
+            closeConnection('请更新手机应用和 PixelBox 固件后重新连接');
+            return;
+        }
         const pair = parsePairing(message);
         if (!pair || (savedPairing && pair.phoneId !== savedPairing.phoneId)) {
             closeConnection('手机配对版本不受支持');
@@ -265,7 +270,7 @@ function pair(): void {
             view.errorText = '网络拥堵，正在恢复语音';
             // 本轮识别已不完整，通知手机清旧识别。等手机重新进入 idle 再恢复采音。
             send({ type: 'mic.stop' });
-            send({ type: 'mic.start', sampleRate: SAMPLE_RATE, channels: 1, format: 'pcm_s16le', wakeWord: WAKE_WORD });
+            send({ type: 'mic.start', sampleRate: SAMPLE_RATE, channels: 1, format: 'ima_adpcm', wakeWord: WAKE_WORD });
         });
         connection.binaryType = 'arraybuffer';
         connection.onopen = () => {

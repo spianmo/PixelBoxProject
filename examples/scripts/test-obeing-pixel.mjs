@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
+import { readFile } from 'node:fs/promises';
 
 const examples = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = join(examples, '06-obeing-pixel', 'src');
@@ -14,6 +15,7 @@ async function moduleAt(name) {
 const model = await moduleAt('model.ts');
 const state = await moduleAt('state.ts');
 const render = await moduleAt('render.ts');
+const { encodeImaAdpcm } = await moduleAt('../../../simulator/src/renderer/src/device-sim/sandbox/runtime/ima-adpcm.ts');
 const harnessBundle = await build({ entryPoints: [join(examples, '07-obeing-harness/src/render.ts')], bundle: true, format: 'esm', target: 'es2020', write: false, logLevel: 'silent' });
 const harnessRender = await import(`data:text/javascript;base64,${Buffer.from(harnessBundle.outputFiles[0].text).toString('base64')}`);
 const main = await build({ entryPoints: [join(source, 'main.ts')], bundle: true, format: 'iife', target: 'es2020', write: false, logLevel: 'silent' });
@@ -23,6 +25,17 @@ async function test(name, fn) {
     passed++;
     console.log(`[OK] ${name}`);
 }
+
+await test('模拟器与固件编码结果一致，128ms 保持2048个样本且仅占1030字节', async () => {
+    const pcm = new Int16Array(2048);
+    for (let i = 0; i < pcm.length; i++) pcm[i] = Math.round(12000 * Math.sin(2 * Math.PI * 500 * i / 16000));
+    const encoded = Buffer.from(encodeImaAdpcm(pcm.buffer));
+    const fixture = (await readFile(join(examples, '../tools/fixtures/ima-adpcm-sine.hex'), 'utf8')).trim();
+    assert.equal(encoded.length, 1030);
+    assert.equal(encoded.readUInt16LE(0), 2048);
+    assert.equal(encoded.toString('hex'), fixture);
+    assert.throws(() => encodeImaAdpcm(new ArrayBuffer(3)), RangeError);
+});
 
 await test('猫为有厚度的三维体素，外壳少于实体并保留双耳', () => {
     const volume = model.CAT_VOLUME;
@@ -294,7 +307,7 @@ await test('页面、配对、账号和输入框变化使静态缓存失效，�
     }
 });
 
-const testPair = { phoneId: '00000000-0000-4000-8000-000000000001', pairKey: 'a'.repeat(64) };
+const testPair = { phoneId: '00000000-0000-4000-8000-000000000001', pairKey: 'a'.repeat(64), inputFormat: 'ima_adpcm' };
 function runtime(width = 368, height = 448, storage = new Map(), phones = null) {
     let touch;
     let button;
@@ -335,6 +348,7 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
         wifi: { status: () => ({ connected: true }) },
         net: { mdns: { discover: async () => phones || [{ name: 'Obeing Pixel Phone', ip: '192.168.1.20', port: 18888, txt: { phoneId: testPair.phoneId } }] } },
         audio: {
+            encodeImaAdpcm,
             mic: { start(options) { micFrameMs = options.frameMs; micStarts++; micCallback = options.onData; micCallbacks.push(options.onData); }, stop() { micStops++; } },
             player: { openPcmStream: ({ sampleRate }) => {
                 audioBufferedMs = 0; audioStarted = false; audioStreamEnded = false;
@@ -416,6 +430,7 @@ await test('真实入口仅在配对且手机同步有效账号后开启麦克�
     assert.deepEqual(r.sent[0], { type: 'hello', protocol: 1, deviceId: 'test-device', name: 'Obeing PixelBox', wakeWord: '你好小川', pairCode: '111111' });
     r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
     assert.equal(r.micStarts, 1);
+    assert.equal(r.sent.find(x => x.type === 'mic.start').format, 'ima_adpcm');
     r.pcm();
     r.advance(16); r.flushTimers();
     assert.ok(r.sent.at(-1) instanceof ArrayBuffer);
@@ -851,7 +866,7 @@ await test('采音 128ms 分包，暂时发送队列满重试且 PCM 顺序和�
     assert.equal(r.screenWrites, writes, '上行积压时先发送音频，再绘制');
     r.busy(false);
     for (let i = 0; i < 3; i++) { r.advance(16); r.flushTimers(); }
-    assert.deepEqual(r.sent.filter(x => x instanceof ArrayBuffer).map(x => Buffer.from(x)), chunks.map(x => Buffer.from(x)));
+    assert.deepEqual(r.sent.filter(x => x instanceof ArrayBuffer).map(x => Buffer.from(x)), chunks.map(x => Buffer.from(encodeImaAdpcm(x))));
     assert.equal(r.sockets[0].readyState, 1);
     r.exit();
 });
@@ -864,7 +879,7 @@ await test('切账号丢弃待重试旧 PCM，新账号 ACK 先于新音频', as
     r.pcm(new Uint8Array(4096).fill(2).buffer);
     r.busy(false); r.advance(16); r.flushTimers();
     const audio = r.sent.filter(x => x instanceof ArrayBuffer);
-    assert.equal(audio.length, 1); assert.equal(new Uint8Array(audio[0])[0], 2);
+    assert.equal(audio.length, 1); assert.deepEqual(Buffer.from(audio[0]), Buffer.from(encodeImaAdpcm(new Uint8Array(4096).fill(2))));
     assert.ok(r.sent.findIndex(x => x.type === 'account.ready' && x.accountEpoch === 2) < r.sent.indexOf(audio[0]));
     r.exit();
 });
