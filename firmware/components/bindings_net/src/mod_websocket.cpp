@@ -19,14 +19,22 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_websocket_client.h"
+#include "esp_transport_tcp.h"
+#include "esp_transport_ssl.h"
+#include "esp_transport_ws.h"
 #include "esp_timer.h"
+#include "http_parser.h"
+#include "lwip/sockets.h"
+#include "mbedtls/base64.h"
 #include "hal_net/ws_message.hpp"
 #include "js_helpers.hpp"
 #include "jsvm/jsvm.hpp"
 #include "net_worker.hpp"
 
 static const char* TAG = "px_ws";
+static constexpr int kNetworkTimeoutMs = 10000;
 
 // ------------------------------------------------------------ 数据结构
 
@@ -46,6 +54,15 @@ struct WsClient {
   size_t queued_bytes = 0, queued_messages = 0;
   int64_t queue_report_us = 0, queue_delay_max_ms = 0;
   size_t received_messages = 0;
+  esp_transport_handle_t stream_transport = nullptr, ws_transport = nullptr;
+  uint64_t sent_bytes = 0;
+  int64_t send_max_ms = 0, send_report_us = 0;
+
+  ~WsClient() {
+    // ext_transport 由调用方拥有，必须等客户端任务销毁后再释放。
+    if (ws_transport) esp_transport_destroy(ws_transport);
+    if (stream_transport) esp_transport_destroy(stream_transport);
+  }
 
   // 以下仅 WS 事件任务访问(分片重组)
   hal_net::WsMessage message;
@@ -53,6 +70,42 @@ struct WsClient {
   std::string close_reason;
 };
 using WsPtr = std::shared_ptr<WsClient>;
+
+// 显式持有标准 transport，握手完成后可以配置真实 TCP socket；TLS 仍校验证书包。
+static bool ws_create_transport(const WsPtr& ws, const std::string& subprotocol) {
+  http_parser_url parsed{};
+  http_parser_url_init(&parsed);
+  if (http_parser_parse_url(ws->url.c_str(), ws->url.size(), 0, &parsed) != 0) return false;
+  auto field = [&](http_parser_url_fields id) {
+    return ws->url.substr(parsed.field_data[id].off, parsed.field_data[id].len);
+  };
+  const bool secure = ws->url.rfind("wss://", 0) == 0;
+  ws->stream_transport = secure ? esp_transport_ssl_init() : esp_transport_tcp_init();
+  if (!ws->stream_transport) return false;
+  if (secure) esp_transport_ssl_crt_bundle_attach(ws->stream_transport, esp_crt_bundle_attach);
+  ws->ws_transport = esp_transport_ws_init(ws->stream_transport);
+  if (!ws->ws_transport) return false;
+  esp_transport_set_default_port(ws->ws_transport, secure ? 443 : 80);
+  std::string path = field(UF_PATH);
+  if (path.empty()) path = "/";
+  if (parsed.field_data[UF_QUERY].len) path += "?" + field(UF_QUERY);
+  std::string auth;
+  if (parsed.field_data[UF_USERINFO].len) {
+    std::string user = field(UF_USERINFO);
+    if (user.find(':') == std::string::npos) user += ':';
+    std::vector<unsigned char> encoded(4 * ((user.size() + 2) / 3) + 1);
+    size_t length = 0;
+    if (mbedtls_base64_encode(encoded.data(), encoded.size(), &length,
+        reinterpret_cast<const unsigned char*>(user.data()), user.size()) != 0) return false;
+    auth = "Basic " + std::string(reinterpret_cast<const char*>(encoded.data()), length);
+  }
+  esp_transport_ws_config_t config{};
+  config.ws_path = path.c_str();
+  config.sub_protocol = subprotocol.empty() ? nullptr : subprotocol.c_str();
+  config.auth = auth.empty() ? nullptr : auth.c_str();
+  config.propagate_control_frames = true;
+  return esp_transport_ws_set_config(ws->ws_transport, &config) == ESP_OK;
+}
 
 static JSClassID g_ws_class_id;
 
@@ -154,6 +207,15 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
   switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED: {
       if (ws->state.load() >= 2) break;
+      // WebSocket 头和 PCM 分两次 write；Nagle 等待手机延迟 ACK 时会持续压住尾包。
+      // 手机端的 TCP_NODELAY 只影响下行，设备上行必须在自己的 socket 上设置。
+      const int fd = esp_transport_get_socket(ws->ws_transport);
+      const int enabled = 1;
+      if (fd < 0 || setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) != 0) {
+        ESP_LOGE(TAG, "TCP_NODELAY setup failed");
+        pxjs::run_on_js([ws]() { ws_dispatch_terminal(ws, 1011, "TCP setup failed"); });
+        break;
+      }
       ws->state.store(1);
       pxjs::run_on_js([ws]() {
         if (pxjs::vm_stale(ws->gen)) return;
@@ -224,6 +286,12 @@ static void ws_event_handler(void* arg, esp_event_base_t, int32_t event_id, void
       break;
     }
     case WEBSOCKET_EVENT_ERROR: {
+      if (data) ESP_LOGW(TAG, "transport error: type=%d errno=%d tls=%d free=%u largest=%u",
+          int(data->error_handle.error_type),
+          data->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT ? data->error_handle.esp_transport_sock_errno : 0,
+          data->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT ? data->error_handle.esp_tls_stack_err : 0,
+          unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+          unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
       pxjs::run_on_js([ws]() {
         if (pxjs::vm_stale(ws->gen)) return;
         JSValue ev = JS_NewObject(ws->ctx);
@@ -274,16 +342,42 @@ static JSValue js_ws_send(JSContext* ctx, JSValueConst this_val, int argc, JSVal
   const auto handle = ws->handle;
   const bool queued = ws_submit_work(ws, [ws, handle, bytes = std::move(bytes), is_text]() {
     int sent = int(bytes.size());
+    const int64_t started = esp_timer_get_time();
     if (!pxjs::vm_stale(ws->gen) && ws->state.load() != 3) {
-      const char* data = bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data());
-      sent = is_text ? esp_websocket_client_send_text(handle, data, bytes.size(), pdMS_TO_TICKS(2000))
-                     : esp_websocket_client_send_bin(handle, data, bytes.size(), pdMS_TO_TICKS(2000));
+      // ESP 客户端把 poll_write 超时也当作传输错误并销毁 TCP。尚未写帧时先在
+      // worker 等待可写，让 TCP 重传和 JS 背压恢复有机会完成，不占住收发锁。
+      int writable = 0;
+      while (!pxjs::vm_stale(ws->gen) && ws->state.load() != 3
+          && esp_timer_get_time() - started < kNetworkTimeoutMs * 1000LL) {
+        writable = esp_transport_poll_write(ws->stream_transport, 100);
+        if (writable != 0) break;
+      }
+      if (writable > 0 && ws->state.load() != 3) {
+        const char* data = bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data());
+        // 一旦开始写帧便不能重发整包，否则会破坏帧边界；沿用完整网络操作的超时。
+        sent = is_text ? esp_websocket_client_send_text(handle, data, bytes.size(), pdMS_TO_TICKS(kNetworkTimeoutMs))
+                       : esp_websocket_client_send_bin(handle, data, bytes.size(), pdMS_TO_TICKS(kNetworkTimeoutMs));
+      } else if (ws->state.load() != 3 && !pxjs::vm_stale(ws->gen)) {
+        sent = -1;
+      }
     }
     {
       std::lock_guard<std::mutex> lock(ws->work_mutex);
       ws->queued_bytes -= bytes.size(); ws->queued_messages--;
+      ws->send_max_ms = std::max(ws->send_max_ms, (esp_timer_get_time() - started) / 1000);
+      if (sent > 0) ws->sent_bytes += sent;
+      if (started - ws->send_report_us >= 5000000) {
+        ESP_LOGI(TAG, "send: bytes=%llu pending=%u/%u max=%lld ms",
+            (unsigned long long)ws->sent_bytes, unsigned(ws->queued_bytes),
+            unsigned(ws->queued_messages), (long long)ws->send_max_ms);
+        ws->send_report_us = started;
+        ws->send_max_ms = 0;
+      }
     }
-    if (sent != int(bytes.size())) pxjs::run_on_js([ws]() {
+    if (sent == int(bytes.size())) return;
+    // 错误回调异步投递给 JS；先停止后续写入，避免回调尚未执行时继续发送排队帧。
+    ws->state.store(3);
+    pxjs::run_on_js([ws]() {
       if (!pxjs::vm_stale(ws->gen)) {
         JSValue ev = JS_NewObject(ws->ctx);
         JS_SetPropertyStr(ws->ctx, ev, "type", JS_NewString(ws->ctx, "error"));
@@ -380,13 +474,18 @@ static JSValue js_ws_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSV
   ws->ctx = ctx;
   ws->gen = jsvm::vm_generation();
   ws->url = url;
+  if (!ws_create_transport(ws, subprotocol)) {
+    JS_FreeValue(ctx, obj);
+    return pxjs::throw_msg(ctx, "WebSocket transport 初始化失败");
+  }
 
   esp_websocket_client_config_t cfg = {};
   cfg.uri = url.c_str();
+  cfg.ext_transport = ws->ws_transport;
   if (!subprotocol.empty()) cfg.subprotocol = subprotocol.c_str();
   cfg.disable_auto_reconnect = true;  // 浏览器语义:断了就是断了
   cfg.buffer_size = 4096;
-  cfg.network_timeout_ms = 10000;
+  cfg.network_timeout_ms = kNetworkTimeoutMs;
   cfg.task_stack = 6144;
   cfg.task_prio = std::min(CONFIG_JSVM_TASK_PRIORITY + 1, configMAX_PRIORITIES - 1);
   if (url.rfind("wss://", 0) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;

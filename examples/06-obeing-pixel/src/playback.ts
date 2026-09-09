@@ -1,7 +1,7 @@
 const PREBUFFER_MS = 256;
 const MAX_START_WAIT_MS = 512;
 
-/** 首播和断流恢复均预缓冲，覆盖网络批次与 JS 绘制调度抖动。 */
+/** 首播预缓冲，覆盖网络批次与 JS 绘制调度抖动。 */
 export class BufferedPcmPlayback {
     private readonly stream: ReturnType<typeof px.audio.player.openPcmStream>;
     private pending: ArrayBuffer[] = [];
@@ -16,9 +16,9 @@ export class BufferedPcmPlayback {
 
     feed(pcm: ArrayBuffer): void {
         if (this.closed || !pcm.byteLength) return;
-        if (this.started && this.stream.buffered() > 0) { this.stream.feed(pcm); return; }
-        // 已播空时重新积累连续音频，避免之后每个小包都伴随一次静音间隙。
-        this.started = false;
+        // 播放任务会并行消费环形缓冲，buffered() 不包含已送入 DMA 的采样；
+        // 首播后持续喂入，不能因瞬时为零再次等待，否则会人为放大每次缺包的停顿。
+        if (this.started) { this.stream.feed(pcm); return; }
         this.pending.push(pcm);
         this.pendingBytes += pcm.byteLength;
         if (this.pendingBytes >= Math.ceil(this.sampleRate * 2 * PREBUFFER_MS / 1000)) this.flush();

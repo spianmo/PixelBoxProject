@@ -294,12 +294,14 @@ await test('页面、配对、账号和输入框变化使静态缓存失效，�
     }
 });
 
-function runtime(width = 368, height = 448) {
+const testPair = { phoneId: '00000000-0000-4000-8000-000000000001', pairKey: 'a'.repeat(64) };
+function runtime(width = 368, height = 448, storage = new Map(), phones = null) {
     let touch;
     let button;
     let exit;
     let frame;
     const screenText = [];
+    let screenWrites = 0;
     let now = 1000;
     let micCallback;
     const micCallbacks = [];
@@ -318,20 +320,22 @@ function runtime(width = 368, height = 448) {
     let timerId = 0;
     const intervals = [];
     const sent = [];
+    let sendBusy = false;
+    let micFrameMs = 0;
     class Socket {
         static OPEN = 1;
         readyState = 1;
         constructor(url) { this.url = url; sockets.push(this); }
-        send(raw) { sent.push(typeof raw === 'string' ? JSON.parse(raw) : raw); }
+        send(raw) { if (sendBusy) throw new Error('WebSocket 发送队列已满'); sent.push(typeof raw === 'string' ? JSON.parse(raw) : raw); }
         close() { this.readyState = 3; this.onclose?.({ code: 1000 }); }
     }
     const px = {
         system: { info: () => ({ deviceId: 'test-device', capabilities: { mic: true } }), battery: () => ({ level: 86 }), now: () => now },
-        storage: { kv: { get: () => null, set() {} } },
+        storage: { kv: { get: (key) => storage.get(key), set: (key, value) => storage.set(key, value), remove: (key) => storage.delete(key) } },
         wifi: { status: () => ({ connected: true }) },
-        net: { mdns: { discover: async () => [{ name: 'Obeing Pixel Phone', ip: '192.168.1.20', port: 18888 }] } },
+        net: { mdns: { discover: async () => phones || [{ name: 'Obeing Pixel Phone', ip: '192.168.1.20', port: 18888, txt: { phoneId: testPair.phoneId } }] } },
         audio: {
-            mic: { start(options) { micStarts++; micCallback = options.onData; micCallbacks.push(options.onData); }, stop() { micStops++; } },
+            mic: { start(options) { micFrameMs = options.frameMs; micStarts++; micCallback = options.onData; micCallbacks.push(options.onData); }, stop() { micStops++; } },
             player: { openPcmStream: ({ sampleRate }) => {
                 audioBufferedMs = 0; audioStarted = false; audioStreamEnded = false;
                 return {
@@ -346,28 +350,32 @@ function runtime(width = 368, height = 448) {
         sensors: { imu: { available: () => false } },
         screen: {
             width, height, setFps() {}, onFrame(cb) { frame = cb; },
-            clear() { screenText.length = 0; }, fillRect() {},
+            clear() { screenWrites++; screenText.length = 0; }, fillRect() { screenWrites++; },
             measureText: (text, style) => ({ width: text.length * 12 * (style?.scale || 1), height: 12 * (style?.scale || 1) }),
-            drawText(text) { screenText.push(text); },
+            drawText(text) { screenWrites++; screenText.push(text); },
         },
         input: { onTouch(cb) { touch = cb; }, onButton(cb) { button = cb; } },
         app: { onExit(cb) { exit = cb; } },
     };
     runInNewContext(main.outputFiles[0].text, { px, console: { log() {} }, WebSocket: Socket, ArrayBuffer, Int16Array, setTimeout(cb, delay) { const id = ++timerId; timers.set(id, { cb, at: now + delay }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(cb) { intervals.push(cb); return intervals.length; }, clearInterval() {} });
     return {
-        sent, sockets, audioChunks,
+        sent, sockets, audioChunks, storage,
+        get micFrameMs() { return micFrameMs; },
+        busy(value) { sendBusy = value; },
+        discover() { intervals[0](); },
         get audioEnds() { return audioEnds; },
         get audioUnderrunMs() { return audioUnderrunMs; },
+        get screenWrites() { return screenWrites; },
         get micStarts() { return micStarts; }, get micStops() { return micStops; }, get audioFeeds() { return audioFeeds; },
         touch(x, y) { touch({ type: 'down', x, y }); },
         button(type) { button({ id: 'boot', type }); },
         open() { sockets.at(-1).onopen(); },
-        message(message) { sockets.at(-1).onmessage({ data: message instanceof ArrayBuffer ? message : JSON.stringify(message) }); },
-        pcm() { micCallback(new Int16Array([100, -100]).buffer); },
+        message(message) { sockets.at(-1).onmessage({ data: message instanceof ArrayBuffer ? message : JSON.stringify(message.type === 'hello.ok' ? { ...testPair, ...message } : message) }); },
+        pcm(pcm = new Int16Array([100, -100]).buffer) { micCallback(pcm); },
         oldPcm(index) { micCallbacks[index](new Int16Array([100, -100]).buffer); },
         audioEnded() { ended(); },
         heartbeat() { intervals[1](); },
-        frameText() { frame(16); return screenText.join('\n'); },
+        frameText() { now += 64; frame(64); return screenText.join('\n'); },
         advance(ms) {
             now += ms;
             if (audioStarted) {
@@ -406,11 +414,10 @@ await test('真实入口仅在配对且手机同步有效账号后开启麦克�
     const r = await pairedRuntime();
     assert.equal(r.micStarts, 0);
     assert.deepEqual(r.sent[0], { type: 'hello', protocol: 1, deviceId: 'test-device', name: 'Obeing PixelBox', wakeWord: '你好小川', pairCode: '111111' });
-    r.message({ type: 'hello.pending' });
-    assert.equal(r.micStarts, 0);
     r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
     assert.equal(r.micStarts, 1);
     r.pcm();
+    r.advance(16); r.flushTimers();
     assert.ok(r.sent.at(-1) instanceof ArrayBuffer);
     r.exit();
     assert.equal(r.micStops, 1);
@@ -477,6 +484,7 @@ await test('账号ACK先于采音，切账号后旧麦克风回调和重复旧�
     assert.ok(r.frameText().includes('新账号'));
     r.touch(184, 409);
     r.pcm();
+    r.advance(16); r.flushTimers();
     assert.ok(r.sent.at(-1) instanceof ArrayBuffer);
     r.exit();
 
@@ -515,8 +523,9 @@ await test('连接页仅断开手机，旧连接账号推送及撤权后推送�
 
     const revoked = await pairedRuntime();
     revoked.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    const revokedMessage = revoked.sockets[0].onmessage;
     revoked.message({ type: 'auth.revoked' });
-    revoked.message({ type: 'account.state', authenticated: true, accountEpoch: 2 });
+    revokedMessage({ data: JSON.stringify({ type: 'account.state', authenticated: true, accountEpoch: 2 }) });
     assert.equal(revoked.micStarts, 1);
     assert.equal(revoked.micStops, 1);
     revoked.exit();
@@ -548,8 +557,10 @@ await test('真实入口断线或撤权后换账号重配，首轮前屏幕不�
         assert.equal(r.micStops, 1);
         r.touch(184, 170);
         await new Promise((resolve) => setImmediate(resolve));
-        for (let i = 0; i < 6; i++) r.touch(70, 250);
-        r.touch(286, 400);
+        if (revoke) {
+            for (let i = 0; i < 6; i++) r.touch(70, 250);
+            r.touch(286, 400);
+        }
         r.open();
         r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1, userDisplayName: '新账号', enterpriseId: '新企业' });
         const text = r.frameText();
@@ -656,7 +667,7 @@ await test('128ms音频批次叠加96ms网络抖动仍连续播放', async () =>
     assert.equal(Buffer.concat(r.audioChunks).length, 40 * 4 * 1024);
     r.exit();
 });
-await test('网络断流后重新预缓冲，取消仍清除重缓冲定时器', async () => {
+await test('播放期间环形缓冲短暂为空仍持续写入，取消清理待播数据', async () => {
     for (const cancel of [false, true]) {
         const r = await pairedRuntime();
         r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
@@ -665,13 +676,33 @@ await test('网络断流后重新预缓冲，取消仍清除重缓冲定时器',
         assert.equal(r.audioFeeds, 1);
         r.advance(1000);
         r.message(new Int16Array(512).fill(456).buffer);
-        assert.equal(r.audioFeeds, 1, '断流后不能逐个小包立即播放');
+        assert.equal(r.audioFeeds, 2, '播放期间不能因瞬时空缓冲重新等待256ms');
         if (cancel) r.message({ type: 'audio.cancel', turnId: 1 });
         else r.message({ type: 'audio.end', turnId: 1 });
         r.advance(512); r.flushTimers();
-        assert.equal(r.audioFeeds, cancel ? 1 : 2);
+        assert.equal(r.audioFeeds, 2);
         r.exit();
     }
+});
+await test('播报低缓冲让出三维绘制，余量充足及网络结束后恢复画面', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.frameText();
+    const before = r.screenWrites;
+    r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+    r.frameText();
+    assert.equal(r.screenWrites, before, '首音频未到时不占用收包线程');
+    for (let i = 0; i < 16; i++) r.message(new Int16Array(512).buffer);
+    r.frameText();
+    assert.ok(r.screenWrites > before, '512ms余量时继续播报动画');
+    const animated = r.screenWrites;
+    r.advance(192);
+    r.frameText();
+    assert.equal(r.screenWrites, animated, '余量降到320ms时优先接收后续音频');
+    r.message({ type: 'audio.end', turnId: 1 });
+    r.frameText();
+    assert.ok(r.screenWrites > animated, '已无后续音频时不冻结画面');
+    r.exit();
 });
 await test('short and empty replies finish without waiting for the startup threshold', async () => {
     for (const samples of [0, 160]) {
@@ -806,4 +837,125 @@ await test('批量绘制与回退逐条输出一致，中间过程在正常和�
         assert.ok(batch.some(call => call[0] === 'text' && call[1] === '正在查询天气'));
     }
 });
+await test('采音 128ms 分包，暂时发送队列满重试且 PCM 顺序和内容不丢失', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    assert.equal(r.micFrameMs, 128);
+    r.busy(true);
+    const chunks = Array.from({ length: 8 }, (_, i) => new Uint8Array(4096).fill(i).buffer);
+    for (const chunk of chunks) r.pcm(chunk);
+    r.advance(16); r.flushTimers();
+    assert.equal(r.sockets[0].readyState, 1);
+    const writes = r.screenWrites;
+    r.frameText();
+    assert.equal(r.screenWrites, writes, '上行积压时先发送音频，再绘制');
+    r.busy(false);
+    for (let i = 0; i < 3; i++) { r.advance(16); r.flushTimers(); }
+    assert.deepEqual(r.sent.filter(x => x instanceof ArrayBuffer).map(x => Buffer.from(x)), chunks.map(x => Buffer.from(x)));
+    assert.equal(r.sockets[0].readyState, 1);
+    r.exit();
+});
+await test('切账号丢弃待重试旧 PCM，新账号 ACK 先于新音频', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.busy(true); r.pcm(new Uint8Array(4096).fill(1).buffer);
+    r.advance(16); r.flushTimers();
+    r.message({ type: 'account.state', authenticated: true, accountEpoch: 2 });
+    r.pcm(new Uint8Array(4096).fill(2).buffer);
+    r.busy(false); r.advance(16); r.flushTimers();
+    const audio = r.sent.filter(x => x instanceof ArrayBuffer);
+    assert.equal(audio.length, 1); assert.equal(new Uint8Array(audio[0])[0], 2);
+    assert.ok(r.sent.findIndex(x => x.type === 'account.ready' && x.accountEpoch === 2) < r.sent.indexOf(audio[0]));
+    r.exit();
+});
+await test('TCP 背压超过旧的五秒门限仍保留连接，永久堵塞最终有界断开', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.busy(true);
+    r.pcm(new ArrayBuffer(4096));
+    r.advance(16); r.flushTimers();
+    r.advance(6000); r.flushTimers();
+    assert.equal(r.sockets[0].readyState, 1, '应允许原生 TCP 等待恢复');
+    r.busy(false); r.advance(16); r.flushTimers();
+    assert.equal(r.sent.filter(x => x instanceof ArrayBuffer).length, 1);
+    r.busy(true); r.pcm(new ArrayBuffer(4096));
+    r.advance(16); r.flushTimers();
+    r.advance(15000); r.flushTimers();
+    assert.equal(r.sockets[0].readyState, 3, '永久不可写必须最终释放连接');
+    r.exit();
+});
+await test('首次配对保存凭据，掉线和应用重启均自动恢复且不需要配对码', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: false, accountEpoch: 5 });
+    r.sockets[0].close();
+    r.advance(1000); r.discover(); await new Promise(setImmediate);
+    assert.equal(r.sockets.length, 2); r.open();
+    const hello = r.sent.at(-1);
+    assert.equal(hello.pairCode, undefined); assert.equal(hello.pairKey, testPair.pairKey);
+    r.message({ type: 'hello.ok', authenticated: false, accountEpoch: 0 });
+    r.exit();
+    const reboot = runtime(368, 448, r.storage);
+    await new Promise(setImmediate); assert.equal(reboot.sockets.length, 1); reboot.open();
+    assert.equal(reboot.sent[0].pairKey, testPair.pairKey);
+    reboot.exit();
+});
+await test('只重连同一手机，手动断开暂停自动重连，点击后恢复', async () => {
+    const storage = new Map([['ob.pairing', JSON.stringify(testPair)]]);
+    const other = runtime(368, 448, storage, [{ name: 'Other', ip: '192.168.1.21', port: 12, txt: { phoneId: 'other' } }]);
+    await new Promise(setImmediate); assert.equal(other.sockets.length, 0); other.exit();
+    const r = runtime(368, 448, storage); await new Promise(setImmediate); r.open();
+    r.message({ type: 'hello.ok', authenticated: false, accountEpoch: 0 });
+    r.touch(340, 48); r.touch(180, 360);
+    r.advance(20000); r.discover(); await new Promise(setImmediate);
+    assert.equal(r.sockets.length, 1);
+    r.touch(180, 160); await new Promise(setImmediate);
+    assert.equal(r.sockets.length, 2); r.exit();
+});
+await test('手机撤销或离线忘记设备后清除恢复凭据，回到配对码界面', async () => {
+    for (const message of [{ type: 'auth.revoked' }, { type: 'error', code: 'pair_expired' }]) {
+        const r = runtime(368, 448, new Map([['ob.pairing', JSON.stringify(testPair)]]));
+        await new Promise(setImmediate); r.open();
+        if (message.type === 'auth.revoked') r.message({ type: 'hello.ok', authenticated: false, accountEpoch: 1 });
+        r.message(message); r.advance(2000); r.discover(); await new Promise(setImmediate);
+        assert.equal(r.storage.has('ob.pairing'), false);
+        assert.equal(r.sockets.length, 1);
+        assert.ok(r.frameText().includes('手机配对码'));
+        r.exit();
+    }
+});
+await test('媒体积压暂停采音并重建识别，保持设备连接和配对', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.busy(true);
+    for (let i = 0; i < 16; i++) r.pcm(new ArrayBuffer(4096));
+    assert.equal(r.sockets[0].readyState, 1);
+    assert.ok(r.storage.has('ob.pairing'));
+    assert.equal(r.micStops, 1);
+    assert.ok(r.frameText().includes('网络拥堵'));
+    r.busy(false); r.advance(16); r.flushTimers();
+    assert.deepEqual(r.sent.slice(-2).map(x => x.type), ['mic.stop', 'mic.start']);
+    assert.equal(r.sent.filter(x => x instanceof ArrayBuffer).length, 0, '不把残缺旧音频继续送入识别');
+    r.message({ type: 'state', state: 'muted' });
+    assert.equal(r.micStarts, 1, '重置中间回执不能提前重开麦克风');
+    r.message({ type: 'state', state: 'idle' });
+    assert.equal(r.micStarts, 2);
+    r.pcm(); r.advance(16); r.flushTimers();
+    assert.ok(r.sent.at(-1) instanceof ArrayBuffer);
+    assert.equal(r.sockets.length, 1);
+    r.exit();
+});
+await test('语音恢复时用户手动静音仍优先，迟到 idle 不能重开麦克风', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.busy(true);
+    for (let i = 0; i < 16; i++) r.pcm(new ArrayBuffer(4096));
+    r.button('doubleClick');
+    r.busy(false); r.advance(16); r.flushTimers();
+    r.message({ type: 'state', state: 'muted' });
+    r.message({ type: 'state', state: 'idle' });
+    assert.equal(r.micStarts, 1);
+    assert.equal(r.sockets[0].readyState, 1);
+    r.exit();
+});
+
 console.log(`\nObeing Pixel 验证通过：${passed} 项`);

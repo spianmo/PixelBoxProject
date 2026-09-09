@@ -54,3 +54,11 @@ WiFi 凭据存 NVS 命名空间 `px_wifi`(`connect(..., {save:false})` 可跳过
 
 - 托管组件:`espressif/mdns`、`espressif/esp_websocket_client`(见 idf_component.yml)
 - 内部组件:`jsvm`(公开头 + quickjs.h)、`hal_net`
+
+## 实时 WebSocket 发送
+
+WebSocket 使用显式持有的标准 TCP/TLS transport，在 CONNECTED 事件中对底层 socket 设置 `TCP_NODELAY`。ESP-IDF 把帧头和负载分两次写入，Nagle 与手机延迟 ACK 叠加会拖慢持续 PCM；服务端设置 TCP_NODELAY 仅影响下行。TLS 仍使用系统 CA 证书包，路径、查询、Basic 认证、子协议和控制帧按标准 transport 处理。客户端销毁完成后再释放 transport。
+
+原生发送队列仍限制为 65536 字节/16 条，每 5 秒输出累计发送字节、待发队列和最大写入耗时，不记录内容。`node tools/check-websocket-transport.mjs <设备地址> <本机IPv4>` 覆盖真实路径/查询、认证、子协议、8192 字节二进制及分片重组。
+
+发送 worker 在写帧前按 100ms 轮询可写状态，最多等待 10 秒，期间不持有客户端发送锁。避免底层库将暂时不可写当作传输错误直接销毁连接。进入写帧后沿用 10 秒网络操作超时，失败立即停止队列并关闭，不能重发部分写入的整帧。`node tools/check-websocket-backpressure.mjs <设备地址> <本机IPv4>` 验证接收窗口暂停 4 秒后仍保持连接和数据顺序。错误日志只记录类型、可用 errno/TLS 错误码与内部堆余量。

@@ -53,10 +53,6 @@ function applyPhoneAccount(view: ViewState, message: Record<string, unknown>): v
 
 export function applyMessage(view: ViewState, message: Record<string, unknown>): void {
     switch (message.type) {
-        case 'hello.pending':
-            view.pairingPending = true;
-            view.state = 'pairing';
-            break;
         case 'hello.ok':
             view.connected = true;
             view.pairingPending = false;
@@ -64,7 +60,7 @@ export function applyMessage(view: ViewState, message: Record<string, unknown>):
             applyPhoneAccount(view, message);
             break;
         case 'account.state':
-            // 账号推送不能代替六位码与手机确认，未配对或撤权后的连接不得开启采音。
+            // 账号推送不能代替配对验证，未配对或撤权后的连接不得开启采音。
             if (view.connected) applyPhoneAccount(view, message);
             break;
         case 'auth.required':

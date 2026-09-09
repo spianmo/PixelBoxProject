@@ -316,7 +316,7 @@ function renderScene(screen: Screen, view: ViewState, input: RenderInput): void 
         if (view.pairingPending) {
             drawCat(screen, view, input, 171, 6.5);
             if (!redraw) return;
-            center(screen, '等待手机确认', 288, fg);
+            center(screen, '正在连接手机', 288, fg);
             center(screen, wrapText(screen, view.phoneName, W - 44, 1)[0] || '', 316, quiet);
             center(screen, '取消', 397, quiet);
             return;
@@ -329,7 +329,7 @@ function renderScene(screen: Screen, view: ViewState, input: RenderInput): void 
             screen.fillRect(x, 163, 27, 2, line);
             label(screen, view.pairingCode[i] || '', x + 8, 139, accent);
         }
-        const message = view.errorText || '连接后等待手机确认';
+        const message = view.errorText || '输入一次，后续自动连接';
         center(screen, wrapText(screen, message, W - 32, 1)[0] || '', 188, quiet);
         const keyWidth = (W - 44) / 3;
         for (let row = 0; row < 4; row++) {
