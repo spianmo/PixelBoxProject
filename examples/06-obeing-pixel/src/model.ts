@@ -67,14 +67,18 @@ export function surfaceVoxels(volume: number[][][]): Voxel[] {
 export const CAT_SURFACE = surfaceVoxels(CAT_VOLUME);
 export const clamp = (n: number, min: number, max: number): number => Math.max(min, Math.min(max, Number.isFinite(n) ? n : 0));
 
+// 放大 IMU 转向幅度；静态姿态与形态过渡使用相同角度，避免切换状态时响应突变。
+const IMU_YAW = 1.2;
+const IMU_PITCH = 0.6;
+
 export function poseFor(state: AssistantState, clock: number, tiltX: number, tiltY: number, level: number, idleShape: CatShape = 'idle'): Pose {
     const sleepy = state === 'sleep' || state === 'muted';
     const shape: CatShape = sleepy ? 'rest' : state === 'wake' ? 'alert' : state === 'listening' ? 'listen'
         : state === 'thinking' ? 'think' : state === 'speaking' ? 'talk' : state === 'error' ? 'error' : state === 'idle' ? idleShape : 'idle';
     return {
         shape,
-        yaw: clamp(tiltX, -1, 1) * 0.9 + (shape === 'think' ? -0.32 : shape === 'listen' ? 0.12 : shape === 'peek' ? -0.35 : shape === 'sit' ? 0.3 : 0),
-        pitch: clamp(tiltY, -1, 1) * 0.4 + (state === 'thinking' ? -0.06 : 0),
+        yaw: clamp(tiltX, -1, 1) * IMU_YAW + (shape === 'think' ? -0.32 : shape === 'listen' ? 0.12 : shape === 'peek' ? -0.35 : shape === 'sit' ? 0.3 : 0),
+        pitch: clamp(tiltY, -1, 1) * IMU_PITCH + (state === 'thinking' ? -0.06 : 0),
         lift: Math.sin(clock / (sleepy ? 1500 : state === 'speaking' ? 240 : 760)) * (state === 'wake' ? 8 : state === 'speaking' ? 4 : 3),
         squash: state === 'speaking' ? 0.96 + clamp(level, 0, 100) * 0.0012 + Math.sin(clock / 150) * 0.035 : 1,
     };
@@ -150,8 +154,8 @@ export class CatMotion {
             this.from = undefined;
         }
         this.current = target;
-        // Sensor rotation is applied after the state morph, without interpolation.
-        return { ...target, yaw: target.yaw + clamp(tiltX, -1, 1) * 0.9, pitch: target.pitch + clamp(tiltY, -1, 1) * 0.4 };
+        // IMU 转向在形态过渡之后叠加，直接跟随当前倾角。
+        return { ...target, yaw: target.yaw + clamp(tiltX, -1, 1) * IMU_YAW, pitch: target.pitch + clamp(tiltY, -1, 1) * IMU_PITCH };
     }
 }
 

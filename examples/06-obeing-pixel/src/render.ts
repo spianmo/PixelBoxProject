@@ -99,8 +99,9 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     const frame = frames.get(screen);
     if (frame?.cat && !frame.redraw) restoreBackground(screen, frame, frame.cat);
     const pose = input.pose || poseFor(view.state, input.clock, input.tiltX, input.tiltY, view.level);
-    const cx = screen.width / 2 + clamp(input.tiltX, -1, 1) * 12;
-    cy += clamp(input.tiltY, -1, 1) * 8;
+    // 位移幅度增加 50%；后续仍按主体区域校正，避免挤入字幕和按钮。
+    const cx = screen.width / 2 + clamp(input.tiltX, -1, 1) * 18;
+    cy += clamp(input.tiltY, -1, 1) * 12;
     let runs = rasterizeCat(pose, scale, cx, cy);
     const bounds = () => {
         let left = cx - 13 * scale, right = cx + 13 * scale;

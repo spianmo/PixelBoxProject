@@ -208,7 +208,7 @@ await test('彩边跳过白色遮挡仍与五层全量绘制逐像素一致，�
         const input = { clock: 1800, tiltX: tilt, tiltY: -tilt, battery: 86, settings: false };
         const pose = { ...model.poseFor(view.state, input.clock, tilt, -tilt, view.level), shape };
         input.pose = pose;
-        const cx = 240 + tilt * 12, cy = 240 - tilt * 8, step = Math.max(2, Math.round(scale));
+        const cx = 240 + tilt * 18, cy = 240 - tilt * 12, step = Math.max(2, Math.round(scale));
         const occupancy = new Map();
         for (const point of model.projectCat(pose, scale, cx, cy)) {
             const x = Math.round(point.sx / step) * step, y = Math.round(point.sy / step) * step;
@@ -782,8 +782,8 @@ await test('待机随机轮换五种形态，语音打断过渡保持连续并�
     motion.sample('speaking', 26000, 0, 0, 60);
     const neutral = motion.sample('speaking', 26100, 0, 0, 60);
     const tilted = motion.sample('speaking', 26100, 1, -1, 60);
-    assert.ok(Math.abs(tilted.yaw - neutral.yaw - 0.9) < 1e-8, 'IMU bypasses in-progress morph');
-    assert.ok(Math.abs(tilted.pitch - neutral.pitch + 0.4) < 1e-8);
+    assert.ok(Math.abs(tilted.yaw - neutral.yaw - 1.2) < 1e-8, 'IMU bypasses in-progress morph');
+    assert.ok(Math.abs(tilted.pitch - neutral.pitch + 0.6) < 1e-8);
     const signatures = ['idle', 'listening', 'thinking', 'speaking', 'sleep'].map(state =>
         JSON.stringify(model.projectCat(model.poseFor(state, 1700, 0, 0, 55), 9, 184, 190).map(p => [p.sx, p.sy])));
     assert.equal(new Set(signatures).size, signatures.length);
