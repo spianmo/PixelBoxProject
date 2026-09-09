@@ -309,6 +309,10 @@ function runtime(width = 368, height = 448) {
     let audioFeeds = 0;
     const audioChunks = [];
     let audioEnds = 0;
+    let audioBufferedMs = 0;
+    let audioUnderrunMs = 0;
+    let audioStarted = false;
+    let audioStreamEnded = false;
     const sockets = [];
     const timers = new Map();
     let timerId = 0;
@@ -328,7 +332,16 @@ function runtime(width = 368, height = 448) {
         net: { mdns: { discover: async () => [{ name: 'Obeing Pixel Phone', ip: '192.168.1.20', port: 18888 }] } },
         audio: {
             mic: { start(options) { micStarts++; micCallback = options.onData; micCallbacks.push(options.onData); }, stop() { micStops++; } },
-            player: { openPcmStream: () => ({ feed(pcm) { audioFeeds++; audioChunks.push(Buffer.from(pcm)); }, stop() {}, buffered: () => 0, end() { audioEnds++; }, onEnded(cb) { ended = cb; } }) },
+            player: { openPcmStream: ({ sampleRate }) => {
+                audioBufferedMs = 0; audioStarted = false; audioStreamEnded = false;
+                return {
+                    feed(pcm) { audioFeeds++; audioChunks.push(Buffer.from(pcm)); audioBufferedMs += pcm.byteLength * 1000 / (sampleRate * 2); audioStarted = true; },
+                    stop() { audioBufferedMs = 0; audioStarted = false; },
+                    buffered: () => audioBufferedMs,
+                    end() { audioEnds++; audioStreamEnded = true; },
+                    onEnded(cb) { ended = cb; },
+                };
+            } },
         },
         sensors: { imu: { available: () => false } },
         screen: {
@@ -344,6 +357,7 @@ function runtime(width = 368, height = 448) {
     return {
         sent, sockets, audioChunks,
         get audioEnds() { return audioEnds; },
+        get audioUnderrunMs() { return audioUnderrunMs; },
         get micStarts() { return micStarts; }, get micStops() { return micStops; }, get audioFeeds() { return audioFeeds; },
         touch(x, y) { touch({ type: 'down', x, y }); },
         button(type) { button({ id: 'boot', type }); },
@@ -354,7 +368,13 @@ function runtime(width = 368, height = 448) {
         audioEnded() { ended(); },
         heartbeat() { intervals[1](); },
         frameText() { frame(16); return screenText.join('\n'); },
-        advance(ms) { now += ms; },
+        advance(ms) {
+            now += ms;
+            if (audioStarted) {
+                if (!audioStreamEnded) audioUnderrunMs += Math.max(0, ms - audioBufferedMs);
+                audioBufferedMs = Math.max(0, audioBufferedMs - ms);
+            }
+        },
         flushTimers() { for (const [id, timer] of Array.from(timers)) if (timer.at <= now) { timers.delete(id); timer.cb(); } },
         exit() { exit(); },
     };
@@ -581,7 +601,7 @@ await test('audio.cancel丢弃旧播放，过期audio.end不确认新轮，等�
     assert.deepEqual(r.sent.filter((m) => m.type === 'audio.played'), [{ type: 'audio.played', turnId: 2 }]);
     r.exit();
 });
-await test('PCM在64ms音频到达时首播，按顺序保留每个采样及短尾包', async () => {
+await test('PCM在256ms音频到达时首播，按顺序保留每个采样及短尾包', async () => {
     for (const sampleRate of [16000, 24000, 48000]) {
         const r = await pairedRuntime();
         r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
@@ -592,8 +612,9 @@ await test('PCM在64ms音频到达时首播，按顺序保留每个采样及短�
             chunks.push(Buffer.from(pcm));
             r.advance(i % 3 === 0 ? 55 : 24);
             r.message(pcm);
-            if (i < 1) assert.equal(r.audioFeeds, 0, '首包允许等待下一帧形成64ms缓冲');
-            if (i === 1) assert.equal(r.audioChunks[0].byteLength, sampleRate * 2 * 64 / 1000);
+            r.flushTimers();
+            if (i < 7) assert.equal(r.audioFeeds, 0, '首播前保留256ms音频抵御网络与绘制抖动');
+            if (i === 7) assert.equal(r.audioChunks[0].byteLength, sampleRate * 2 * 256 / 1000);
         }
         const tail = new Int16Array([123, -456]).buffer;
         chunks.push(Buffer.from(tail)); r.message(tail);
@@ -606,18 +627,49 @@ await test('PCM在64ms音频到达时首播，按顺序保留每个采样及短�
         r.exit();
     }
 });
-await test('慢速小包在首块后80ms开播，无需等待audio.end且取消会清理启动任务', async () => {
+await test('慢速小包在首块后512ms开播，无需等待audio.end且取消会清理启动任务', async () => {
     for (const cancel of [false, true]) {
         const r = await pairedRuntime();
         r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
         r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
         r.message(new Int16Array(160).fill(234).buffer);
-        r.advance(79); r.flushTimers();
+        r.advance(511); r.flushTimers();
         assert.equal(r.audioFeeds, 0);
         if (cancel) r.message({ type: 'audio.cancel', turnId: 1 });
         r.advance(1); r.flushTimers();
         assert.equal(r.audioFeeds, cancel ? 0 : 1);
         assert.equal(r.audioEnds, 0);
+        r.exit();
+    }
+});
+await test('128ms音频批次叠加96ms网络抖动仍连续播放', async () => {
+    const r = await pairedRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+    for (let batch = 0; batch < 40; batch++) {
+        if (batch) r.advance(128 + (batch % 2 ? 96 : -96));
+        r.flushTimers();
+        for (let chunk = 0; chunk < 4; chunk++) r.message(new Int16Array(512).fill(batch + 1).buffer);
+    }
+    r.message({ type: 'audio.end', turnId: 1 });
+    assert.equal(r.audioUnderrunMs, 0);
+    assert.equal(Buffer.concat(r.audioChunks).length, 40 * 4 * 1024);
+    r.exit();
+});
+await test('网络断流后重新预缓冲，取消仍清除重缓冲定时器', async () => {
+    for (const cancel of [false, true]) {
+        const r = await pairedRuntime();
+        r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+        r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+        r.message(new Int16Array(4096).fill(123).buffer);
+        assert.equal(r.audioFeeds, 1);
+        r.advance(1000);
+        r.message(new Int16Array(512).fill(456).buffer);
+        assert.equal(r.audioFeeds, 1, '断流后不能逐个小包立即播放');
+        if (cancel) r.message({ type: 'audio.cancel', turnId: 1 });
+        else r.message({ type: 'audio.end', turnId: 1 });
+        r.advance(512); r.flushTimers();
+        assert.equal(r.audioFeeds, cancel ? 1 : 2);
         r.exit();
     }
 });

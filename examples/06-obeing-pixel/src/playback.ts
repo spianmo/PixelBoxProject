@@ -1,7 +1,7 @@
-const PREBUFFER_MS = 64;
-const MAX_START_WAIT_MS = 80;
+const PREBUFFER_MS = 256;
+const MAX_START_WAIT_MS = 512;
 
-/** 首播只积累两帧 PCM，慢速小包也由定时器启动，避免一直等到 audio.end。 */
+/** 首播和断流恢复均预缓冲，覆盖网络批次与 JS 绘制调度抖动。 */
 export class BufferedPcmPlayback {
     private readonly stream: ReturnType<typeof px.audio.player.openPcmStream>;
     private pending: ArrayBuffer[] = [];
@@ -16,7 +16,9 @@ export class BufferedPcmPlayback {
 
     feed(pcm: ArrayBuffer): void {
         if (this.closed || !pcm.byteLength) return;
-        if (this.started) { this.stream.feed(pcm); return; }
+        if (this.started && this.stream.buffered() > 0) { this.stream.feed(pcm); return; }
+        // 已播空时重新积累连续音频，避免之后每个小包都伴随一次静音间隙。
+        this.started = false;
         this.pending.push(pcm);
         this.pendingBytes += pcm.byteLength;
         if (this.pendingBytes >= Math.ceil(this.sampleRate * 2 * PREBUFFER_MS / 1000)) this.flush();

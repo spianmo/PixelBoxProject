@@ -1,11 +1,11 @@
 import type { SpeechConfig } from './controller';
 
 /**
- * 示例工程随包下发的 Azure Speech 配置。
+ * 示例工程的 Azure Speech 默认配置，仓库中保持密钥为空。
  *
- * 两项同时有效时，应用启动即使用本配置，不要求用户在 PixelBox 上输入；任一项为空时，
- * 视为本地开发构建，登录后回退到设备语音配置页。密钥会被编译进 main.js 和设备固件包，
- * 只能放置允许随示例分发的 Azure 资源密钥。
+ * 登录后在 PixelBox 语音配置页输入区域和密钥，密钥只保留在本次运行内存。
+ * 两项同时有效时会在启动时自动配置，并将密钥编译进 main.js 和设备应用包；
+ * 不要将真实密钥写入源码并提交到 Git。
  */
 export const PROJECT_SPEECH_CONFIG: Readonly<SpeechConfig> = {
     region: 'eastasia',
