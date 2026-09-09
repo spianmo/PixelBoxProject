@@ -205,7 +205,7 @@ await test('彩边跳过白色遮挡仍与五层全量绘制逐像素一致，�
     for (const shape of model.CAT_SHAPES) for (const scale of [4.4, 7.8, 11]) for (const tilt of [-1, 0, 1]) {
         const expected = pixelScreen(480, 480), actual = pixelScreen(480, 480);
         const view = { ...state.initialState(), state: 'speaking', level: 68 };
-        const input = { clock: 1800, tiltX: tilt, tiltY: -tilt, battery: 86, settings: false };
+        const input = { clock: 1800, tiltX: tilt, tiltY: -tilt, battery: 86, settings: false, shake: 0 };
         const pose = { ...model.poseFor(view.state, input.clock, tilt, -tilt, view.level), shape };
         input.pose = pose;
         const cx = 240 + tilt * 18, cy = 240 - tilt * 12, step = Math.max(2, Math.round(scale));

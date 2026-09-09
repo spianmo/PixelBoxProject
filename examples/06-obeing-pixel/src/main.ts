@@ -1,4 +1,4 @@
-import { CatMotion, clamp, prepareCat } from './model';
+import { CatMotion, clamp, imuGlitch, prepareCat } from './model';
 import { drawScene, fullscreenAt, pairingKeyAt } from './render';
 import { layoutPoint } from './layout';
 import { BufferedPcmPlayback } from './playback';
@@ -25,7 +25,7 @@ let tiltX = 0;
 let tiltY = 0;
 let targetX = 0;
 let targetY = 0;
-let shakeUntil = 0;
+let shake = 0;
 let battery = px.system.battery().level;
 let lastMessageAt = 0;
 let lastActivityAt = 0;
@@ -372,8 +372,8 @@ px.input.onButton((event) => {
 
 if (px.sensors.imu.available()) {
     px.sensors.imu.start({ rateHz: 50, onData(data) {
-        // 水平倾斜与 ax 同号，反转小猫的左右转向和位移；摇晃检测使用同方向差值。
-        if (Math.abs(data.ax - targetX) + Math.abs(data.ay - targetY) > 0.35) shakeUntil = px.system.now() + 180;
+        // 保持已对调的左右方向；故障强度使用未钳制的 X/Y 原始加速度。
+        shake = imuGlitch(data.ax, data.ay);
         targetX = clamp(data.ax, -1, 1);
         targetY = clamp(data.ay, -1, 1);
     } });
@@ -395,7 +395,7 @@ px.screen.onFrame((dt) => {
     if ((micActive || (playback && !playbackEnded))
         && (uplink?.pendingAudio() || px.system.now() - audioDrawAt < Math.max(64, audioDrawCost))) return;
     const drawStarted = px.system.now();
-    drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings, fullscreen, shake: px.system.now() < shakeUntil ? 1 : 0,
+    drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings, fullscreen, shake,
         pose: motion.sample(view.state, clock, tiltX, tiltY, view.level) });
     audioDrawAt = px.system.now();
     audioDrawCost = audioDrawAt - drawStarted;

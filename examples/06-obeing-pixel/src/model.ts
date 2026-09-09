@@ -71,6 +71,13 @@ export const clamp = (n: number, min: number, max: number): number => Math.max(m
 const IMU_YAW = 1.2;
 const IMU_PITCH = 0.6;
 
+// X/Y 原始加速度（含重力投影，单位 g）合成故障强度，正负方向等效。
+// 0.06g 内忽略微抖，1.5g 达到最强；不要使用已经为转向钳制过的输入。
+export function imuGlitch(ax: number, ay: number): number {
+    const x = Number.isFinite(ax) ? ax : 0, y = Number.isFinite(ay) ? ay : 0;
+    return clamp((Math.hypot(x, y) - 0.06) / 1.44, 0, 1);
+}
+
 export function poseFor(state: AssistantState, clock: number, tiltX: number, tiltY: number, level: number, idleShape: CatShape = 'idle'): Pose {
     const sleepy = state === 'sleep' || state === 'muted';
     const shape: CatShape = sleepy ? 'rest' : state === 'wake' ? 'alert' : state === 'listening' ? 'listen'

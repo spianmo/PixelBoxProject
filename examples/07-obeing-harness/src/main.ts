@@ -1,4 +1,4 @@
-import { CatMotion, clamp, prepareCat } from '../../06-obeing-pixel/src/model';
+import { CatMotion, clamp, imuGlitch, prepareCat } from '../../06-obeing-pixel/src/model';
 import { fullscreenAt } from '../../06-obeing-pixel/src/render';
 import { layoutPoint } from '../../06-obeing-pixel/src/layout';
 import { EnterpriseAuth, validateOrigin } from './auth';
@@ -34,7 +34,7 @@ let tiltX = 0;
 let tiltY = 0;
 let targetX = 0;
 let targetY = 0;
-let shakeUntil = 0;
+let shake = 0;
 let battery = px.system.battery().level;
 // TLS 证书校验依赖正确系统时间；NTP 自身已有 15 秒有界超时。
 let clockSync: Promise<void> = px.system.ntpSync('pool.ntp.org').catch(() => { /* 登录前检查同步结果 */ });
@@ -241,8 +241,8 @@ const unsubOnline = px.wifi.on('gotIp', () => {
 void restoreLogin();
 
 if (px.sensors.imu.available()) px.sensors.imu.start({ rateHz: 50, onData(data) {
-    // 水平倾斜与 ax 同号，反转小猫的左右转向和位移；摇晃检测使用同方向差值。
-    if (Math.abs(data.ax - targetX) + Math.abs(data.ay - targetY) > 0.35) shakeUntil = px.system.now() + 180;
+    // 保持已对调的左右方向；故障强度使用未钳制的 X/Y 原始加速度。
+    shake = imuGlitch(data.ax, data.ay);
     targetX = clamp(data.ax, -1, 1); targetY = clamp(data.ay, -1, 1);
 } });
 prepareCat();
@@ -255,7 +255,7 @@ px.screen.onFrame((dt) => {
     if (controller.view.state === 'idle' && px.system.now() - lastActivity > 45000) controller.view.state = 'sleep';
     if (!controller.view.authenticated && form.page === 'assistant') showPage('login');
     form.speechReady = controller.hasSpeech();
-    drawHarness(px.screen, controller.view, { clock, tiltX, tiltY, battery, settings: false, fullscreen, shake: px.system.now() < shakeUntil ? 1 : 0,
+    drawHarness(px.screen, controller.view, { clock, tiltX, tiltY, battery, settings: false, fullscreen, shake,
         pose: motion.sample(controller.view.state, clock, tiltX, tiltY, controller.view.level) }, form, controller.wakeConfig.phrase);
 });
 const batteryTimer = setInterval(() => { battery = px.system.battery().level; void restoreLogin(); }, 10000);

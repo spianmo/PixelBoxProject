@@ -1,8 +1,9 @@
-import { clamp, facePoints, poseFor, rasterizeCat, projectPoint, posedShapePoint, type AssistantState, type Pose } from './model';
+import { clamp, facePoints, imuGlitch, poseFor, rasterizeCat, projectPoint, posedShapePoint, type AssistantState, type Pose } from './model';
 import type { ViewState } from './state';
 import { layoutScreen, lineHeight, textHeight, type Screen } from './layout';
 
 export type { Screen } from './layout';
+// shake 为 0..1 连续故障强度；离线预览未传入时从倾角输入计算。
 export interface RenderInput { clock: number; tiltX: number; tiltY: number; battery: number; settings: boolean; fullscreen?: boolean; pose?: Pose; shake?: number }
 
 interface Bounds { left: number; top: number; right: number; bottom: number }
@@ -99,18 +100,20 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     const frame = frames.get(screen);
     if (frame?.cat && !frame.redraw) restoreBackground(screen, frame, frame.cat);
     const pose = input.pose || poseFor(view.state, input.clock, input.tiltX, input.tiltY, view.level);
+    const glitch = clamp(input.shake ?? imuGlitch(input.tiltX, input.tiltY), 0, 1);
     // 位移幅度增加 50%；后续仍按主体区域校正，避免挤入字幕和按钮。
     const cx = screen.width / 2 + clamp(input.tiltX, -1, 1) * 18;
     cy += clamp(input.tiltY, -1, 1) * 12;
     let runs = rasterizeCat(pose, scale, cx, cy);
     const bounds = () => {
+        const edge = runs.step + Math.round(runs.step * glitch);
         let left = cx - 13 * scale, right = cx + 13 * scale;
         let top = Infinity, bottom = -Infinity;
         for (let i = 0; i < runs.count; i++) {
-            left = Math.min(left, runs.x[i] - runs.step);
-            right = Math.max(right, runs.x[i] + runs.width[i] + runs.step + 1);
-            top = Math.min(top, runs.y[i] - runs.step);
-            bottom = Math.max(bottom, runs.y[i] + 2 * runs.step + 1);
+            left = Math.min(left, runs.x[i] - edge);
+            right = Math.max(right, runs.x[i] + runs.width[i] + edge + 1);
+            top = Math.min(top, runs.y[i] - edge);
+            bottom = Math.max(bottom, runs.y[i] + runs.step + edge + 1);
         }
         return { left, right, top, bottom };
     };
@@ -132,8 +135,15 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     }
     runs.count = count;
     const painted: Bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+    const clipTop = region?.top ?? 0, clipBottom = region?.bottom ?? screen.height;
     const paint = (x: number, y: number, w: number, h: number, color: number) => {
         x += dx; y += dy;
+        // 增强的彩边和扫描条也受主体区域限制，并计入下一帧的背景恢复范围。
+        if (x < 0) { w += x; x = 0; }
+        if (y < clipTop) { h -= clipTop - y; y = clipTop; }
+        if (x + w > screen.width) w = screen.width - x;
+        if (y + h > clipBottom) h = clipBottom - y;
+        if (w <= 0 || h <= 0) return;
         // 热路径用比较直接更新包围盒，避免每个小矩形反复跨入 Math 原生函数。
         if (x < painted.left) painted.left = x;
         if (y < painted.top) painted.top = y;
@@ -141,7 +151,8 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
         if (y + h > painted.bottom) painted.bottom = y + h;
         screen.fillRect(x, y, w, h, color);
     };
-    for (const layer of [{ dx: step, dy: -step, color: 0x2050ef }, { dx: -step, dy: step, color: 0xe31c35 }, { dx: Math.ceil(step / 2), dy: 0, color: 0x17f5f5 }, { dx: -Math.ceil(step / 2), dy: 1, color: 0xf9fb54 }]) {
+    const edge = step + Math.round(step * glitch);
+    for (const layer of [{ dx: edge, dy: -edge, color: 0x2050ef }, { dx: -edge, dy: edge, color: 0xe31c35 }, { dx: Math.ceil(edge / 2), dy: 0, color: 0x17f5f5 }, { dx: -Math.ceil(edge / 2), dy: 1, color: 0xf9fb54 }]) {
         let row = 0;
         for (let i = 0; i < runs.count; i++) {
             const x = runs.x[i] + layer.dx, y = runs.y[i] + layer.dy;
@@ -173,17 +184,18 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
         for (const voxel of facePoints(view.state, input.clock, view.level)) {
             const p = projectPoint(posedShapePoint(voxel, pose), pose, scale, cx, cy);
             const x = Math.round(p.sx / step) * step, y = Math.round(p.sy / step) * step;
-            if (input.shake && voxel.y < 2) paint(x - Math.max(1, Math.floor(step / 2)), y, step, step, 0xf9fb54);
+            if (glitch > 0.15 && voxel.y < 2) paint(x - Math.max(1, Math.round(step * glitch)), y, step, step, 0xf9fb54);
             paint(x, y, step + 1, step + 1, 0x0d1210);
         }
     }
-    // 参考素材中的离散色边在头部边缘形成短扫描线，线条亦跟随视差。
-    const scan = Math.floor(input.clock / 70) % 3;
-    for (let i = 0; i < (input.shake ? 3 : 0); i++) {
-        const y = cy + (i * 5 - 6 + scan) * scale;
-        const x = cx + (i % 2 ? 8 : -12) * scale;
-        paint(x, y, 4 * scale, Math.max(2, step - 1), i % 2 ? 0x17f5f5 : 0xf9fb54);
-        paint(x + scale, y, 2 * scale, Math.max(2, step - 1), 0xffffff);
+    // 强度越大，扫描条越多、越长、跳动越快；最多 12 个额外矩形，限制每帧工作量。
+    const scan = Math.floor(input.clock / (120 - glitch * 80));
+    const stripHeight = Math.max(1, Math.round(step * glitch * 0.7));
+    for (let i = 0; i < Math.floor(glitch * 6); i++) {
+        const y = cy + ((i * 5 + scan) % 17 - 8) * scale;
+        const x = cx + (i % 2 ? 6 : -11) * scale;
+        paint(x, y, (3 + glitch * 4) * scale, stripHeight, i % 2 ? 0x17f5f5 : 0xf9fb54);
+        paint(x + scale, y, (1 + glitch * 2) * scale, stripHeight, 0xffffff);
     }
     if (frame) frame.cat = painted;
     return runs.pixels;

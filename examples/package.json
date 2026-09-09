@@ -8,10 +8,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node scripts/test-cat-projection.mjs && node 07-obeing-harness/test.mjs",
-    "check": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node scripts/test-cat-projection.mjs && node 07-obeing-harness/test.mjs",
-    "test": "node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node scripts/test-cat-projection.mjs && node 07-obeing-harness/test.mjs",
-    "test:cat": "node scripts/test-cat-projection.mjs",
+    "build": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node scripts/test-cat-projection.mjs && node scripts/test-cat-glitch.mjs && node 07-obeing-harness/test.mjs",
+    "check": "node scripts/build-all.mjs && node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node scripts/test-cat-projection.mjs && node scripts/test-cat-glitch.mjs && node 07-obeing-harness/test.mjs",
+    "test": "node scripts/test-electronic-perler.mjs && node scripts/test-obeing-pixel.mjs && node scripts/test-cat-projection.mjs && node scripts/test-cat-glitch.mjs && node 07-obeing-harness/test.mjs",
+    "test:cat": "node scripts/test-cat-projection.mjs && node scripts/test-cat-glitch.mjs",
     "test:obeing": "node scripts/test-obeing-pixel.mjs",
     "render:obeing": "node scripts/render-obeing-pixel.mjs",
     "test:harness": "node 07-obeing-harness/test.mjs",
