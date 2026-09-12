@@ -1,11 +1,6 @@
-export const CHARACTERS = ['cat', 'kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf'] as const;
+export const CHARACTERS = ['cat', 'kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf'] as const;
 export type Character = typeof CHARACTERS[number];
 export type KittyCharacter = Exclude<Character, 'cat'>;
-export const CHARACTER_NAMES: Record<Character, string> = {
-    cat: '像素小猫', 'kitty-classic': '经典 Kitty', 'kitty-witch': '女巫 Kitty',
-    'kitty-strawberry': '草莓 Kitty', 'kitty-pajamas': '睡衣 Kitty',
-    'kitty-fish': '小鱼 Kitty', 'kitty-scarf': '围巾 Kitty',
-};
 
 export function readCharacter(value: unknown): Character {
     return CHARACTERS.includes(value as Character) ? value as Character : 'cat';

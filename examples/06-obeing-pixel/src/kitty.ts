@@ -59,11 +59,12 @@ export function drawKitty(screen: Screen, character: KittyCharacter, state: Assi
     const yaw = clamp(pose.yaw, -1.15, 1.15) * 0.65, pitch = clamp(pose.pitch, -0.7, 0.7) * 0.65;
     const a = Math.cos(yaw), b = Math.sin(yaw) * Math.sin(pitch);
     const d = Math.cos(pitch);
-    const width = Math.ceil(sprite.width * a) + 4;
-    const height = Math.ceil(sprite.height * d + sprite.width * Math.abs(b)) + 4;
+    const width = Math.ceil(sprite.width * a) + 2;
+    const height = Math.ceil(sprite.height * d + sprite.width * Math.abs(b)) + 2;
     const top = region?.top ?? cy - 12 * scale, bottom = region?.bottom ?? cy + 12 * scale;
-    const step = Math.max(1, Math.floor(Math.min(scale * 24 / Math.max(sprite.width, sprite.height), (screen.width - 32) / width, (bottom - top - 8) / height)));
-    const x0 = Math.round(clamp(cx - width * step / 2, 12, screen.width - 12 - width * step));
+    // 主页面按可用区域的最大整格尺寸等比铺满；预览仍由 scale 控制，四边各留一格容纳倾斜阴影。
+    const step = Math.max(1, Math.floor(Math.min(region ? Infinity : scale * 24 / Math.max(sprite.width, sprite.height), (screen.width - 16) / width, (bottom - top - 4) / height)));
+    const x0 = Math.round(clamp(cx - width * step / 2, 8, screen.width - 8 - width * step));
     const y0 = Math.round(clamp(cy + pose.lift - height * step / 2, top, bottom - height * step));
     const closed = state === 'sleep' || state === 'muted' || clock % 5300 < 140;
     const shadowX = Math.round(Math.sin(yaw) * step), shadowY = Math.round(-Math.sin(pitch) * step);

@@ -23,7 +23,7 @@ export const FIELD_LABELS: Record<Field, string> = {
 const LETTER_ROWS = ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
 const SYMBOL_ROWS = ['!@#$%^&*()', '-_=+[]{}<>', '/:;,.?\\|', '`~\'"'];
 const LABELS: Record<string, string> = { wake: '我在', listening: '正在聆听', thinking: '思考中',
-    speaking: '小川正在回答', muted: '麦克风已关闭', error: '等待恢复', sleep: '在这里陪你' };
+    speaking: '小川正在回答', muted: '麦克风已关闭', error: '等待恢复' };
 
 function palette(view: ViewState) {
     return view.theme === 'dark' ? { bg: 0x080b0b, fg: 0xeef2ee, quiet: 0x99aaa0, line: 0x2e3932, accent: 0xc4f27c, input: 0x171e1a }
@@ -101,7 +101,7 @@ function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form
             icon(screen, 'theme', W - 78, 43, p.fg);
             icon(screen, 'settings', W - 38, 43, p.fg);
         }
-        companionBody(screen, view, input, view.state === 'idle' ? short(screen, wakePhrase, screen.width - 44) : LABELS[view.state] || '小川');
+        companionBody(screen, view, input, view.state === 'idle' || view.state === 'sleep' ? short(screen, wakePhrase, screen.width - 44) : LABELS[view.state] || '小川');
         return;
     }
     if (!redraw) return;

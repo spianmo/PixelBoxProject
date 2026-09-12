@@ -43,7 +43,7 @@ try {
                 userText: '今天适合去公园散步吗？', thinkingText: '天气查询已完成', assistantText: '今天晴，气温适宜。很适合散步，记得带水。', level: 62 };
             const form = { page: variant.page, returnPage: 'login', field: 'password', upper: false, symbols: false, busy: false, speechReady: true,
                 values: { tenant: 'OBEING', account: 'USER01', password: 'fixture-password', region: 'eastasia', key: 'x'.repeat(32), origin: 'https://v4.teamhelper.cn', oem: '', domain: '', question: '' } };
-            if (variant.page !== 'assistant' || variant.wakePhrase || (variant.character === 'cat' && ['idle', 'sleep'].includes(variant.state))) { view.userText = ''; view.assistantText = ''; view.thinkingText = ''; }
+            if (variant.page !== 'assistant' || variant.wakePhrase || (['idle', 'sleep'].includes(variant.state))) { view.userText = ''; view.assistantText = ''; view.thinkingText = ''; }
             if (variant.error) view.errorText = '设备 TLS 内存不足，请更新固件后重新登录企业账号';
             Harness.drawHarness(screen, view, { clock: 1800, tiltX: variant.tiltX ?? tilt, tiltY: variant.tiltY ?? -0.4, battery: 86, settings: false, fullscreen: variant.fullscreen, character: variant.character }, form, variant.wakePhrase);
             const pixels = ctx.getImageData(0, 0, width, height).data;
@@ -66,7 +66,7 @@ try {
             document.body.append(canvas);
             results.push(window.renderHarnessVariant(canvas, { page: 'assistant', state, character: 'cat', theme, tiltX: 0, tiltY: 0 }));
         }
-        for (const width of [320, 368, 480]) for (const character of ['kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf']) for (const theme of ['dark', 'light']) for (const fullscreen of [false, true]) {
+        for (const width of [320, 368, 480]) for (const character of ['kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf']) for (const theme of ['dark', 'light']) for (const fullscreen of [false, true]) {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = width === 480 ? 480 : 448;
             document.body.append(canvas);
             results.push(window.renderHarnessVariant(canvas, { page: 'assistant', state: 'idle', character, theme, fullscreen }, 0.25));

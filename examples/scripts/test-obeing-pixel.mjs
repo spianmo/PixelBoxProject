@@ -832,7 +832,7 @@ await test('全屏放大主体、只保留字幕，全部形态与极限倾角�
         const captionY = Math.min(...texts.filter(t => t.value !== 'OBEING PIXEL' && t.value !== '86%' && t.value !== '你好小川').map(t => t.y));
         for (const box of boxes) assert.ok(box.y >= (fullscreen ? 41 : 80) && box.y + box.h < captionY - 15, `${width} ${shape} ${tilt}: ${JSON.stringify(box)}`);
         assert.equal(texts.some(t => t.value.includes('HIDDEN_ACCOUNT')), false);
-        if (fullscreen) assert.ok(texts.every(t => t.y >= height - 110));
+        if (fullscreen) assert.ok(texts.every(t => t.y >= height - 145), '全屏底部保留状态行及对话字幕');
         if (shape === 'idle' && tilt === 0) {
             let pixels = 0;
             render.drawCat({ ...screen, fillRect(x, y, w, h, color) { if (color === 0xffffff) pixels += w * h; } }, view,
@@ -1066,6 +1066,11 @@ await test('角色长按边界、拖动取消、延迟调度、换页和退出�
     assert.equal(timers.size, 0); assert.equal(taps, 1); assert.equal(holds, 2);
     assert.equal(characters.readCharacter('invalid'), 'cat');
     assert.equal(characters.readCharacter(null), 'cat');
+    assert.deepEqual(characters.CHARACTERS, ['cat', 'kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf']);
+    for (const removed of ['kitty-strawberry', 'kitty-pajamas']) {
+        assert.equal(characters.readCharacter(removed), 'cat', '旧存储的已删除角色回退默认小猫');
+        assert.ok(!(removed in KITTY_PATTERNS));
+    }
     assert.equal(characters.nextCharacter('kitty-scarf'), 'cat');
 });
 
@@ -1083,14 +1088,15 @@ await test('06真实入口长按循环全部形象、保存恢复、普通/全�
         r.advance(800); r.flushTimers(); r.touchEvent('up', 184, 215);
         assert.equal(r.sent.filter(m => m.type === 'listen').length, before);
         assert.equal(r.micStarts, starts, '换装不改变采音生命周期');
-        assert.ok(r.frameText().includes(characters.CHARACTER_NAMES[character]));
+        assert.ok(!r.frameText().includes('长按换装'));
     }
     const saved = r.storage;
     r.exit();
     const restored = runtime(368, 448, saved);
     await new Promise(setImmediate); restored.open();
     restored.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
-    assert.ok(restored.frameText().includes('围巾 Kitty'), '重启恢复已选角色');
+    assert.ok(!restored.frameText().includes('长按换装'));
+    assert.equal(saved.get('ob.character'), 'kitty-scarf');
     restored.touch(337, 24); restored.frameText();
     restored.touchEvent('down', 184, 215); restored.advance(700); restored.flushTimers(); restored.touchEvent('up', 184, 215);
     assert.equal(saved.get('ob.character'), 'cat');
@@ -1128,6 +1134,57 @@ await test('06/07全部形象切换、眨眼和倾斜的增量绘制与整屏重
             }
         }
         assert.equal(fingerprints.size, characters.CHARACTERS.length, '全部形象确实绘制不同像素');
+    }
+});
+
+await test('06/07放大Kitty无越界，字幕伸缩无残影，仅保留唤醒词、状态与对话进度', () => {
+    for (const harness of [false, true]) for (const width of [320, 368, 480]) for (const fullscreen of [false, true]) for (const character of characters.CHARACTERS) {
+        const height = width === 480 ? 480 : 448;
+        const incremental = pixelScreen(width, height);
+        const input = { character, fullscreen, clock: 1700, tiltX: 0, tiltY: 0, battery: 86, settings: false,
+            pose: { yaw: 0, pitch: 0, lift: 0, squash: 1 } };
+        const stages = [
+            { state: 'idle' },
+            { state: 'sleep' },
+            { state: 'listening' },
+            { state: 'thinking', thinkingText: '查询天气' },
+            { state: 'thinking', thinkingText: '查询天气', userText: '今天出门需要带伞吗？' },
+            { state: 'speaking', thinkingText: '天气查询完成', userText: '今天出门需要带伞吗？', assistantText: '今天下午有雨，出门记得带伞。明天恢复晴天，可以安排户外活动。' },
+            { state: 'speaking', assistantText: '带伞。' },
+            { state: 'idle' },
+        ];
+        for (const stage of stages) {
+            const view = { ...state.initialState(), authenticated: true, connected: true, ...stage };
+            const fresh = pixelScreen(width, height), texts = [], white = [];
+            const fill = fresh.fillRect, write = fresh.drawText;
+            fresh.fillRect = function(x, y, w, h, color) {
+                assert.ok(x >= 0 && y >= 0 && x + w <= width && y + h <= height, `${character}绘制越界`);
+                if (character === 'cat' ? color === 0xffffff : Object.values(KITTY_PALETTE).includes(color)) white.push({ x, y, w, h });
+                fill.call(this, x, y, w, h, color);
+            };
+            fresh.drawText = function(value, x, y, style) {
+                if (value) texts.push({ value, x, y, ...this.measureText(value, style) });
+                write.call(this, value, x, y, style);
+            };
+            const draw = screen => harness ? harnessRender.drawHarness(screen, view, input, { page: 'assistant' }, '小爱同学') : render.drawScene(screen, view, input);
+            draw(fresh); draw(incremental);
+            assert.deepEqual(incremental.pixels, fresh.pixels, `${harness ? '07' : '06'} ${character} ${width} ${fullscreen} ${JSON.stringify(stage)} 字幕伸缩残影`);
+            assert.ok(texts.every(t => !/长按换装|在这里陪你|像素小猫|Kitty/.test(t.value)));
+            const status = stage.thinkingText || ({ idle: harness ? '小爱同学' : '你好小川', sleep: harness ? '小爱同学' : '你好小川', listening: '正在聆听', speaking: '小川正在回答' })[stage.state];
+            assert.ok(texts.some(t => t.value === status), `${character} ${stage.state} 缺少状态提示 ${status}`);
+            for (const box of white) for (const t of texts) {
+                assert.ok(box.x + box.w <= t.x || box.x >= t.x + t.width || box.y + box.h <= t.y || box.y >= t.y + t.height, `${character}身体覆盖字幕`);
+            }
+            if (character !== 'cat' && stage.state === 'idle') {
+                // 按实际可用区域验证至少一个方向填满八成，扣除顶部控件及底部状态/波形。
+                const bodyWidth = Math.max(...white.map(b => b.x + b.w)) - Math.min(...white.map(b => b.x));
+                const bodyHeight = Math.max(...white.map(b => b.y + b.h)) - Math.min(...white.map(b => b.y));
+                const layoutScale = Math.min(height / 448, width / 320);
+                const bodyTop = (fullscreen ? 42 : 83) * layoutScale;
+                const bodyBottom = texts.find(t => t.value === status).y - (fullscreen ? 38 : 8) * layoutScale;
+                assert.ok(bodyWidth >= (width - 16 * layoutScale) * 0.8 || bodyHeight >= (bodyBottom - bodyTop) * 0.8, `${character}主体过小 ${bodyWidth}×${bodyHeight}`);
+            }
+        }
     }
 });
 

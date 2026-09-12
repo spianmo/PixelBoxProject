@@ -27,7 +27,7 @@ try {
         const variants = [
             ...['dark', 'light'].flatMap(theme => ['idle', 'listening', 'thinking', 'speaking', 'sleep'].map(state =>
                 ({ character: 'cat', state, theme, tiltX: 0, tiltY: 0, clock: 1700 }))),
-            ...['kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf'].flatMap(character =>
+            ...['kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf'].flatMap(character =>
                 ['dark', 'light'].flatMap(theme => [false, true].map(fullscreen => ({ character, state: 'idle', theme, fullscreen, tiltX: 0, tiltY: 0, clock: 1700 })))),
             { state: 'idle', shake: 1, theme: 'dark', tiltX: 0.4, tiltY: 0, clock: 1700 },
             ...['idle', 'peek', 'stretch', 'curl', 'sit'].map(shape => ({ state: 'idle', shape, theme: 'dark', tiltX: 0, tiltY: 0, clock: 1700 })),
@@ -134,10 +134,10 @@ try {
     await page.setViewportSize({ width: 368, height: 448 });
     await page.addStyleTag({ content: 'body{display:block}canvas{display:none}canvas:first-child{display:block}' });
     await page.screenshot({ path: join(output, 'device-368x448.png') });
-    // 每行三款造型，同一主题占两行，便于审阅源图比例与真实设备效果。
+    // 每行四款造型，两行分别为浅暗主题，便于审阅源图比例与真实设备效果。
     const kittyImages = ['light', 'dark'].flatMap(theme => results.filter(result => result.character && result.character !== 'cat' && result.width === 368 && !result.fullscreen && result.theme === theme));
-    await page.setViewportSize({ width: 1104, height: 1792 });
-    await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(3,368px)}img{display:block}</style>' + kittyImages.map(result => `<img src="${result.png}">`).join(''));
+    await page.setViewportSize({ width: 1472, height: 896 });
+    await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(4,368px)}img{display:block}</style>' + kittyImages.map(result => `<img src="${result.png}">`).join(''));
     await page.screenshot({ path: join(output, 'kitty-collection.png') });
     // 对照用户选定的四款截图，保持相同顺序和368px单屏尺寸。
     const referenceImages = ['kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf'].map(character =>
@@ -145,7 +145,7 @@ try {
     await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(4,368px);background:#eff1f1}img{display:block}</style>' + referenceImages.map(result => `<img src="${result.png}">`).join(''));
     await page.setViewportSize({ width: 1472, height: 448 });
     await page.screenshot({ path: join(output, 'kitty-reference-version.png') });
-    const characterImages = ['cat', 'kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf'].map(character =>
+    const characterImages = ['cat', 'kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf'].map(character =>
         results.find(result => result.character === character && result.state === 'idle' && result.width === 368 && !result.fullscreen && result.theme === 'light'));
     await page.setContent('<style>body{margin:0;display:grid;grid-template-columns:repeat(4,368px);background:#eff1f1}img{display:block}</style>' + characterImages.map(result => `<img src="${result.png}">`).join(''));
     await page.setViewportSize({ width: 1472, height: 896 });

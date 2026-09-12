@@ -1,7 +1,7 @@
 import { clamp, facePoints, imuGlitch, poseFor, rasterizeCat, projectPoint, posedShapePoint, type AssistantState, type Pose } from './model';
 import type { ViewState } from './state';
 import { layoutScreen, lineHeight, textHeight, type Screen } from './layout';
-import { CHARACTER_NAMES, type Character } from './characters';
+import type { Character } from './characters';
 import { drawKitty } from './kitty';
 
 export type { Screen } from './layout';
@@ -12,7 +12,7 @@ interface Bounds { left: number; top: number; right: number; bottom: number }
 interface SceneFrame {
     key: string; background: number; redraw: boolean; cat?: Bounds;
     grid?: { top: number; bottom: number; color: number };
-    captionKey?: string; bodyBottom?: number;
+    captionKey?: string; captionHeight?: number; bodyBottom?: number;
 }
 const frames = new WeakMap<Screen, SceneFrame>();
 const glyphWidths = new WeakMap<Screen, Map<string, number>>();
@@ -55,7 +55,7 @@ function restoreBackground(screen: Screen, frame: SceneFrame, box: Bounds): void
 }
 
 const LABEL: Record<AssistantState, string> = {
-    offline: '等待连接', pairing: '配对', login: '等待手机同步', idle: '你好小川', sleep: '在这里陪你', wake: '我在', listening: '正在聆听', thinking: '思考中', speaking: '小川正在回答', muted: '麦克风已关闭', error: '连接需恢复',
+    offline: '等待连接', pairing: '配对', login: '等待手机同步', idle: '你好小川', sleep: '你好小川', wake: '我在', listening: '正在聆听', thinking: '思考中', speaking: '小川正在回答', muted: '麦克风已关闭', error: '连接需恢复',
 };
 const ICONS: Record<string, string[]> = {
     mic: ['00100', '01110', '01110', '01110', '10101', '10001', '01110', '00100', '01110'],
@@ -258,8 +258,19 @@ export function companionBody(screen: Screen, view: ViewState, input: RenderInpu
     const quiet = dark ? 0x8b9791 : 0x59645e, accent = dark ? 0xc4f27c : 0x477f18;
     const line = lineHeight(screen, 17);
     const progress = view.thinkingText;
-    const captionTop = screen.height - (line * 2 + textHeight(screen) + 12 + (input.fullscreen && progress ? line : 0));
-    const statusY = captionTop - 34;
+    const reply = view.errorText || view.assistantText;
+    const text = reply || view.userText || fallback;
+    const fullscreenStatus = input.fullscreen ? progress || status : '';
+    const isKitty = Boolean(input.character && input.character !== 'cat');
+    const captionKey = JSON.stringify([isKitty, progress, status, fallback, view.errorText, view.assistantText, view.userText]);
+    // Kitty 只为实际字幕预留空间，移除换装提示后将空白区域让给角色；小猫保持原有大小。
+    // 字幕不变时复用排版高度，避免每个 IMU 帧重复遍历长回复。
+    const captionHeight = frame?.captionKey === captionKey && frame.captionHeight !== undefined ? frame.captionHeight
+        : isKitty ? (wrapText(screen, text, screen.width - 40, 2).length + (view.userText && reply ? 1 : 0)) * line + 12
+        : line * 2 + textHeight(screen) + 12;
+    if (frame) frame.captionHeight = captionHeight;
+    const captionTop = screen.height - captionHeight - (fullscreenStatus ? line : 0);
+    const statusY = captionTop - (isKitty ? textHeight(screen) + 12 : 34);
     const top = input.fullscreen ? 42 : 83, bottom = input.fullscreen ? captionTop - 38 : statusY - 8;
     if (frame && frame.bodyBottom !== undefined && frame.bodyBottom !== bottom) {
         screen.fillRect(0, top, screen.width, screen.height - top, frame.background);
@@ -277,25 +288,21 @@ export function companionBody(screen: Screen, view: ViewState, input: RenderInpu
         if (frame && !frame.redraw) screen.fillRect(screen.width / 2 - 80, captionTop - 27, 165, 17, frame.background);
         waveform(screen, view, input, captionTop - 19, view.state === 'error' ? 0xf07979 : accent);
     }
-    const hint = view.state === 'idle' || view.state === 'sleep' ? `${CHARACTER_NAMES[input.character || 'cat']} · 长按换装` : '';
-    const captionKey = JSON.stringify([progress, status, fallback, hint, view.errorText, view.assistantText, view.userText]);
     if (frame && !frame.redraw && frame.captionKey === captionKey) return;
     if (frame) {
         if (!frame.redraw) screen.fillRect(0, input.fullscreen ? captionTop : statusY, screen.width, screen.height - (input.fullscreen ? captionTop : statusY), frame.background);
         frame.captionKey = captionKey;
     }
     if (!input.fullscreen) center(screen, wrapText(screen, progress || status, screen.width - 40, 1)[0] || '', statusY, view.state === 'error' ? 0xf07979 : accent);
-    const reply = view.errorText || view.assistantText;
     let y = captionTop;
-    if (input.fullscreen && progress) {
-        label(screen, wrapText(screen, progress, screen.width - 40, 1)[0] || '', 20, y, accent);
+    if (fullscreenStatus) {
+        label(screen, wrapText(screen, fullscreenStatus, screen.width - 40, 1)[0] || '', 20, y, view.state === 'error' ? 0xf07979 : accent);
         y += line;
     }
     if (view.userText && reply) {
         label(screen, wrapText(screen, view.userText, screen.width - 40, 1)[0] || '', 20, y, quiet);
         y += line;
     }
-    const text = reply || view.userText || fallback || hint;
     const available = Math.max(1, Math.min(2, Math.floor((screen.height - y - 8) / line)));
     wrapText(screen, text, screen.width - 40, available).forEach((value, i) => label(screen, value, 20, y + i * line, !view.assistantText && view.errorText ? 0xf07979 : fg));
 }
@@ -323,7 +330,7 @@ function renderScene(screen: Screen, view: ViewState, input: RenderInput): void 
     const companion = !input.settings && view.state !== 'pairing' && !(view.state === 'error' && !view.authenticated && view.phoneName);
     const redraw = beginScene(screen, sceneKey(view, input) + (companion ? '' : JSON.stringify(view.errorText)), bg);
     if (redraw) companionHeader(screen, 'OBEING PIXEL', view, input);
-    if (input.fullscreen) { companionBody(screen, view, input, '', view.authenticated ? '' : view.errorText); return; }
+    if (input.fullscreen) { companionBody(screen, view, input, LABEL[view.state], view.authenticated ? '' : view.errorText); return; }
     if (redraw) {
         icon(screen, view.muted ? 'mute' : 'mic', W - 116, 42, view.muted ? 0xf07979 : accent);
         icon(screen, 'theme', W - 78, 43, fg);

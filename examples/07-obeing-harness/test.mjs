@@ -861,7 +861,7 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
         now += 700; const fire = holdTimer; holdTimer = undefined; fire();
         touch({ type: 'up', x: width / 2, y: height / 2 });
     };
-    for (const character of ['kitty-classic', 'kitty-witch', 'kitty-strawberry', 'kitty-pajamas', 'kitty-fish', 'kitty-scarf']) {
+    for (const character of ['kitty-classic', 'kitty-witch', 'kitty-fish', 'kitty-scarf']) {
         hold();
         assert.equal(data.get('h.character'), character);
         assert.equal(recordings, 0, '长按切换不启动录音');
@@ -882,7 +882,9 @@ for (const [width, height] of [[368, 448], [480, 480]]) await test(`真实main $
     assert.equal(requests, loginRequests, 'hot reload restores saved access token without login requests');
     const restoredFrame = frame();
     assert.ok(!restoredFrame.includes('企业登录'));
-    assert.ok(restoredFrame.includes('经典 Kitty'), '重新启动真实入口恢复角色');
+    assert.ok(!restoredFrame.includes('长按换装'));
+    hold(); assert.equal(data.get('h.character'), 'kitty-witch', '重新启动真实入口恢复经典Kitty，继续切换到女巫');
+    frame();
     tap(width - 33, height === 480 ? 51 : 48);
     drawn = [];
     renderFrame(16);
