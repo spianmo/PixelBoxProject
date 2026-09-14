@@ -8,13 +8,12 @@
  *   '@tscircuit/eval/blob-url'(~14MB 自包含 worker,内置自己的 React)。
  * - blob-url 体积大 → 两者均走动态 import() 懒加载(首次评估时才拉取)。
  * - 离线保障:disableCdnLoading + partsEngineDisabled,不访问任何 CDN。
- * - eval 可能卡死:30s 超时;超时/异常后 kill() 并置空单例,下次调用自动重建。
+ * - eval 可能卡死:120s 总超时（含加载）;超时/异常后 kill() 并置空单例,下次调用自动重建。
  */
 import type { AnyCircuitElement } from 'circuit-json'
 import type { CircuitWebWorker } from '@tscircuit/eval/worker'
 
-/** 单次评估超时(自动布线偶发卡死的兜底) */
-const EVAL_TIMEOUT_MS = 30_000
+import { evaluateWithDeadline, type HardwareEvalPhase } from '../../../shared/hardwareEvaluation'
 
 /** 全局单例(Promise 形态:并发调用共享同一次创建) */
 let workerPromise: Promise<CircuitWebWorker> | null = null
@@ -34,11 +33,12 @@ async function createWorker(): Promise<CircuitWebWorker> {
 
 function getWorker(): Promise<CircuitWebWorker> {
   if (!workerPromise) {
-    workerPromise = createWorker().catch((err) => {
-      // 创建失败不留死单例,下次调用重试
-      workerPromise = null
+    const pending = createWorker().catch((err) => {
+      // 旧创建任务失败不能清除取消后新建的 Worker。
+      if (workerPromise === pending) workerPromise = null
       throw err
     })
+    workerPromise = pending
   }
   return workerPromise
 }
@@ -63,31 +63,28 @@ async function destroyWorker(): Promise<void> {
  */
 export async function evalTsxFsMap(
   fsMap: Record<string, string>,
-  entry: string
+  entry: string,
+  signal: AbortSignal = new AbortController().signal,
+  onPhase: (phase: HardwareEvalPhase) => void = () => {}
 ): Promise<AnyCircuitElement[]> {
-  const worker = await getWorker()
-  let timer = 0
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = window.setTimeout(() => reject(new Error('hardware:evalTimeout')), EVAL_TIMEOUT_MS)
-  })
+  let stopped = false
+  const stop = (): void => { stopped = true; void destroyWorker() }
   try {
-    const circuitJson = await Promise.race([
-      (async () => {
-        // mainComponentPath(非 entrypoint):设计文件按约定默认导出电路组件;
-        // entrypoint 语义要求文件内显式 circuit.add(...),与模板不符
-        await worker.executeWithFsMap({ fsMap, mainComponentPath: entry })
-        await worker.renderUntilSettled()
-        return worker.getCircuitJson()
-      })(),
-      timeout
-    ])
-    // 新数组引用(comlink 返回的已是结构化克隆,再浅拷贝一层保证引用变化语义)
-    return [...circuitJson]
+    return await evaluateWithDeadline(async () => {
+      onPhase('loading')
+      const worker = await getWorker()
+      if (stopped) throw new Error('hardware:evalCancelled')
+      onPhase('executing')
+      await worker.executeWithFsMap({ fsMap, mainComponentPath: entry })
+      if (stopped) throw new Error('hardware:evalCancelled')
+      onPhase('routing')
+      await worker.renderUntilSettled()
+      if (stopped) throw new Error('hardware:evalCancelled')
+      onPhase('reading')
+      return [...await worker.getCircuitJson()]
+    }, stop, signal)
   } catch (err) {
-    // 超时/异常一律重建(卡死的 worker 无法复用;编译错误场景重建代价可接受)
-    void destroyWorker()
+    if (!stopped) stop()
     throw err instanceof Error ? err : new Error(String(err))
-  } finally {
-    window.clearTimeout(timer)
   }
 }

@@ -3,17 +3,19 @@
  * - 分屏(IDE v3.x)后同时挂两个实例:模型生命周期已上收 modelRegistry
  *   (模块级 refCount,见 modelRegistry.ts),本组件只管自己的 monaco 实例、
  *   每文件 viewState、⌘S 保存当前激活文件与虚拟页签只读切换
- * - openFile/openVirtual/closeFile 全部经 registry acquire/release:同一文件
+ * - 文本文件 openFile/openVirtual/closeFile 经 registry acquire/release:同一文件
  *   可同时在两组打开,引用归零才 dispose(跨组互杀模型的事故由此杜绝)
+ * - 图片/模型 openFile/setActive 只卸下文本模型,实际预览由对应面板接管
  * - onFocused:实例获得焦点 → App 置本组为活动组(新文件进活动组的依据)
  */
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { monaco, monacoThemeName } from './monacoSetup'
 import { editorViewSettings, subscribeEditorSettings } from './editorSettings'
 import { modelRegistry, type RegistryEntry } from './modelRegistry'
+import { isPreviewFile } from './previewFile'
 
 export interface EditorHostHandle {
-  /** 打开文件(必要时经 registry 读盘建 model)并激活 */
+  /** 打开文本并激活模型;图片/3D 文件由组内独立预览读取 */
   openFile(path: string): Promise<void>
   /** 打开虚拟库文件(extraLib 声明,内容随参数传入)为只读页签并激活 */
   openVirtual(path: string, content: string): Promise<void>
@@ -64,6 +66,8 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
   // close/卸载时 release。同键幂等 —— 重复 openFile 不会多计引用
   const heldRef = useRef<Map<string, HeldRecord>>(new Map())
   const activePathRef = useRef<string | null>(null)
+  // 异步文本读取晚于图片/其他页签切换完成时,禁止旧请求重新激活隐藏编辑器。
+  const activationSeqRef = useRef(0)
   // 每文件 viewState(滚动/光标):切标签时暂存并回放;会话恢复的快照/回放亦经此表
   const viewStatesRef = useRef<Map<string, monaco.editor.ICodeEditorViewState | null>>(new Map())
   const onCursorChangeRef = useRef(onCursorChange)
@@ -85,8 +89,17 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
     if (vs) editorRef.current?.restoreViewState(vs)
   }
 
+  /** 图片/模型由兄弟预览面板持有;卸下文本模型以免隐藏编辑器接受输入或误保存。 */
+  function activatePreview(): void {
+    stashActiveViewState()
+    activePathRef.current = null
+    editorRef.current?.setModel(null)
+  }
+
   /** 激活条目:换 model + 按虚拟标记切只读(库声明页签防误编辑)+ 回放 viewState */
   function activateModel(path: string, entry: Entry): void {
+    // 读盘期间页签已关闭时,该组已释放引用,不得再挂载其模型。
+    if (!heldRef.current.has(modelRegistry.keyFor(path))) return
     stashActiveViewState()
     activePathRef.current = path
     editorRef.current?.setModel(entry.model)
@@ -198,6 +211,7 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
 
     const held = heldRef.current
     return () => {
+      activationSeqRef.current++
       unsubSettings()
       editor.dispose()
       // 卸载:释放本组全部引用(归零的模型由 registry dispose;
@@ -212,22 +226,36 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
 
   useImperativeHandle(ref, () => ({
     async openFile(path: string): Promise<void> {
+      const seq = ++activationSeqRef.current
+      if (isPreviewFile(path)) {
+        activatePreview()
+        return
+      }
       const entry = await holdFile(path)
-      activateModel(path, entry)
+      if (seq === activationSeqRef.current) activateModel(path, entry)
     },
     async openVirtual(path: string, content: string): Promise<void> {
+      const seq = ++activationSeqRef.current
       const key = modelRegistry.keyFor(path)
       let held = heldRef.current.get(key)
       if (!held) {
         held = { path, ready: Promise.resolve(modelRegistry.acquireVirtual(path, content)) }
         heldRef.current.set(key, held)
       }
-      activateModel(path, await held.ready)
+      const entry = await held.ready
+      if (seq === activationSeqRef.current) activateModel(path, entry)
     },
     setActive(path: string): void {
+      const seq = ++activationSeqRef.current
+      if (isPreviewFile(path)) {
+        activatePreview()
+        return
+      }
       const held = heldRef.current.get(modelRegistry.keyFor(path))
       if (!held) return
-      void held.ready.then((entry) => activateModel(path, entry)).catch(() => undefined)
+      void held.ready.then((entry) => {
+        if (seq === activationSeqRef.current) activateModel(path, entry)
+      }).catch(() => undefined)
     },
     closeFile(path: string): void {
       viewStatesRef.current.delete(path)
@@ -258,6 +286,7 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
       return editorRef.current
     },
     getViewState(path: string): unknown | null {
+      if (isPreviewFile(path)) return null
       // 激活文件取实时(暂存表只在切换时更新);其余取暂存
       if (path === activePathRef.current && editorRef.current) {
         return editorRef.current.saveViewState()
@@ -265,6 +294,7 @@ export const EditorHost = forwardRef<EditorHostHandle, Props>(function EditorHos
       return viewStatesRef.current.get(path) ?? null
     },
     restoreViewState(path: string, state: unknown): void {
+      if (isPreviewFile(path)) return
       const vs = (state ?? null) as monaco.editor.ICodeEditorViewState | null
       if (!vs) return
       viewStatesRef.current.set(path, vs) // 暂存:非激活文件切换到时回放

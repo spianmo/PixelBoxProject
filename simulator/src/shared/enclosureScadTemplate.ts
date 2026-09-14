@@ -45,6 +45,12 @@ export function enclosureScadFromParams(
         `  ["${p.wall}", ${n(p.x)}, ${n(p.y)}, ${n(p.w)}, ${n(p.h)}, ${n(p.r ?? 0)}]`
     )
     .join(',\n')
+  const centers = params.standoffCenters?.length
+    ? params.standoffCenters
+    : null
+  const centersLit = centers
+    ? centers.map((p) => `  [${n(p.x)}, ${n(p.y)}]`).join(',\n')
+    : ''
   return `/**
  * PixelBox 外壳 —— OpenSCAD 源(IDE 硬件面板即时渲染;直接改代码即改外形)
  *
@@ -74,9 +80,13 @@ lid_height = ${n(params.lidHeightMM)};    // 顶盖裙边高(顶板之下)
 corner_r = ${n(params.cornerR)};       // 外轮廓圆角半径
 
 /* [支撑柱(板卡螺柱)] */
-standoff_h = ${n(params.standoffHeightMM)};      // 柱高(底板顶面到板底面)
+standoff_h = ${n(params.standoffHeightMM)};      // 底板顶面到板顶面；实体柱高再减去板厚
 standoff_outer_r = ${n(params.standoffOuterR)};  // 柱外半径
 standoff_inner_r = ${n(params.standoffInnerR)};  // 螺孔半径
+// 螺柱中心(相对外壳中心,mm);留空时按板边内缩自动推导
+standoff_centers = [
+${centersLit}
+];
 
 /* [顶盖屏幕窗] */
 screen_window = ${params.screenWindow && screen ? 'true' : 'false'};  // 是否开窗
@@ -84,8 +94,14 @@ screen_x = ${n(screen?.x ?? 0)};        // 窗中心(板面坐标,板心为原�
 screen_y = ${n(screen?.y ?? 0)};
 screen_w = ${n(screen?.w ?? 0)};       // 可视区尺寸(窗口各边再外扩 margin)
 screen_h = ${n(screen?.h ?? 0)};
-screen_margin = 0.8;   // 窗口单边外扩
-screen_corner_r = 1;   // 窗口圆角
+screen_margin = ${n(params.screenMarginMM ?? 0.8)};   // 窗口单边外扩
+screen_corner_r = ${n(params.screenCornerRMM ?? 1)};   // 窗口圆角
+// 玻璃外尺寸和台阶配合深度分开，深度须试装验证
+screen_seat_w = ${n(params.screenSeat?.w ?? 0)};
+screen_seat_h = ${n(params.screenSeat?.h ?? 0)};
+screen_seat_depth = ${n(params.screenSeat?.depth ?? 0)};
+screen_seat_clearance = ${n(params.screenSeat?.clearance ?? 0)};
+screen_seat_r = ${n(params.screenSeat?.cornerR ?? 1)};
 
 /* [顶盖卡合] */
 lip_clearance = 0.25;  // 内唇与内壁单边间隙
@@ -112,8 +128,8 @@ board_under_clearance = 2.7;  // 板下元件高(≈2.5)+ 间隙
 color_hex = "${colorHex}";  // 预览着色(仅显示;STL 无颜色,IDE 顶盖自动提亮)
 
 /* ---------------- 派生尺寸(勿直接改,改上面的主参数) ---------------- */
-inner_w = board_w + 2 * clearance;
-inner_d = board_d + 2 * clearance;
+inner_w = ${params.outerSizeMM ? n(params.outerSizeMM.w) + ' - 2 * wall' : 'board_w + 2 * clearance'};
+inner_d = ${params.outerSizeMM ? n(params.outerSizeMM.d) + ' - 2 * wall' : 'board_d + 2 * clearance'};
 outer_w = inner_w + 2 * wall;
 outer_d = inner_d + 2 * wall;
 base_top = wall + base_height;               // 底盒顶缘 z
@@ -130,6 +146,12 @@ bat_hw = min(battery_w / 2, inner_w / 2 - 0.5, max(2, bat_sx - bat_so));
 bat_hd = min(battery_d / 2, inner_d / 2 - 0.5, max(2, bat_sy - bat_so));
 bat_tc = min(battery_t, max(1, standoff_h - board_t - board_under_clearance));
 bat_on = battery_w > 0 && battery_d > 0 && battery_t > 0;
+so = max(standoff_outer_r, standoff_inner_r + 0.6);
+sx = max(board_w / 2 - so, so);
+sy = max(board_d / 2 - so, so);
+centers = len(standoff_centers) > 0 ? standoff_centers : [[sx, sy], [-sx, sy], [sx, -sy], [-sx, -sy]];
+assert(screen_seat_depth >= 0 && screen_seat_depth < wall, "玻璃台阶深度必须小于顶板厚度");
+assert(standoff_h > board_t && board_top < lid_plate_bottom, "板卡高度超出内腔");
 
 /* ---------------- 基础形体 ---------------- */
 // 圆角矩形(2D,中心对齐)
@@ -174,7 +196,8 @@ module base() {
     sh = max(0.5, standoff_h - board_t);
     sx = max(board_w / 2 - so, so);
     sy = max(board_d / 2 - so, so);
-    for (cx = [-1, 1], cy = [-1, 1]) translate([cx * sx, cy * sy, wall])
+    centers = len(standoff_centers) > 0 ? standoff_centers : [[sx, sy], [-sx, sy], [sx, -sy], [-sx, -sy]];
+    for (c = centers) translate([c[0], c[1], wall])
       difference() {
         cylinder(h = sh, r = so);
         translate([0, 0, -1]) cylinder(h = sh + 2, r = max(standoff_inner_r, 0.2));
@@ -202,6 +225,13 @@ module lid() {
           rbox(lip_w - 2 * lip_thick, lip_d - 2 * lip_thick, lip_depth + 2, max(0.01, inner_corner_r - lip_thick));
       }
     }
+    // 从顶面切入玻璃台阶，保留 VA 窗外的承托肩。
+    if (screen_window && screen_seat_w > 0 && screen_seat_h > 0 && screen_seat_depth > 0)
+      translate([screen_x, screen_y, lid_top - screen_seat_depth])
+        rbox(screen_seat_w + 2 * screen_seat_clearance, screen_seat_h + 2 * screen_seat_clearance,
+          screen_seat_depth + 1, screen_seat_r);
+    // 跨分件接口同时切穿顶盖裙边/内唇，避免开孔被另一部件堵住。
+    for (p = ports) port_hole(p[0], p[1], p[2], p[3], p[4], p[5]);
     // 屏幕开窗(贯穿顶板)
     if (screen_window)
       translate([screen_x, screen_y, lid_plate_bottom - 1])
@@ -222,6 +252,12 @@ echo(str("PB_META{\\"boardTopZ\\":", board_top,
   ",\\"screenWindow\\":", screen_window ? "true" : "false",
   ",\\"battery\\":", bat_on ? str("[", 2 * bat_hw, ",", 2 * bat_hd, ",", bat_tc, "]") : "null",
   ",\\"batteryZ\\":", wall,
+  ",\\"design\\":{\\"board\\":", [board_w, board_d, board_t],
+  ",\\"cornerR\\":", corner_r,
+  ",\\"screen\\":", [screen_x, screen_y, screen_w + 2 * screen_margin, screen_h + 2 * screen_margin, screen_corner_r],
+  ",\\"screenSeat\\":", [screen_seat_w, screen_seat_h, screen_seat_depth],
+  ",\\"standoffs\\":", centers, ",\\"standoffOuterR\\":", so,
+  ",\\"lip\\":", [inner_w - 2 * lip_clearance, inner_d - 2 * lip_clearance, inner_corner_r, lip_thick, base_top - lip_depth, base_top], ",\\"ports\\":", ports, "}",
   ",\\"colorHex\\":\\"", color_hex, "\\"}"));
 `
 }

@@ -16,6 +16,7 @@
  * 仅使用 @tscircuit/circuit-json-util 的 su()(纯工具,无 React/core 依赖,渲染进程安全)。
  */
 import * as THREE from 'three'
+import type { HardwareReference } from '../../../../shared/hardwareReference'
 import { su } from '@tscircuit/circuit-json-util'
 import type { AnyCircuitElement } from 'circuit-json'
 import type { BoardSpec, BoardComponentBox, ScreenPlacement } from '../types'
@@ -31,7 +32,7 @@ const BOARD_CORNER_R = 1
 /** 元件名匹配此正则时视为屏幕(契约约定) */
 const SCREEN_NAME_RE = /^(screen|display|lcd|amoled|oled)/i
 /** module 判定的最小焊盘数(真模组封装焊盘数远高于普通芯片;模板 U1 实测 73) */
-const MODULE_MIN_PADS = 40
+const MODULE_MIN_PADS = 60
 /** 模组屏蔽罩内部爆炸抬升距离 mm(HardwareViewer 按爆炸因子应用,见 userData.subExplode) */
 const MODULE_SHIELD_EXPLODE_MM = 4
 
@@ -40,14 +41,14 @@ type ComponentKind = NonNullable<BoardComponentBox['kind']>
 
 /**
  * 按 source_component 名前缀 + 焊盘数推断元件类别(C2 契约):
- * U 前缀/含 ESP32 且焊盘 ≥40 → module(QFN 大芯片焊盘远达不到 40),
+ * U 前缀/含 ESP32 且焊盘 ≥40 → module(优先依赖元件型号区分裸芯片和模组),
  * USB→usb,SW→button,SD→sd,MIC→mic,LED→led,R/C→passive,J→connector,其余 chip。
  */
 function inferComponentKind(name: string | undefined, padCount: number): ComponentKind {
   const n = (name ?? '').toUpperCase()
   if (padCount >= MODULE_MIN_PADS && (/^U\d/.test(n) || n.includes('ESP32'))) return 'module'
   if (n.startsWith('USB')) return 'usb'
-  if (n.startsWith('SW')) return 'button'
+  if (n.startsWith('SW') || n.startsWith('KEY')) return 'button'
   if (n.startsWith('SD')) return 'sd'
   if (n.startsWith('MIC')) return 'mic'
   if (n.startsWith('LED')) return 'led'
@@ -109,7 +110,7 @@ function firstBoard(db: ReturnType<typeof su>): {
  * 从 Circuit JSON 提炼板卡简化 3D 规格(自包含,档案脱离工程也能渲染)。
  * 无 pcb_board(或板尺寸不可用)时 throw Error('hw:noBoard')。
  */
-export function buildBoardSpec(circuitJson: AnyCircuitElement[]): BoardSpec {
+export function buildBoardSpec(circuitJson: AnyCircuitElement[], bodies?: HardwareReference['componentBodies']): BoardSpec {
   const db = su(circuitJson)
   const board = firstBoard(db)
 
@@ -126,17 +127,33 @@ export function buildBoardSpec(circuitJson: AnyCircuitElement[]): BoardSpec {
     const h = Number(pc.height) || 0
     if (w <= 0 || h <= 0) continue // 无外形的占位元件(如纯电气元素)不参与 3D
     const src = db.source_component.get(pc.source_component_id)
+    const body = bodies?.[src?.name ?? '']
     components.push({
       id: pc.pcb_component_id,
       name: src?.name,
-      x: pc.center.x - board.centerX,
-      y: pc.center.y - board.centerY,
-      w,
-      h,
-      heightMM: DEFAULT_COMPONENT_HEIGHT_MM,
+      x: pc.center.x - board.centerX + (body?.offsetX ?? 0),
+      y: pc.center.y - board.centerY + (body?.offsetY ?? 0),
+      w: body?.w ?? w,
+      h: body?.h ?? h,
+      heightMM: body?.heightMM ?? DEFAULT_COMPONENT_HEIGHT_MM,
+      oppositeHeightMM: body?.oppositeHeightMM,
       layer: pc.layer === 'bottom' ? 'bottom' : 'top',
-      kind: inferComponentKind(src?.name, padCount.get(pc.pcb_component_id) ?? 0)
+      kind: body?.kind ?? (/USB|TYPE.?C/i.test(String((src as unknown as { manufacturer_part_number?: string })?.manufacturer_part_number ?? '')) ? 'usb' : inferComponentKind(src?.name, padCount.get(pc.pcb_component_id) ?? 0))
     })
+  }
+
+  // 安装孔同时可能是非镀通孔(pcb_hole)或镀通孔(pcb_plated_hole)。
+  // 统一提炼后供 3D 查看器、外壳定位和制造校验复用，避免各模块重复猜坐标。
+  const mountingHoles: NonNullable<BoardSpec['mountingHoles']> = []
+  for (const el of circuitJson as Array<Record<string, unknown>>) {
+    if (el.type !== 'pcb_hole' && el.type !== 'pcb_plated_hole') continue
+    if (el.type === 'pcb_plated_hole' && el.pcb_component_id) continue // 器件通孔不是安装孔
+    const center = el.center as { x?: unknown; y?: unknown } | undefined
+    const x = Number(el.x ?? center?.x)
+    const y = Number(el.y ?? center?.y)
+    const diameter = Number(el.hole_diameter ?? el.diameter)
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !(diameter > 0)) continue
+    mountingHoles.push({ x: x - board.centerX, y: y - board.centerY, diameterMM: diameter, plated: el.type === 'pcb_plated_hole' })
   }
 
   return {
@@ -145,6 +162,7 @@ export function buildBoardSpec(circuitJson: AnyCircuitElement[]): BoardSpec {
     thicknessMM: board.thicknessMM,
     outline: board.outline,
     components,
+    mountingHoles,
     color: board.color ?? DEFAULT_BOARD_COLOR
   }
 }
@@ -523,6 +541,12 @@ export function buildBoardGroup(spec: BoardSpec): THREE.Group {
   } else {
     traceRoundedRect(shape, 0, 0, spec.widthMM, spec.heightMM, BOARD_CORNER_R)
   }
+  // 安装孔是真实几何通孔，预览与板卡 STL 同源。
+  for (const hole of spec.mountingHoles ?? []) {
+    const path = new THREE.Path()
+    path.absarc(hole.x, hole.y, hole.diameterMM / 2, 0, Math.PI * 2, true)
+    shape.holes.push(path)
+  }
   const pcbGeo = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments: 16 })
   pcbGeo.rotateX(-Math.PI / 2) // (x, y, z) → (x, z, -y):挤出方向落到 +Y
   pcbGeo.translate(0, -t, 0) // 板体 y∈[-t, 0],顶面在局部 y=0
@@ -572,6 +596,11 @@ export function buildBoardGroup(spec: BoardSpec): THREE.Group {
     const comp = new THREE.Group()
     comp.name = c.name ?? c.id
     comp.add(shapeGroup)
+    if (c.oppositeHeightMM && c.oppositeHeightMM > 0) {
+      const pins = new THREE.Mesh(new THREE.BoxGeometry(Math.min(w,.64), c.oppositeHeightMM, d), mats.pin)
+      pins.position.y = -t - c.oppositeHeightMM / 2
+      comp.add(pins)
+    }
     if (flipped) {
       comp.rotation.x = Math.PI // 翻面朝下:局部 +y → 世界 -y,局部 +z → 世界 -z
       comp.position.set(c.x, -t, -c.y)

@@ -111,6 +111,16 @@ export async function buildWorkspace(root: string): Promise<BuildResult> {
 }
 
 export function registerBuilderIpc(): void {
+  // 硬件 Worker 在 renderer 求值；统一转入构建广播，停靠和独立构建窗口都能看到。
+  ipcMain.handle('build:report', (_e, lines: Array<Pick<BuildLogLine, 'level' | 'text'>>): void => {
+    if (!Array.isArray(lines)) throw new Error('Invalid build log batch')
+    for (const line of lines) {
+      if (!line || !['info', 'warn', 'error'].includes(line.level) || typeof line.text !== 'string') {
+        throw new Error('Invalid build log line')
+      }
+    }
+    for (const line of lines) log(line.level, line.text)
+  })
   ipcMain.handle('build:run', async (_e, root: string): Promise<BuildResult> => {
     return buildWorkspace(root)
   })

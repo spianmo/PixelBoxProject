@@ -20,7 +20,7 @@ import { join, resolve, sep } from 'node:path'
 import type { HardwareExportFile, HardwareExportResult } from '../shared/ipc-types'
 import { getWatchedRoot } from './workspace'
 
-type ExportKind = 'print' | 'gerber'
+type ExportKind = 'print' | 'gerber' | 'validation'
 
 interface ExportOptions {
   root: string
@@ -55,7 +55,7 @@ function sanitizeFileName(name: unknown): string {
 }
 
 async function exportFiles(opts: ExportOptions): Promise<HardwareExportResult> {
-  if (opts.kind !== 'print' && opts.kind !== 'gerber') throw new Error('hardware:badKind')
+  if (opts.kind !== 'print' && opts.kind !== 'gerber' && opts.kind !== 'validation') throw new Error('hardware:badKind')
   if (!Array.isArray(opts.files) || opts.files.length === 0) throw new Error('hardware:noFiles')
 
   const root = assertInsideWorkspace(opts.root)

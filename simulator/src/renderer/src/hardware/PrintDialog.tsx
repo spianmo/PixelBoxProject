@@ -68,12 +68,13 @@ function Step(props: { n: number; title: string; children: React.ReactNode }): R
   )
 }
 
-export function PrintDialog(props: { onExportStl: (part: StlPart) => void }): React.JSX.Element {
+export function PrintDialog(props: { root: string; onExportStl: (part: StlPart) => Promise<boolean> }): React.JSX.Element {
   const { t } = useTranslation()
   const [cfg, setCfg] = useState<PrinterCfg | null>(null)
+  const [slicing, setSlicing] = useState(false)
   const [testing, setTesting] = useState(false)
   const [gcodePath, setGcodePath] = useState<string | null>(null)
-  const [startPrint, setStartPrint] = useState(true)
+  const [startPrint, setStartPrint] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [job, setJob] = useState<PrinterJobStatus | null>(null)
   const [jobError, setJobError] = useState<string | null>(null)
@@ -142,6 +143,17 @@ export function PrintDialog(props: { onExportStl: (part: StlPart) => void }): Re
     }
   }
 
+  const onSlice = async (part: 'base' | 'lid'): Promise<void> => {
+    setSlicing(true)
+    try {
+      // 先通过同一导出门禁生成最新 STL，再切片；失败不能拿旧 STL 接着打印。
+      if (!await props.onExportStl(part)) return
+      const path = await window.api.printerSlice({ root: props.root, part })
+      if (path) { setGcodePath(path); showToast('切片完成，可查看后上传打印', 'success') }
+    } catch (error) { showToast(error instanceof Error ? error.message : String(error), 'error') }
+    finally { setSlicing(false) }
+  }
+
   const onPickGcode = async (): Promise<void> => {
     const path = await window.api.printerPickGcode().catch(() => null)
     if (path) setGcodePath(path)
@@ -173,7 +185,7 @@ export function PrintDialog(props: { onExportStl: (part: StlPart) => void }): Re
       <Step n={1} title={t('hw.print.step1')}>
         {configured && cfg ? (
           <div className="text-xs text-jb-muted">
-            {cfg.type === 'moonraker' ? 'Moonraker' : 'OctoPrint'}
+            {cfg.type === 'bambu' ? 'Bambu' : cfg.type === 'moonraker' ? 'Moonraker' : 'OctoPrint'}
             {' · '}
             <span className="selectable text-jb-text">{cfg.baseUrl}</span>
           </div>
@@ -190,13 +202,17 @@ export function PrintDialog(props: { onExportStl: (part: StlPart) => void }): Re
       {/* 2. 导出 STL */}
       <Step n={2} title={t('hw.print.step2')}>
         <div className="flex flex-wrap items-center gap-1.5">
-          {(['all', 'base', 'lid', 'board'] as StlPart[]).map((part) => (
-            <button key={part} onClick={() => props.onExportStl(part)} className={BTN_CLASS}>
+          {(['base', 'lid'] as StlPart[]).map((part) => (
+            <button key={part} onClick={() => void props.onExportStl(part)} className={BTN_CLASS}>
               {`STL · ${t(`hw.parts.${part}`)}`}
             </button>
           ))}
         </div>
-        <div className="mt-1.5 text-[11px] leading-4 text-ink-500">{t('hw.print.sliceHint')}</div>
+        <div className="mt-2 flex gap-2">
+          {(['base', 'lid'] as const).map((part) => <button key={part} disabled={slicing || cfg?.type === 'bambu'}
+            className={BTN_CLASS} onClick={() => void onSlice(part)}>{slicing ? '处理中…' : `切片${part === 'base' ? '底盒' : '顶盖'}`}</button>)}
+        </div>
+        <div className="mt-1.5 text-[11px] leading-4 text-ink-500">调用本机 PrusaSlicer 与所选打印配置生成 G-code。拓竹设备需导入 Bambu Studio/OrcaSlicer 的切片 3MF。PCB 模型仅供试装，不能打印成电路板。</div>
       </Step>
 
       {/* 3. 上传 G-code */}

@@ -9,6 +9,9 @@
  *   IDE 不再写入/依赖它;参数化渲染路径仅存于旧设备档案(hardware3d.enclosure)
  * - scadLog:编译事件环(开始/成功+耗时/失败),3D 视图角标与外壳页签共用
  */
+import type { HardwareEvalPhase } from '../../../shared/hardwareEvaluation'
+import { validateHardware, type HardwareValidation } from './validation'
+import type { HardwareReference, OfficialNetlist } from '../../../shared/hardwareReference'
 import { useSyncExternalStore } from 'react'
 import type { AnyCircuitElement } from 'circuit-json'
 import { createStore, type Store } from '../device-sim/store'
@@ -20,6 +23,9 @@ import { evalTsxFsMap } from './evalWorker'
 import { compileScad } from './scadCompiler'
 import { arrayBufferToB64 } from './three/enclosureStl'
 import { buildBoardSpec, detectScreenPlacement } from './three/boardBuilder'
+import { placeStlOnBed, stlBounds } from '../../../shared/stlGeometry'
+import i18n from '../i18n'
+import { reportHardwareFailure, reportHardwareValidation, writeHardwareBuildLog } from './buildOutput'
 
 /** scad 编译日志条目(环形,上限 SCAD_LOG_CAP;3D 视图角标/外壳页签展示) */
 export interface ScadLogEntry {
@@ -34,6 +40,8 @@ export interface ScadLogEntry {
 
 export interface HardwareState {
   status: 'idle' | 'evaluating' | 'ok' | 'error'
+  evalStartedAt: number | null
+  evalPhase: HardwareEvalPhase | null
   error: string | null
   /** 每次成功 eval 换新引用(PCBViewer 刷新依据) */
   circuitJson: AnyCircuitElement[] | null
@@ -50,11 +58,16 @@ export interface HardwareState {
   scadLog: ScadLogEntry[]
   explode: 0 | 1
   evalSeq: number
+  /** 官方 reference.json 尺寸校验结果；无基准文件时为 null */
+  validation: HardwareValidation | null
+  reference: HardwareReference | null
+  officialNetlist: OfficialNetlist | null
+  referenceError: string | undefined
 }
 
 function initialState(): HardwareState {
   return {
-    status: 'idle',
+    status: 'idle', evalStartedAt: null, evalPhase: null,
     error: null,
     circuitJson: null,
     boardSpec: null,
@@ -65,7 +78,8 @@ function initialState(): HardwareState {
     scadLog: [],
     scadSeq: 0,
     explode: 0,
-    evalSeq: 0
+    evalSeq: 0,
+    validation: null, reference: null, officialNetlist: null, referenceError: undefined
   }
 }
 
@@ -82,9 +96,11 @@ export function useHardware(): HardwareState {
 
 /** 当前状态所属的工程根(evaluateDesign 的过期结果守卫) */
 let currentRoot: string | null = null
+let publishedValidation = ''
 
 /** 重置为初始状态(工作区切换/关闭时) */
 export function resetHardware(): void {
+  publishedValidation = ''
   hardwareStore.replace(initialState())
 }
 
@@ -94,6 +110,7 @@ export function resetHardware(): void {
  */
 export function ensureHardwareWorkspace(root: string | null): void {
   if (currentRoot === root) return
+  activeEvaluation?.abort()
   currentRoot = root
   pendingRoot = null // 旧工作区排队的补跑作废(防止评估结束后复活已切换/关闭的工程)
   pendingScad = null
@@ -115,6 +132,12 @@ let pendingRoot: string | null = null
  * 工作区切换时 resetHardware 会把 status 打回 'idle',并发评估交叉杀共享 worker。
  */
 let evalInFlight = false
+let activeEvaluation: AbortController | null = null
+
+export function cancelEvaluation(): void {
+  pendingRoot = null
+  activeEvaluation?.abort()
+}
 
 /**
  * 读取 <root>/design 下全部 .tsx/.ts(相对路径 fsMap,入口 board.tsx)→
@@ -132,7 +155,11 @@ export async function evaluateDesign(root: string): Promise<void> {
   }
   evalInFlight = true
   currentRoot = root
-  hardwareStore.set({ status: 'evaluating', error: null })
+  const controller = new AbortController()
+  activeEvaluation = controller
+  hardwareStore.set({ status: 'evaluating', error: null, evalStartedAt: Date.now(), evalPhase: 'loading' })
+  const startedAt = Date.now()
+  writeHardwareBuildLog(root, [{ level: 'info', text: i18n.t('hw.build.started') }])
   try {
     const entries = await window.api.readDir(`${root}/design`)
     const files = entries.filter((e) => !e.isDir && /\.(tsx|ts)$/i.test(e.name))
@@ -141,9 +168,30 @@ export async function evaluateDesign(root: string): Promise<void> {
     const fsMap: Record<string, string> = {}
     for (const f of files) fsMap[f.name] = await window.api.readFile(f.path)
 
-    const circuitJson = await evalTsxFsMap(fsMap, 'board.tsx')
-    const boardSpec = buildBoardSpec(circuitJson)
+    const circuitJson = await evalTsxFsMap(fsMap, 'board.tsx', controller.signal, (evalPhase) => {
+      if (currentRoot === root) hardwareStore.set({ evalPhase })
+    })
     const screen = detectScreenPlacement(circuitJson)
+
+    // 基准文件存在但损坏时阻止导出；不能用 catch 把错误降级成“没有基准”。
+    let reference: HardwareReference | null = null
+    let officialNetlist: OfficialNetlist | null = null
+    let referenceError: string | undefined
+    if (entries.some((e) => e.name === 'reference.json')) {
+      try {
+        reference = JSON.parse(await window.api.readFile(`${root}/design/reference.json`))
+        if (!reference) throw new Error('基准不能为空')
+        const netlistName = reference.kind === 'functional' ? 'design-netlist.json' : 'official-netlist.json'
+        if (entries.some((e) => e.name === netlistName)) {
+          officialNetlist = JSON.parse(await window.api.readFile(`${root}/design/${netlistName}`))
+        }
+      } catch (err) { referenceError = `设计基准读取失败：${String(err)}` }
+    }
+    const boardSpec = buildBoardSpec(circuitJson, reference?.componentBodies)
+    // 屏幕是装配件，通过机械基准表示，不能伪装成 PCB 上的 SOIC 以制造虚假焊盘。
+    const effectiveScreen = screen ?? reference?.screen ?? null
+    const validation = validateHardware(circuitJson, boardSpec, effectiveScreen, hardwareStore.get().scad?.meta ?? null,
+      reference, officialNetlist, referenceError)
 
     if (currentRoot !== root) return // 评估期间已切换工作区,丢弃过期结果
     hardwareStore.set({
@@ -151,21 +199,27 @@ export async function evaluateDesign(root: string): Promise<void> {
       error: null,
       circuitJson,
       boardSpec,
-      screen,
+      screen: effectiveScreen,
+      validation, reference, officialNetlist, referenceError,
       evalSeq: hardwareStore.get().evalSeq + 1
     })
+    writeHardwareBuildLog(root, [{ level: 'info', text: i18n.t('hw.build.evaluated', { seconds: ((Date.now() - startedAt) / 1000).toFixed(1) }) }])
   } catch (err) {
     if (currentRoot !== root) return
     const message = err instanceof Error ? err.message : String(err)
     hardwareStore.set({ status: 'error', error: message.split('\n')[0] })
+    reportHardwareFailure(root, 'pcb', message)
   } finally {
     evalInFlight = false
+    activeEvaluation = null
+    if (currentRoot === root) hardwareStore.set({ evalStartedAt: null, evalPhase: null })
     if (pendingRoot !== null) {
       const next = pendingRoot
       pendingRoot = null
       // 仅当待办仍是当前工作区才补跑(已切换/关闭的工程不复活)
       if (next === currentRoot) void evaluateDesign(next)
     }
+    publishValidationWhenSettled()
   }
 }
 
@@ -207,16 +261,26 @@ export async function compileEnclosureScad(root: string, code?: string): Promise
     const lidR = await compileScad(source, 'lid', SCAD_PREVIEW_FN)
     if (currentRoot !== root) return
     const st = hardwareStore.get()
+    const meta = baseR.meta ?? lidR.meta
+    // 外形直接量取编译网格，不能仅凭用户可编辑的 PB_META echo 宣称尺寸通过。
+    if (meta) {
+      const baseBox = stlBounds(baseR.stl)
+      const lidBox = stlBounds(lidR.stl)
+      meta.outerW = Math.max(baseBox.max[0], lidBox.max[0]) - Math.min(baseBox.min[0], lidBox.min[0])
+      meta.outerD = Math.max(baseBox.max[1], lidBox.max[1]) - Math.min(baseBox.min[1], lidBox.min[1])
+      meta.lidTopZ = Math.max(baseBox.max[2], lidBox.max[2]) - Math.min(baseBox.min[2], lidBox.min[2])
+    }
     hardwareStore.set({
       scad: {
         baseStlB64: arrayBufferToB64(baseR.stl),
         lidStlB64: arrayBufferToB64(lidR.stl),
-        meta: baseR.meta ?? lidR.meta
+        meta
       },
       scadStatus: 'ok',
       scadError: null,
       scadSeq: st.scadSeq + 1
     })
+    refreshValidation()
     pushScadLog(
       'ok',
       `编译完成 ${((Date.now() - t0) / 1000).toFixed(1)}s(底盒 ${Math.round(baseR.stl.byteLength / 1024)}KB + 顶盖 ${Math.round(lidR.stl.byteLength / 1024)}KB${baseR.meta ? '' : ';PB_META 缺失,已回退包围盒推导'})`
@@ -226,6 +290,7 @@ export async function compileEnclosureScad(root: string, code?: string): Promise
     const message = err instanceof Error ? err.message : String(err)
     hardwareStore.set({ scadStatus: 'error', scadError: message })
     pushScadLog('error', message.split('\n').slice(0, 2).join(' '))
+    reportHardwareFailure(root, 'enclosure', message)
   } finally {
     scadInFlight = false
     if (pendingScad) {
@@ -233,7 +298,31 @@ export async function compileEnclosureScad(root: string, code?: string): Promise
       pendingScad = null
       if (next.root === currentRoot) void compileEnclosureScad(next.root, next.code)
     }
+    publishValidationWhenSettled()
   }
+}
+
+/** SCAD 与 PCB 独立编译，任一成功后都重新检查同一份基准。 */
+export function refreshValidation(): HardwareValidation | null {
+  const s = hardwareStore.get()
+  if (!s.circuitJson || !s.boardSpec) return null
+  const validation = validateHardware(s.circuitJson, s.boardSpec, s.screen, s.scad?.meta ?? null,
+    s.reference, s.officialNetlist, s.referenceError)
+  hardwareStore.set({ validation })
+  publishValidationWhenSettled()
+  return validation
+}
+
+/** PCB/外壳并行计算时等二者收敛；导出重复 refresh 不重复写日志或刷通知。 */
+function publishValidationWhenSettled(): void {
+  const s = hardwareStore.get()
+  if (!currentRoot || evalInFlight || scadInFlight || pendingRoot || pendingScad ||
+    s.status !== 'ok' || s.scadStatus === 'error' || !s.validation) return
+  const key = JSON.stringify([currentRoot, s.evalSeq, s.scadSeq, s.validation.counts,
+    s.validation.errors, s.validation.printErrors, s.validation.warnings])
+  if (key === publishedValidation) return
+  publishedValidation = key
+  reportHardwareValidation(currentRoot, s.validation)
 }
 
 /** scad 编译日志环上限 */
@@ -245,6 +334,7 @@ function pushScadLog(kind: ScadLogEntry['kind'], text: string): void {
   hardwareStore.set({
     scadLog: [{ ts: Date.now(), kind, text }, ...st.scadLog].slice(0, SCAD_LOG_CAP)
   })
+  if (currentRoot && kind !== 'error') writeHardwareBuildLog(currentRoot, [{ level: 'info', text }])
 }
 
 /**
@@ -355,5 +445,16 @@ export async function compileScadForExport(
 ): Promise<ArrayBuffer> {
   const source = code ?? (await window.api.readFile(`${root}/design/enclosure.scad`))
   const r = await compileScad(source, part)
-  return r.stl
+  const s = hardwareStore.get()
+  const box = stlBounds(r.stl)
+  if (s.reference?.enclosure) {
+    const ref = s.reference.enclosure
+    if (Math.abs(box.max[0] - box.min[0] - ref.widthMM) > .05 ||
+      Math.abs(box.max[1] - box.min[1] - ref.depthMM) > .05) throw new Error('STL 实测宽深与官方外形基准不符')
+    if (s.boardSpec && s.circuitJson) {
+      const report = validateHardware(s.circuitJson, s.boardSpec, s.screen, r.meta, s.reference, s.officialNetlist, s.referenceError)
+      if (report.printErrors.length) throw new Error(report.printErrors.join('；'))
+    }
+  }
+  return placeStlOnBed(r.stl)
 }

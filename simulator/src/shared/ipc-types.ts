@@ -153,6 +153,8 @@ export interface BoardComponentBox {
   h: number
   /** 挤出高度,默认 2.5 */
   heightMM: number
+  /** 通孔器件在焊接面伸出的引脚长度。 */
+  oppositeHeightMM?: number
   layer: 'top' | 'bottom'
   /** 元件类别(可选新增字段:旧档案缺省时按 'chip' 渲染,向后兼容) */
   kind?: BoardComponentKind
@@ -167,6 +169,8 @@ export interface BoardSpec {
   /** 多边形板轮廓(可选,覆盖 width/height) */
   outline?: { x: number; y: number }[]
   components: BoardComponentBox[]
+  /** PCB 安装孔/定位孔(相对板中心,mm);由 pcb_hole/pcb_plated_hole 提炼 */
+  mountingHoles?: Array<{ x: number; y: number; diameterMM: number; plated: boolean }>
   /** 阻焊色,默认 '#1a7f37' */
   color?: string
 }
@@ -194,6 +198,8 @@ export interface EnclosurePort {
 
 /** 参数化外壳(默认值常量 DEFAULT_ENCLOSURE 见 shared/hardwareDefaults.ts) */
 export interface EnclosureParams {
+  /** 固定外形尺寸；存在时不再用 PCB 尺寸推导壳宽深 */
+  outerSizeMM?: { w: number; d: number }
   /** 壁厚,默认 2 */
   wallMM: number
   /** 板与内壁间隙,默认 1 */
@@ -217,6 +223,12 @@ export interface EnclosureParams {
   colorHex?: string
   /** 电池占位(底盒内腔可视化,w/h 足印 × t 厚,mm;仅 3D 展示,不参与 STL 打印导出) */
   batteryMM?: { w: number; h: number; t: number }
+  /** 螺柱中心(相对外壳中心,mm)。缺省按板边内缩 standoffOuterR 推导。 */
+  standoffCenters?: Array<{ x: number; y: number }>
+  screenMarginMM?: number
+  screenCornerRMM?: number
+  /** 玻璃从顶面嵌入的台阶：玻璃外尺寸、深度、单边装配余量及圆角 */
+  screenSeat?: { w: number; h: number; depth: number; clearance: number; cornerR: number }
 }
 
 /**
@@ -224,6 +236,19 @@ export interface EnclosureParams {
  * 用户删掉 echo 行时为 null,查看器回退包围盒推导)
  */
 export interface EnclosureScadMeta {
+  /** 可选详细设计数据；旧 SCAD 无此字段时不能完成官方尺寸校验 */
+  design?: {
+    board: [number, number, number]
+    cornerR: number
+    screen: [number, number, number, number, number]
+    screenSeat: [number, number, number]
+    standoffs: Array<[number, number]>
+    /** 支撑柱外半径；同轴螺钉头也按此半径预留空间。 */
+    standoffOuterR?: number
+    /** 顶盖内唇的外形、壁厚、起止高度，供装配检查复用真实几何。 */
+    lip?: [number, number, number, number, number, number]
+    ports: Array<[string, number, number, number, number, number]>
+  }
   /** 板顶面 z(scad Z-up;three 场景即 y)—— 板卡抬高契约 */
   boardTopZ: number
   /** 屏幕贴图面 z(顶盖外表面 − 微沉) */

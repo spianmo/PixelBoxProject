@@ -57,6 +57,7 @@ export function parseScadMeta(logs: string[]): EnclosureScadMeta | null {
           ? ([bat[0], bat[1], bat[2]] as [number, number, number])
           : null
       return {
+        ...(obj.design && typeof obj.design === 'object' ? { design: obj.design as EnclosureScadMeta['design'] } : {}),
         boardTopZ: obj.boardTopZ,
         screenFaceZ: typeof obj.screenFaceZ === 'number' ? obj.screenFaceZ : null,
         lidTopZ: typeof obj.lidTopZ === 'number' ? obj.lidTopZ : null,

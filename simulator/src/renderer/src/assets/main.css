@@ -2,6 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 透明图片的棋盘格沿用主题变量,深浅主题均能辨认透明区域。 */
+.image-preview-viewport {
+  background-color: rgb(var(--pb-bg-editor));
+  background-image: conic-gradient(rgb(var(--pb-bg-panel)) 25%, transparent 0 50%, rgb(var(--pb-bg-panel)) 0 75%, transparent 0);
+  background-size: 20px 20px;
+}
+
 /*
  * JetBrains/Android Studio New UI 色板(RGB 分量,供 tailwind rgb(var()/alpha) 组合)
  * - :root 为 dark 默认值;[data-theme='light'] 覆写同名变量(IntelliJ Light New UI),

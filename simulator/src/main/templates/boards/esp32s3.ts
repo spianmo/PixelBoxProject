@@ -1,127 +1,82 @@
-/**
- * esp32s3 → 微雪 ESP32-S3-Touch-AMOLED-2.16 复刻板模板
- *
- * 板模板正文在 ../esp32s3-board.tsx(静态 .tsx,头注释含 __PROJECT_NAME__
- * 占位;已经 /tmp/tsc-probe 沙箱以多文件 fsMap 实测:1321 元素含 pcb_board
- * 40×40 + 20 pcb_component,U1 73 焊盘,SCREEN1 39×39 被识别为屏幕,0 DRC error)。
- * 主控 U1 用 ../esp32-s3-mini.tsx 的真实 ESP32-S3-MINI-1-N8 模组封装(73 焊盘)。
- *
- * 布局经验(DRC 教训):正面被屏幕整块占满 —— 其余元件(含三颗侧按键)必须放
- * layer="bottom",否则与 SCREEN1 的 courtyard 重叠报错;按键为通孔件,孔贯穿两层,
- * 背面元件须与按键 courtyard(y≥11.5)保持净空。U1 模组 courtyard 达
- * 16.6×21mm(北端含 PCB 天线丝印区,y 至 +13,置于 (0,-2) 后占 x∈[-8.05,8.58]、
- * y∈[-9.97,11.05]),背面其余元件按「东列/西列/南排」环绕其外,彼此 courtyard
- * 留 ≥0.4mm 间隙(tscircuit 会对 courtyard 重叠报 pcb_courtyard_overlap_error
- * 并跳过自动布线)。
- */
+/** 自主主控设计；官方 PDF 重建另存为 esp32s3-official，默认不加载数百个定位标记。 */
 import type { HardwareBoardTemplate } from './types'
-// 板模板正文与真实模组封装均为构建期 ?raw 内嵌(Rsbuild JS_RAW 规则只认 JS 族
-// 扩展名,故保留 .tsx 真实后缀;tsconfig.node include 仅 **/*.ts,不会被当作源码编译)
-import boardTsxRaw from '../esp32s3-board.tsx?raw'
-import moduleTsx from '../esp32-s3-mini.tsx?raw'
-import type { EnclosureParams } from '../../../shared/ipc-types'
+import { centers, ports, enclosure as originalEnclosure, screenRect } from './esp32s3-exterior'
+import boardRaw from '../esp32s3-board.tsx?raw'
+import moduleRaw from '../esp32-s3-wroom.tsx?raw'
+import routesRaw from '../esp32s3-routes.ts?raw'
+import netlist from '../esp32s3-netlist.json'
 
-/**
- * 微雪 ESP32-S3-Touch-AMOLED-2.16 成品外壳参数
- * (依据官方尺寸图:白色圆角壳 46×46×22.5mm、圆角 R5.8;
- * 总高 = 底板 2 + 底盒内腔 15 + 顶盖内腔 3.5 + 顶板 2 = 22.5mm):
- * - 北壁三个 Φ5.3 按钮孔,间距 10mm(+/KEY、PWR、BOOT/-),孔心取壁中高
- * - 南壁 USB-C 开口(9.2×3.6 圆角 1.6),孔心近板面高度
- * - 西壁 microSD 卡槽(12×2.4 圆角 1),孔心近板面高度
- * - batteryMM:底盒内腔 3.7V 锂电占位(30×30×5,仅 3D 展示,不参与 STL 打印;
- *   实物堆叠:屏幕贴顶盖窗口 → PCB → 电池在底盒剩余空腔)
- * port 坐标约定见 renderer/hardware/three/enclosureBuilder.ts:
- * port.x = 沿壁自壁中心的偏移,port.y = 距底盒内腔地面的高度
- */
-const WAVESHARE_216_ENCLOSURE: EnclosureParams = {
-  wallMM: 2,
-  clearanceMM: 1,
-  baseHeightMM: 15,
-  lidHeightMM: 3.5,
-  // 9.5:让 5mm 电池以真实厚度放进板下(净空 = 柱高 − 板厚1.6 − 元件净空2.7 = 5.2;
-  // 壳外形高度不受柱高影响,板只是在腔内抬高)
-  standoffHeightMM: 9.5,
-  standoffOuterR: 3,
-  standoffInnerR: 1.1,
-  cornerR: 5.8,
-  screenWindow: true,
-  colorHex: '#f2f2f4',
-  batteryMM: { w: 30, h: 30, t: 5 },
-  ports: [
-    { wall: 'north', x: -10, y: 7.5, w: 5.3, h: 5.3, r: 2.65 },
-    { wall: 'north', x: 0, y: 7.5, w: 5.3, h: 5.3, r: 2.65 },
-    { wall: 'north', x: 10, y: 7.5, w: 5.3, h: 5.3, r: 2.65 },
-    { wall: 'south', x: 0, y: 4, w: 9.2, h: 3.6, r: 1.6 },
-    { wall: 'west', x: 0, y: 3.5, w: 12, h: 2.4, r: 1 }
-  ]
-}
-
-function readme(name: string, chip: string): string {
-  return `# ${name}
-
-PixelBox 硬件设计工程(tscircuit PCB + 可 3D 打印参数化外壳;默认目标芯片 \`${chip}\`)。
-
-默认模板 1:1 复刻 **微雪 ESP32-S3-Touch-AMOLED-2.16** 开发板
-(官方资料:<https://docs.waveshare.net/ESP32-S3-Touch-AMOLED-2.16>):
-2.16 英寸 AMOLED 480×480 触摸屏 + ESP32-S3R8(8MB PSRAM)+ 16MB Flash,
-白色圆角成品外壳 46×46×22.5mm(顶面三颗 Φ5.3 按钮、底侧 USB-C、左侧 microSD 卡槽)。
-
-## 目录结构
-
-- \`design/board.tsx\` — PCB 电路(tscircuit;IDE 硬件面板实时预览 PCB / 原理图 / 3D)
-- \`design/esp32-s3-mini.tsx\` — 真实 ESP32-S3-MINI-1-N8 模组封装(65 引脚 + GND
-  散热盘共 73 焊盘;来源 tscircuit 开源项目,见文件头;board.tsx 相对导入使用)
-- \`design/enclosure.scad\` — 外壳源码(OpenSCAD,外壳即代码;IDE 硬件面板即时编译渲染)
-- \`tsconfig.json\` — TS 配置(jsx: react-jsx,与 IDE 编辑器一致)
-- \`export/\` — STL / Gerber 导出目录(已 .gitignore)
-
-> 编辑 \`design/board.tsx\` 时,\`<board>\`/\`<chip>\` 等 tscircuit 元素与属性的
-> 补全 / 悬停 / 类型检查由 IDE 内置注入(无需 \`node_modules\`);
-> 若要在 IDE 外独立跑 \`npx tsc\`,需自行安装 \`@tscircuit/core\` 等依赖。
-
-## 默认板卡(微雪 ESP32-S3-Touch-AMOLED-2.16 复刻)
-
-40×40mm 方板(装入 46mm 外壳),元件对照官方原理图各功能块:
-
-| 元件 | 对应原理图块 / 真实硬件 | 位置 |
-|---|---|---|
-| \`SCREEN1\` | 2.16" AMOLED 480×480(驱动 CO5300,QSPI;可视区约 39×39mm) | 正面 |
-| \`SW1\`/\`SW2\`/\`SW3\` | KEYS:+/KEY(BSS138 电平转换)/ PWR / BOOT-(间距 10mm) | 北侧板边 |
-| \`U1\` / \`U2\` | ESP32-S3-MINI-1-N8 真实模组封装(73 焊盘,IO 可按名连线,如 \`.U1 > .IO0\`) / XM25QH128 16MB Flash | 背面 |
-| \`U3\` / \`J1\` | POWER:AXP2101 PMU / MX1.25 锂电池座 | 背面 |
-| \`U4\` / \`U5\` | RTC:PCF85063ATL / 6/9-Axis:QMI8658A IMU(0x6B) | 背面 |
-| \`U6\` / \`U7\` / \`U8\` | 音频:ES8311 codec / ES7210 双麦 ADC(AEC)/ NS4150B 功放 | 背面 |
-| \`MIC1\`/\`MIC2\` | 双 MEMS 麦克风 | 背面 |
-| \`TP1\` / \`SD1\` | CST9220 触摸(FPC 上,示意)/ microSD 卡座 | 背面 / 西侧板边 |
-| \`USB1\` / \`J2\` | USB Type-C(TVS ESD)/ IPEX 天线座 | 背面南侧 / 背面 |
-
-名字以 \`SCREEN\` 开头的元件被识别为屏幕:3D 视图把模拟器画面贴到该区域,
-外壳顶盖按它开窗;删改元件后保存即自动重新评估。
-
-## 屏幕分辨率对应
-
-实机屏幕为 **480×480**(2.16" AMOLED);「添加到模拟器」注册设备档案时,
-建议屏幕宽高填 **480×480**,与实物像素一一对应(对话框默认值即 480×480)。
-
-## 工作流
-
-在 IDE 打开本目录 → 左侧 rail「硬件设计」面板:
-运行设计(eval)→ 2D/3D 预览与爆炸视图 → 导出 STL(切片后经 OctoPrint/Moonraker 上传打印)
-或导出 Gerber(交付制板);「添加到模拟器」可把板卡+外壳注册为虚拟设备档案。
-`
-}
-
+const boardSizeMM = { widthMM:41, heightMM:41, thicknessMM:1.6 }
+// 只调整内部螺柱导孔：原 2.2 mm 通孔无法咬合 M2 自攻螺钉，外形和中心距不变。
+const enclosure = { ...originalEnclosure, standoffInnerR: .85 }
 export const BOARD_TEMPLATE: HardwareBoardTemplate = {
-  chip: 'esp32s3',
-  boardName: 'ESP32-S3-Touch-AMOLED-2.16',
-  docsUrl: 'https://docs.waveshare.net/ESP32-S3-Touch-AMOLED-2.16',
-  schematicUrl: 'https://www.waveshare.net/w/upload/1/14/ESP32-S3-Touch-AMOLED-2.16-Schematic.pdf',
-  moduleFile: { fileName: 'esp32-s3-mini.tsx', content: moduleTsx },
-  boardTsx: (name) => boardTsxRaw.replace('__PROJECT_NAME__', name),
-  enclosure: WAVESHARE_216_ENCLOSURE,
-  boardSizeMM: { widthMM: 40, heightMM: 40, thicknessMM: 1.6 },
-  // 与板模板的 SCREEN1(39×39 可视区居中)一致
-  screenRect: { x: 0, y: 0, w: 39, h: 39 },
-  screenResolution: { w: 480, h: 480 },
-  readme
+  chip:'esp32s3', boardName:'PixelBox ESP32-S3 主控扩展板',
+  docsUrl:'https://documentation.espressif.com/esp32-s3-wroom-1_wroom-1u_datasheet_en.pdf',
+  schematicUrl:'https://docs.waveshare.net/ESP32-S3-Touch-AMOLED-2.16',
+  moduleFile:{fileName:'esp32-s3-wroom.tsx',content:moduleRaw},
+  extraFiles:[{fileName:'routes.ts',content:routesRaw},{fileName:'design-netlist.json',content:JSON.stringify(netlist,null,2)+'\n'}],
+  boardTsx:name=>boardRaw.replace('__PROJECT_NAME__',name),
+  enclosure, boardSizeMM, screenRect, screenResolution:{w:480,h:480},
+  reference:{
+    schemaVersion:1,kind:'functional',source:netlist.source,
+    board:{...boardSizeMM,status:'自主双层板；所有电源、下载和扩展端口采用可制造封装'},
+    enclosure:{widthMM:46,depthMM:46,heightMM:22.5,cornerRMM:5.8},
+    screen:{...screenRect,outerMM:43.3,visibleCornerRMM:4.7},
+    mounting:{centers,target:'enclosure',status:'PCB 四个直径 2.4 mm 非金属孔，与外壳 M2 螺柱同轴'},
+    ports:ports.map((p,i)=>({...p,name:i<3?`button${i+1}`:i===3?'USB-C':i===4?'microSD':`speaker${i-4}`,status:'保留原外观开口；接口小板与按钮需另行装配'})),
+    electrical:{components:17,pins:111,nets:netlist.nets.length,sha256:netlist.sha256},
+    fabrication:{footprints:'verified',routing:'reconstructed',drills:'verified'},
+    componentBodies:{
+      U1:{w:18,h:19.2,heightMM:3.2,offsetY:.62,kind:'chip'},
+      U2:{heightMM:1.45},
+      ...Object.fromEntries(['C1','C2','C3','C4','R1','R2','R3','R4'].map(n=>[n,{heightMM:1.3}])),
+      ...Object.fromEntries([4,9,6,9,9,2,2].map((pins,i)=>[`J${i+1}`,{w:i===3||i===4?(pins-1)*1.27+1.8:1.8,h:i===3||i===4?1.8:(pins-1)*1.27+1.8,heightMM:6.5,oppositeHeightMM:1.5,kind:'connector' as const}]))
+    },
+    rules:{minTraceMM:.2,minDrillMM:.3,minAnnularRingMM:.15},
+    unverified:['保留原外观不代表 USB/SD/三键已电气集成；本主控板仍需接口小板、屏幕电源转接与壳内天线，整机功能未验证', '尚未实物制板、焊接与通电验证；软件检查不能代替首板调试', '屏幕窗口按 2.16 英寸玻璃尺寸预留，需带电源的 QSPI 显示转接板及触摸转接线，J2 不能直接接裸 FPC', '未集成音频、IMU、RTC、SD 与电池管理；保留 GPIO/I2C 扩展，不可直接刷官方整机固件', '首次 QSPI 调试从 5 MHz 开始；当前排针与长线不承诺 40 MHz 信号完整性']
+  },
+  readme:(name)=>`# ${name}
+
+ESP32-S3 主控扩展板：16 MB Flash + 8 MB PSRAM，41×41 mm、R3.3 双层 PCB，保留原先 46×46×22.5 mm、R5.8 外壳。屏幕居中、右侧三键、左 USB、上侧 SD 和下侧六条透声孔不变。
+
+这是自主主控设计，不是微雪整机复刻。包含正式模组焊盘、AP2112K 3.3V 稳压、去耦、EN 的 10k/1uF RC、BOOT 上拉、I2C 上拉、四个安装孔及确定的双层走线。IDE 运行设计后检查真实铜连接、DRC、钻孔和网表，再导出 Gerber/Excellon 与校验报告。
+
+## 接线（从焊盘 pin1 起）
+
+| 接口 | 引脚顺序 | 用途 |
+| --- | --- | --- |
+| J1 | 5V, GND, TXD, RXD | 5V 稳压输入；TXD 接下载器 RX，RXD 接下载器 TX；UART 电平必须为 3.3V |
+| J2 | 5V, GND, IO4, IO5, IO6, IO7, IO38, IO12, IO39 | QSPI 转接板 D0/D1/D2/D3/CLK/CS/RST；5V 只供转接板电源，信号为 3.3V |
+| J3 | GND, 3V3, IO15, IO14, IO11, IO40 | I2C SDA/SCL、触摸 INT/RST；上拉已装 |
+| J4 | GND, IO16, IO17, IO18, IO8, IO9, IO10, IO13, IO21 | 外设扩展 |
+| J5 | GND, IO42, IO45, IO46, IO47, IO48, IO41, IO1, IO2 | 外设扩展，启动绑带 IO45/46 上电时不得被外部拉高 |
+| J6 | EN, GND | 瞬间短接复位，可外接常开按钮 |
+| J7 | BOOT, GND | 按住 BOOT，再短接/松开 J6，最后松开 BOOT 进入下载 |
+
+## BOM 与装配
+
+- U1：ESP32-S3-WROOM-1U-N16R8；18×19.2 mm，禁止用无 PSRAM 型号或带 PCB 天线的 WROOM-1 替换。IO35/36/37 预留给模组 PSRAM。1U 必须连接兼容 IPEX 的 2.4 GHz 同轴天线；天线型号、壳内固定位置与整机射频性能尚未验证，当前不能视为已完成无线整机。
+- U2：AP2112K-3.3TRG1，SOT-25（1 VIN、2 GND、3 EN、4 NC、5 VOUT）。
+- C1/C2：10uF，0805，X5R/X7R，额定 10V 或更高；C3：100nF，0603，X7R；C4：1uF，0603，X5R。
+- R1/R2：10k，0603；R3/R4：4.7k，0603。
+- J1..J7：1.27mm 单排直针，针数 4/9/6/9/9/2/2；方针边长不超过 0.4mm，钻孔 0.65mm，焊盘直径 1.0mm。塑壳宽 1.8mm，含配对插座/线束的板上总高不得超过 6.5mm，板下焊脚剪至 1.5mm 内。J4/J5 横向，其余纵向；不可沿用原大板 2.54mm 排针。
+- 双层 FR4 1.6mm，1oz 铜；电源/地线 0.4mm、信号线 0.25mm，制造下限 0.2mm；过孔 0.3/0.6mm，安装孔 2.4mm NPTH。
+- 原开口保留：右三键、左 USB、上 SD、下透声孔。当前 PCB 是主控扩展板，这些接口与按钮并未自动变成可工作的整机；需要按原孔位设计接口小板与内部线束。不得为装下这些部件改变外壳。
+- 四颗 M2 塑料用自攻螺钉固定 PCB；螺柱中心保持 (±17, ±18.5)mm，内部导孔直径改为 1.7mm，按实际打印材料先试装；头部直径不得超过 4mm、头高不超过 1.6mm。PCB 板底 9.9mm、板顶 11.5mm。板角与壳内圆角同心，轮廓保留 0.5mm 间隙。
+
+## 首板调试
+
+1. 不焊 U1 时检查 5V/GND/3V3 无短路，限流 100mA 上电，测 U2 输出 3.3V、EN 为高。
+2. 焊 U1 与其九个散热焊盘，限流提高到 500mA；AP2112K 的持续负载与温升须实测，J3 外设先控制在 50mA 内，屏幕由 J2 的 5V 输入侧供电。
+3. 使用 3.3V USB-UART；按 J7/J6 下载时序，运行 esptool 的 chip-id/flash-id，再用 ESP-IDF hello_world 验证启动日志；设置 Flash 16MB、Octal PSRAM 8MB。
+4. I2C GPIO15/14 扫描外设。显示信号保留微雪 GPIO，需另外连接包含屏幕供电电路的 CO5300 QSPI 转接板，先从 5MHz 验证色条与触摸，不能把裸屏 FPC 直接接 J2。
+5. 音频/IMU/RTC/SD/电池管理未板载；原微雪固件含 AXP2101 等必选初始化，不能作为本板首次启动程序。
+
+## 在 IDE 编辑和导出
+
+- board.tsx：电路与封装位置；routes.ts：路径坐标（相对起点元件原点）、线宽与换层。移动封装后同步调整路径，运行设计会检查断线/短路。
+- design-netlist.json：本设计的电气基准；设计变更时审阅并更新，不能为掩盖漏线而直接删基准。
+- reference.json：尺寸与制造规则；enclosure.scad：唯一结构源，支持编辑、预览、分件导出 STL、外部切片器生成 G-code 后上传。
+- 先导出底壳/顶盖 STL 试装，再配置实际打印机的切片器与 INI。未执行实体打印或首板上电测试。
+`
 }

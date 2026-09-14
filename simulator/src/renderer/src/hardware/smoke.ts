@@ -1,30 +1,5 @@
-/**
- * 硬件设计链路冒烟探针(PIXELBOX_SMOKE_HW,无 UI 驱动环境)
- *
- * main 侧钩子(main/index.ts)创建临时 hardware 工程后,经 executeJavaScript 调用
- * window.__pbHwSmoke(root),在真实 renderer 里走完整生产链路:
- *   watchWorkspace → loadEnclosureParams(模板 enclosure.json,含 batteryMM)→
- *   evaluateDesign(fs IPC 读 design/*.tsx → blob worker eval →
- *   BoardSpec/ScreenPlacement 提炼)→ buildEnclosure 分件 → HardwareViewer
- *   离屏建场景(含屏幕贴片世界位姿断言:前置显示模组顶面 ≈ 顶盖外表面−0.2,
- *   即屏幕装在壳体最外侧 —— 埋底缺陷的回归防线;并断言 battery 部件存在;
- *   再开关一次「编辑外壳」模式断言手柄数契约:4 参数手柄 + 每开孔 2;
- *   随后断言元件 kind 推断(USB1→'usb'、U1→'module')与模组封装内部爆炸 ——
- *   setExplode(1) 收敛后屏蔽罩沿离板方向抬离基板 > 2mm)→
- *   外壳撤销/重做(600ms 手势分组成两条历史,undo/redo 步进断言 +
- *   最终用 undo 恢复到阶段前快照深等 —— 历史栈自洽)→
- *   exportSTL('assembly') 二进制导出(display/battery 非打印部件已剔除)→
- *   circuit-to-svg 转换(CircuitSvgView 同款 PCB/原理图 SVG)→
- *   真实挂载 <CircuitSvgView> 断言 DOM 出现 <svg>(回归:旧 2D viewer 曾 import 即崩)→
- *   tsx-intellisense(Monaco TS worker 真实补全/诊断链路:注入 tscircuit 类型后
- *   断言 <boa 元素补全、<chip 属性补全、脚手架 board.tsx 全文 0 error ——
- *   board.tsx 相对导入 './esp32-s3-mini',诊断为 0 同时证明 design/ 兄弟文件
- *   跨文件解析(syncDesignSiblingLibs 生产路径)生效)
- * 返回结构化断言数据(ok + 各阶段指标),由 main 侧打印 PASS/FAIL。
- *
- * 本模块常驻安装(main.tsx),但只定义入口函数 —— 重资产(eval worker/three/
- * circuit-to-svg/CircuitSvgView)在被调用时才动态 import,不影响正常启动路径。
- * (React/createRoot 静态引入无妨:renderer 本就随包携带 React)
+/** 硬件链路冒烟：真实脚手架 → Worker 电路求值 → 电气拓扑/制造门禁 →
+ * SCAD 编译 → 3D/STL/SVG → Monaco 跨文件诊断；可制造设计必须导出真实铜层与钻孔。
  */
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -51,24 +26,22 @@ interface HwSmokeResult {
   /** 编辑模式开启时的实际手柄数(定位用) */
   editHandleCount?: number
   /** BoardSpec 元件 kind 推断:含 'usb'(USB1 南侧 Type-C 得到专属金属壳外形) */
-  usbKind?: boolean
-  /**
-   * ESP32 模组封装内部爆炸:BoardSpec 含 kind 'module'(U1,焊盘 ≥40)且
-   * setExplode(1) damp 收敛后屏蔽罩沿离板方向抬离基板 > 2mm(subExplode 链路)
-   */
-  moduleExplode?: boolean
-  /** 爆炸收敛后的屏蔽罩-基板间距 mm(定位用) */
-  moduleExplodeDelta?: number | null
+  gerberExportOk?: boolean
   /** OpenSCAD 外壳:脚手架 enclosure.scad 经 wasm worker 编译出非空 base/lid STL */
   scadOk?: boolean
   /** PB_META 契约:boardTopZ 与参数推导(wall+standoff)一致 */
   scadMetaOk?: boolean
   /** scad 编译耗时 ms(base+lid 两趟预览质量) */
   scadMs?: number
-  /** 真实 ESP32 模组落地:单个 pcb_component 的最大焊盘数(模组 U1 应为 73) */
-  maxComponentPads?: number
-  /** maxComponentPads >= 60(esp32-s3-mini.tsx 真模组封装被评估进电路) */
-  moduleReal?: boolean
+  cancellationOk?: boolean
+  evalMs?: number
+  moduleOk?: boolean
+  topologyOk?: boolean
+  manufacturingReady?: boolean
+  dimensionsOk?: boolean
+  reportExportOk?: boolean
+  validationErrors?: string[]
+  printErrors?: string[]
   baseChildren?: number
   lidChildren?: number
   stlBytes?: number
@@ -123,8 +96,8 @@ async function runTsxIntellisense(root: string): Promise<TsxProbeResult> {
   try {
     await injectTscircuitTypes()
     // 诊断断言对象用脚手架落盘的真实 board.tsx(验收线:模板对 core d.ts 零报错)。
-    // board.tsx 相对导入 './esp32-s3-mini' —— 必须走生产同款兄弟文件注册
-    // (syncDesignSiblingLibs → esp32-s3-mini.tsx 成 extraLib),并用真实路径 uri
+    // board.tsx 相对导入 './official-data' —— 必须走生产同款兄弟文件注册
+    // (syncDesignSiblingLibs → official-data.ts 成 extraLib),并用真实路径 uri
     // 建 model(相对导入按 model uri 解析),0 error 即证明跨文件解析生效
     const boardPath = `${root}/design/board.tsx`
     await syncDesignSiblingLibs(boardPath)
@@ -230,6 +203,17 @@ export function installHardwareSmoke(): void {
         const { evaluateDesign, hardwareStore, resetHardware, compileEnclosureScad } =
           await import('./store')
         resetHardware()
+        const evalStart = Date.now()
+        await evaluateDesign(root)
+        const evalMs = Date.now() - evalStart
+        // 热 Worker 中运行死循环，验证取消确实终止线程；随后再次运行真实工程验证可恢复。
+        const {evalTsxFsMap} = await import('./evalWorker')
+        const abort = new AbortController()
+        const cancelTimer = setTimeout(()=>abort.abort(),300)
+        let cancellationOk = false
+        try { await evalTsxFsMap({'board.tsx':'export default () => { for (;;) {} }'},'board.tsx',abort.signal) }
+        catch(err) { cancellationOk = err instanceof Error && err.message === 'hardware:evalCancelled' }
+        finally {clearTimeout(cancelTimer)}
         await evaluateDesign(root)
         const st = hardwareStore.get()
         if (st.status !== 'ok' || !st.circuitJson || !st.boardSpec) {
@@ -251,10 +235,9 @@ export function installHardwareSmoke(): void {
         const meta = scadSt.scad?.meta ?? null
         const scadMetaOk =
           meta !== null &&
-          meta.boardTopZ === 11.5 &&
-          meta.battery !== null &&
-          Math.abs(meta.battery[0] - 28) < 0.05 &&
-          Math.abs(meta.battery[2] - 5) < 0.05
+          meta.boardTopZ === 11.5 && meta.outerW === 46 && meta.outerD === 46 && meta.lidTopZ === 22.5 &&
+          meta.design?.cornerR === 5.8 && meta.design.screen[0] === 0 && meta.design.screen[1] === 0 &&
+          meta.battery?.[0] === 28 && meta.battery[1] === 28 && meta.battery[2] === 5
         const scadMs = Date.now() - scadT0
         if (!scadOk || !scadSt.scad) {
           return {
@@ -269,6 +252,7 @@ export function installHardwareSmoke(): void {
         // 旧设备档案的参数化渲染路径回归(enclosure.json 退役后 buildEnclosure
         // 仅服务旧档案):内联微雪参数,分件构建与编辑手柄契约不回归
         const LEGACY_PARAMS = {
+          outerSizeMM: { w: 46, d: 46 },
           wallMM: 2,
           clearanceMM: 1,
           baseHeightMM: 15,
@@ -288,26 +272,33 @@ export function installHardwareSmoke(): void {
           ]
         }
 
-        // 真实 ESP32 模组落地验证:模板 U1(design/esp32-s3-mini.tsx 的
-        // ESP32-S3-MINI-1-N8)有 65 引脚 + GND 散热盘共 73 个 smtpad ——
-        // 某个 pcb_component 焊盘数 >= 60 即证明多文件 fsMap 评估把真模组
-        // 封装渲染进了电路(占位 soic16 只有 16 个焊盘,断不会误报)
-        const padCount = new Map<string, number>()
-        for (const el of st.circuitJson) {
-          if (el.type === 'pcb_smtpad' && el.pcb_component_id) {
-            padCount.set(el.pcb_component_id, (padCount.get(el.pcb_component_id) ?? 0) + 1)
-          }
-        }
-        const maxComponentPads = Math.max(0, ...padCount.values())
-        const moduleReal = maxComponentPads >= 60
+        // 核对带 PSRAM 的模组型号与 49 个独立检查焊盘。
+        const u1 = st.circuitJson.find((e) => e.type === 'source_component' && e.name === 'U1')
+        const moduleOk = u1?.type === 'source_component' && u1.manufacturer_part_number === 'ESP32-S3-WROOM-1U-N16R8' &&
+          st.circuitJson.filter((e) => e.type === 'source_port' && e.source_component_id === u1.source_component_id).length === 49
+        const validation = scadSt.validation
+        const topologyOk = Boolean(validation && !validation.errors.some((e) => /拓扑|集合不一致|SHA256|缺少或损坏/.test(e)))
+        const manufacturingReady = Boolean(validation && validation.errors.length === 0 && validation.counts.unroutedConnections === 0)
+        const dimensionsOk = validation?.printErrors.length === 0
+        // 真实导出 IPC + 读回验证，确保检查报告可在工程内独立审阅。
+        const reportText = JSON.stringify(validation, null, 2)
+        const bytes = new TextEncoder().encode(reportText)
+        let reportBinary = ''
+        for (const byte of bytes) reportBinary += String.fromCharCode(byte)
+        const reportResult = await window.api.hardwareExport({ root, kind: 'validation', files: [{ name: 'report.json', dataB64: btoa(reportBinary) }] })
+        const reportExportOk = reportResult.files.includes('report.json') &&
+          JSON.parse(await window.api.readFile(`${root}/export/validation/report.json`)).counts.pins === 111
+
 
         const { buildEnclosure } = await import('./three/enclosureBuilder')
         const parts = buildEnclosure(st.boardSpec, LEGACY_PARAMS, st.screen)
 
         const { HardwareViewer } = await import('./three/HardwareViewer')
         const canvas = document.createElement('canvas')
-        canvas.width = 320
-        canvas.height = 240
+        canvas.width = 900
+        canvas.height = 700
+        canvas.style.cssText = 'position:fixed;inset:0;width:900px;height:700px;z-index:99999;background:#202326'
+        document.body.appendChild(canvas)
         const viewer = new HardwareViewer(canvas, { interactive: false })
         let stlBytes = 0
         let screenWorldOk = false
@@ -315,9 +306,7 @@ export function installHardwareSmoke(): void {
         let batteryPart = false
         let editHandles = false
         let editHandleCount = 0
-        let usbKind = false
-        let moduleExplode = false
-        let moduleExplodeDelta: number | null = null
+        let gerberExportOk = false
         try {
           // scad 几何为主路径:base/lid 来自 wasm 编译 STL,battery/display 由
           // PB_META 契约在 TS 侧补齐(电池占位不再依赖任何参数化字段)
@@ -366,26 +355,27 @@ export function installHardwareSmoke(): void {
             scad: scadPayload,
             screen: st.screen ?? undefined
           })
-          // 元件 kind 推断 + 模组封装内部爆炸(boardBuilder 形状工厂):
-          // BoardSpec 应含 kind 'usb'(USB1 南侧 Type-C)与 'module'(U1 焊盘 ≥40);
-          // setExplode(1) 后轮询等 damp 收敛(λ=7 约 1.2s,上限 5s),断言
-          // 屏蔽罩沿离板方向抬离基板 > 2mm(合拢固有差 < 1,可判别)
-          usbKind = st.boardSpec.components.some((c) => c.kind === 'usb')
-          const hasModuleKind = st.boardSpec.components.some((c) => c.kind === 'module')
-          viewer.setExplode(1)
-          const explodeDeadline = Date.now() + 5000
-          for (;;) {
-            moduleExplodeDelta = viewer.getModuleExplodeDelta()
-            if (moduleExplodeDelta !== null && moduleExplodeDelta > 2) break
-            if (Date.now() > explodeDeadline) break
-            await sleep(100)
+          // 真实 Gerber + 金属/非金属钻孔导出，并读回确认铜层和孔径。
+          const g = await import('circuit-json-to-gerber')
+          const cj = st.circuitJson as unknown as Parameters<typeof g.convertSoupToGerberCommands>[0]
+          const layers = g.stringifyGerberCommandLayers(g.convertSoupToGerberCommands(cj))
+          const files = Object.entries(layers).map(([name, content]) => ({name:`${name}.gbr`,dataB64:btoa(content)}))
+          for (const plated of [true,false]) files.push({name:plated?'plated.drl':'unplated.drl', dataB64:btoa(g.stringifyExcellonDrill(g.convertSoupToExcellonDrillCommands({circuitJson:cj,is_plated:plated})))})
+          if (manufacturingReady) {
+            const out = await window.api.hardwareExport({root,kind:'gerber',files})
+            const drilled = await window.api.readFile(`${out.dir}/plated.drl`)
+            const mounting = await window.api.readFile(`${out.dir}/unplated.drl`)
+            gerberExportOk = out.files.length >= 8 && drilled.includes('C0.3') && drilled.includes('C0.65') && mounting.includes('C2.4')
           }
-          moduleExplode = hasModuleKind && moduleExplodeDelta !== null && moduleExplodeDelta > 2
+          viewer.setExplode(1)
           viewer.setExplode(0)
           // exportSTL 在克隆体上把部件与 subExplode 子网格全部归位,爆炸态导出安全
           stlBytes = viewer.exportSTL('assembly').byteLength
+          await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))
+          await window.api.hardwareExport({root,kind:'validation',files:[{name:'assembly.png',dataB64:canvas.toDataURL('image/png').split(',')[1]}]})
         } finally {
           viewer.dispose()
+          canvas.remove()
         }
 
         // 外壳撤销/重做链路:两次相隔 >600ms(跨手势分组窗口)的编辑 = 两条历史;
@@ -419,34 +409,22 @@ export function installHardwareSmoke(): void {
         const tsx = await runTsxIntellisense(root)
 
         return {
-          // 断言:元素量级正常(真模组模板实测 1320)/ 板尺寸为模板 40×40(微雪
-          // ESP32-S3-Touch-AMOLED-2.16 复刻板)/ 元件 ≥16(实测 20)/
-          // 真实 ESP32 模组落地(单元件焊盘数 ≥60,U1 实测 73)/
-          // 屏幕占位被识别(约 39×39mm、板中心 (0,0))
-          // 且世界位姿符合前置契约(世界中心 (0, 顶盖外表面−0.2±微抬, 0),y>15)/
-          // battery 电池占位部件存在(模板 batteryMM)/
-          // 编辑外壳手柄数契约(4 参数手柄 + 每开孔 2,关闭归零)/
-          // 元件 kind 推断(USB1→usb + U1→module)与模组封装内部爆炸
-          // (爆炸收敛后屏蔽罩离基板 > 2mm)/
-          // 外壳撤销/重做栈自洽(手势分组两条历史 + undo 恢复深等快照)/
-          // 底盒顶盖分件非空 / 二进制 STL 超过空文件头(80B header + 4B count)/
-          // PCB+原理图 SVG 转换产物非空 / CircuitSvgView 真实挂载出 <svg> /
-          // tsx 智能提示三断言(元素补全 + 属性补全 + 模板 0 error;模板含
-          // './esp32-s3-mini' 相对导入,0 error 同时锁住跨文件解析不回归)
+          // 默认小板必须通过电气与装配检查；软件检查不等于首板通电和实物试装。
           ok:
             st.circuitJson.length > 50 &&
-            Math.round(st.boardSpec.widthMM) === 40 &&
-            Math.round(st.boardSpec.heightMM) === 40 &&
-            st.boardSpec.components.length >= 16 &&
-            moduleReal &&
+            Math.abs(st.boardSpec.widthMM - 41) < .01 &&
+            Math.abs(st.boardSpec.heightMM - 41) < .01 &&
+            validation?.counts.components === 17 &&
+            validation.counts.pins === 111 &&
+            validation.counts.nets === 34 &&
+            cancellationOk && moduleOk && topologyOk && manufacturingReady && dimensionsOk && reportExportOk &&
             st.screen !== null &&
             Math.round(st.screen.w) === 39 &&
             Math.round(st.screen.h) === 39 &&
             screenWorldOk &&
             batteryPart &&
             editHandles &&
-            usbKind &&
-            moduleExplode &&
+            gerberExportOk &&
 
             scadOk &&
             scadMetaOk &&
@@ -463,17 +441,17 @@ export function installHardwareSmoke(): void {
           boardW: st.boardSpec.widthMM,
           boardH: st.boardSpec.heightMM,
           components: st.boardSpec.components.length,
-          maxComponentPads,
-          moduleReal,
+          cancellationOk, evalMs, moduleOk, topologyOk, manufacturingReady, dimensionsOk, reportExportOk,
+          validationErrors: validation?.errors.slice(-6),
+          printErrors: validation?.printErrors,
           screenFound: st.screen !== null,
           screenWorldOk,
           screenWorld,
           batteryPart,
           editHandles,
           editHandleCount,
-          usbKind,
-          moduleExplode,
-          moduleExplodeDelta,
+          gerberExportOk,
+
           scadOk,
           scadMetaOk,
           scadMs,

@@ -30,6 +30,9 @@ import {
   TxtIcon,
   YamlIcon
 } from './icons'
+import { isImageFile } from '../../editor/imageFile'
+import { isModelFile } from '../../editor/modelFile'
+import { LuBox } from 'react-icons/lu'
 
 interface FolderIconProps {
   /** 是否展开 */
@@ -49,12 +52,10 @@ export function FolderIcon({ open, root, size, className }: FolderIconProps): Re
   )
 }
 
-/** 图片扩展名(紫色山形图) */
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'])
-
 /** 按扩展名映射(小写,不含点) */
 function byExt(ext: string, size?: number): React.JSX.Element | null {
-  if (IMAGE_EXTS.has(ext)) return <ImageIcon size={size} />
+  if (isImageFile(`file.${ext}`)) return <ImageIcon size={size} />
+  if (isModelFile(`file.${ext}`)) return <LuBox size={size ?? 16} className="shrink-0 text-cyan-400" />
   switch (ext) {
     case 'ts':
     case 'mts':

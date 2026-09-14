@@ -19,13 +19,16 @@ import {
   LuCircleAlert,
   LuDownload,
   LuExpand,
+  LuHammer,
   LuLoaderCircle,
   LuMonitorSmartphone,
   LuPlay,
   LuRotateCcw
 } from 'react-icons/lu'
 import type { EnclosureScadMeta, HardwareExportFile } from '../../../shared/ipc-types'
+import { HARDWARE_EVAL_TIMEOUT_MS } from '../../../shared/hardwareEvaluation'
 import { showToast } from '../components/toast'
+import { openHardwareBuildOutput } from './buildOutput'
 import { monaco } from '../editor/monacoSetup'
 import { getAppSettings, subscribeSettings } from '../settings/store'
 import { MenuButton, type DropdownItem } from '../shell/Dropdown'
@@ -36,6 +39,8 @@ import {
   compileScadForExport,
   ensureHardwareWorkspace,
   evaluateDesign,
+  cancelEvaluation,
+  refreshValidation,
   hardwareStore,
   migrateEnclosureToScad,
   useHardware,
@@ -316,6 +321,15 @@ export function HardwareDesignPanel(props: {
 }): React.JSX.Element {
   const { t } = useTranslation()
   const hw = useHardware()
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  useEffect(() => {
+    const update = (): void => setElapsedSeconds(hw.evalStartedAt ? Math.floor((Date.now() - hw.evalStartedAt) / 1000) : 0)
+    update()
+    if (!hw.evalStartedAt) return
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [hw.evalStartedAt])
+  const evaluatingText = `${t(`hw.evalPhases.${hw.evalPhase ?? 'loading'}`)} · ${elapsedSeconds}s / ${HARDWARE_EVAL_TIMEOUT_MS / 1000}s`
   // 默认打开 3D 可视(PCB 验证的第一视角;2D PCB/原理图按需切换)
   const [tab, setTab] = useState<HwTab>('view3d')
   const [addOpen, setAddOpen] = useState(false)
@@ -366,7 +380,7 @@ export function HardwareDesignPanel(props: {
         }, 500)
         return
       }
-      if (!/\.(tsx|ts)$/i.test(p)) return
+      if (!/\.(tsx|ts)$/i.test(p) && !/\/(reference|official-netlist)\.json$/.test(p)) return
       window.clearTimeout(evalTimer)
       evalTimer = window.setTimeout(() => {
         void evaluateDesign(root)
@@ -429,7 +443,8 @@ export function HardwareDesignPanel(props: {
 
   /** 哨兵错误码 → i18n(其余原样展示) */
   const errorText = (msg: string): string => {
-    if (msg === 'hardware:evalTimeout') return t('hw.errors.evalTimeout')
+    if (msg === 'hardware:evalTimeout') return t('hw.errors.evalTimeout', { seconds: HARDWARE_EVAL_TIMEOUT_MS / 1000 })
+    if (msg === 'hardware:evalCancelled') return t('hw.errors.evalCancelled')
     if (msg === 'hardware:noBoardEntry') return t('hw.errors.noBoardEntry')
     if (msg === 'hw:noBoard') return t('hw.errors.noBoard') // boardBuilder:电路无 <board> 或板尺寸无效
     return msg
@@ -437,13 +452,40 @@ export function HardwareDesignPanel(props: {
 
   // ---- 导出 ----
 
-  const exportStlParts = async (parts: HardwarePartId[]): Promise<void> => {
+  const writeReport = async (): Promise<void> => {
+    if (!root) return
+    const report = refreshValidation()
+    if (!report) throw new Error('请先运行设计')
+    await window.api.hardwareExport({ root, kind: 'validation', files: [{ name: 'report.json', dataB64: textToB64(JSON.stringify(report, null, 2)) }] })
+  }
+  const prepareExport = async (kind: 'print' | 'gerber'): Promise<void> => {
+    if (!root) throw new Error('工作区未打开')
+    const state = hardwareStore.get()
+    if (state.status === 'evaluating' || state.scadStatus === 'compiling') throw new Error('设计正在编译，请完成后再导出')
+    // PCB 保存后评估；外壳与预览一样优先使用当前编辑缓冲。
+    for (const model of monaco.editor.getModels().filter((m) => m.uri.fsPath.startsWith(`${root}/design/`) && /\.(tsx?|json)$/.test(m.uri.fsPath))) {
+      if (model.getValue() !== await window.api.readFile(model.uri.fsPath)) throw new Error('请先保存 PCB 和基准文件再导出')
+    }
+    await evaluateDesign(root)
+    if (hardwareStore.get().status !== 'ok') throw new Error(hardwareStore.get().error ?? 'PCB 评估失败')
+    if (kind === 'print') {
+      const live = monaco.editor.getModel(monaco.Uri.file(`${root}/design/enclosure.scad`))?.getValue()
+      await compileEnclosureScad(root, live)
+      if (hardwareStore.get().scadStatus !== 'ok') throw new Error(hardwareStore.get().scadError ?? '外壳编译失败')
+    }
+    const report = refreshValidation()
+    await writeReport()
+    const issues = kind === 'print' ? report?.printErrors : report?.errors
+    if (issues?.length) throw new Error(`导出检查未通过：${issues.slice(0, 3).join('；')}。详见 export/validation/report.json`)
+  }
+
+  const exportStlParts = async (parts: HardwarePartId[]): Promise<boolean> => {
     const s = hardwareStore.get()
     if (!root || !s.boardSpec) {
       showToast(t('hw.export.needEval'), 'warn')
-      return
+      return false
     }
-    if (exportBusyRef.current) return
+    if (exportBusyRef.current) return false
     exportBusyRef.current = true
     // 临时离屏 viewer:导出不依赖 3D tab 是否打开
     const canvas = document.createElement('canvas')
@@ -451,6 +493,9 @@ export function HardwareDesignPanel(props: {
     canvas.height = 64
     let viewer: HardwareViewer | null = null
     try {
+      await prepareExport('print')
+      const s = hardwareStore.get()
+      if (!s.boardSpec) throw new Error('PCB 规格缺失')
       const v = new HardwareViewer(canvas, { interactive: false, background: null })
       viewer = v
       v.setHardware({
@@ -478,8 +523,10 @@ export function HardwareDesignPanel(props: {
       }
       const res = await window.api.hardwareExport({ root, kind: 'print', files })
       showToast(t('hw.export.stlDone', { dir: res.dir }), 'success')
+      return true
     } catch (err) {
       showToast(t('hw.export.failed', { msg: firstLine(err) }), 'error')
+      return false
     } finally {
       viewer?.dispose()
       exportBusyRef.current = false
@@ -495,6 +542,8 @@ export function HardwareDesignPanel(props: {
     if (exportBusyRef.current) return
     exportBusyRef.current = true
     try {
+      await prepareExport('gerber')
+      const s = hardwareStore.get()
       const g = await import('circuit-json-to-gerber')
       const cj = s.circuitJson as unknown as Parameters<typeof g.convertSoupToGerberCommands>[0]
       const layers = g.stringifyGerberCommandLayers(g.convertSoupToGerberCommands(cj))
@@ -529,11 +578,10 @@ export function HardwareDesignPanel(props: {
     }
   }
 
-  const onExportStlPart = (part: StlPart): void => {
-    void exportStlParts(part === 'all' ? ['base', 'lid', 'board'] : [part])
-  }
+  const onExportStlPart = (part: StlPart): Promise<boolean> => exportStlParts(part === 'all' ? ['base', 'lid', 'board'] : [part])
 
   const exportItems: DropdownItem[] = [
+    { key: 'validation', label: '导出设计校验报告', onSelect: () => void writeReport().catch((e) => showToast(firstLine(e), 'error')) },
     { key: 'stl-all', label: `STL · ${t('hw.parts.all')}`, onSelect: () => onExportStlPart('all') },
     { key: 'stl-base', label: `STL · ${t('hw.parts.base')}`, onSelect: () => onExportStlPart('base') },
     { key: 'stl-lid', label: `STL · ${t('hw.parts.lid')}`, onSelect: () => onExportStlPart('lid') },
@@ -574,7 +622,7 @@ export function HardwareDesignPanel(props: {
       case 'print':
         return (
           <div className="h-full overflow-y-auto p-3">
-            <PrintDialog onExportStl={onExportStlPart} />
+            <PrintDialog root={root} onExportStl={onExportStlPart} />
           </div>
         )
       case 'pcb':
@@ -593,7 +641,7 @@ export function HardwareDesignPanel(props: {
         if (!hw.circuitJson || !hw3d) {
           return (
             <CenterHint
-              text={hw.status === 'evaluating' ? t('hw.toolbar.evaluating') : t('hw.empty.idle')}
+              text={hw.status === 'evaluating' ? evaluatingText : t('hw.empty.idle')}
               spinner={hw.status === 'evaluating'}
             />
           )
@@ -653,10 +701,11 @@ export function HardwareDesignPanel(props: {
         <div className="flex h-8 min-w-0 items-center gap-0.5 px-2">
           <HwToolButton
             onClick={() => {
-              if (root) void evaluateDesign(root)
+              if (hw.status === 'evaluating') cancelEvaluation()
+              else if (root) void evaluateDesign(root)
             }}
-            disabled={!root || hw.status === 'evaluating'}
-            title={`${t('hw.toolbar.run')}\n${t('hw.toolbar.runHint')}`}
+            disabled={!root}
+            title={hw.status === 'evaluating' ? t('hw.toolbar.cancelEval') : `${t('hw.toolbar.run')}\n${t('hw.toolbar.runHint')}`}
           >
             {hw.status === 'evaluating' ? (
               <LuLoaderCircle className="animate-spin text-accent" />
@@ -678,6 +727,9 @@ export function HardwareDesignPanel(props: {
             </>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <HwToolButton onClick={openHardwareBuildOutput} title={t('hw.build.viewOutput')}>
+              <LuHammer />
+            </HwToolButton>
             <HwToolButton
               onClick={() => setAddOpen(true)}
               disabled={!ready}
@@ -700,10 +752,11 @@ export function HardwareDesignPanel(props: {
 
       {/* 状态行:评估中 / 评估失败(外壳、打印 tab 内容区不展示错误,在此常驻);
           首评时内容区已有居中 spinner 提示,状态行只在已有旧结果或表单类 tab 下出现 */}
-      {hw.status === 'evaluating' && (hw.circuitJson !== null || tab === 'enclosure' || tab === 'print') && (
+      {hw.status === 'evaluating' && (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-ink-700 px-2 py-1 text-[12px] text-jb-muted">
           <LuLoaderCircle className="shrink-0 animate-spin text-accent" />
-          <span className="line-clamp-1 min-w-0 break-all">{t('hw.toolbar.evaluating')}</span>
+          <span className="line-clamp-1 min-w-0 break-all">{evaluatingText}</span>
+          <button onClick={cancelEvaluation} className="shrink-0 underline">{t('hw.toolbar.cancelEval')}</button>
         </div>
       )}
       {hw.status === 'error' && hw.error && (tab === 'enclosure' || tab === 'print') && (

@@ -17,6 +17,7 @@ import { registerDeviceProfilesIpc, ensureDeviceProfilesDir } from './deviceProf
 import { registerToolchainIpc, disposeToolchain } from './toolchain'
 import { registerClangdIpc, disposeClangd } from './clangd'
 import { registerProjectScaffoldIpc } from './projectScaffold'
+import { registerSlicerIpc } from './slicer'
 import { registerPrinterIpc, disposePrinter } from './printer'
 import { registerHardwareExportIpc } from './hardwareExport'
 import { registerTerminalIpc, disposeTerminal } from './pty'
@@ -134,6 +135,7 @@ app.whenReady().then(async () => {
   registerToolchainIpc()
   registerClangdIpc() // 固件工程 C/C++ LSP(clangd:start/stop/request/notify)
   registerProjectScaffoldIpc()
+  registerSlicerIpc()
   registerPrinterIpc() // 3D 打印机联机(printer:test/pick-gcode/upload/job)
   registerHardwareExportIpc() // 硬件导出(hardware:export → <root>/export/<kind>/)
   registerTerminalIpc()

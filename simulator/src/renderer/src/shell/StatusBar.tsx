@@ -12,6 +12,7 @@ import { chipLabel, selectedDeviceName, useDeviceProfiles, useShellDevices } fro
 import { MenuButton, type DropdownItem } from './Dropdown'
 import { InputModal } from '../components/Modal'
 import { showToast } from '../components/toast'
+import { isPreviewFile } from '../editor/previewFile'
 
 interface Props {
   workspaceRoot: string | null
@@ -132,6 +133,7 @@ export function StatusBar(props: Props): React.JSX.Element {
   const dev = useShellDevices()
   useDeviceProfiles() // 档案变化(重命名/删除)时刷新右侧设备名
   const crumbs = breadcrumb(props.workspaceRoot, props.activePath)
+  const isPreview = props.activePath !== null && isPreviewFile(props.activePath)
 
   return (
     <div className="flex h-[26px] shrink-0 items-center gap-3 border-t border-ink-700 bg-ink-850 px-3 text-xs text-jb-muted">
@@ -164,13 +166,13 @@ export function StatusBar(props: Props): React.JSX.Element {
 
       {/* 右:行列 / 编码 / 缩进 / 分支 / 设备 */}
       <div className="ml-auto flex shrink-0 items-center gap-3">
-        {props.cursor && (
+        {props.cursor && !isPreview && (
           <span>
             {props.cursor.line}:{props.cursor.column}
           </span>
         )}
-        <span>UTF-8</span>
-        <span>{t('statusbar.spaces', { count: 2 })}</span>
+        {!isPreview && <span>UTF-8</span>}
+        {!isPreview && <span>{t('statusbar.spaces', { count: 2 })}</span>}
         {props.gitBranch && props.workspaceRoot && (
           <GitBranchMenu root={props.workspaceRoot} branch={props.gitBranch} />
         )}

@@ -14,6 +14,8 @@
     "build": "pnpm run typecheck && rsbuild build",
     "start": "electron .",
     "selfcheck": "node scripts/selfcheck.mjs",
+    "check:images": "node scripts/image-preview-check.cjs",
+    "check:models": "node scripts/model-preview-check.cjs",
     "check:push": "node scripts/devd-push-check.mjs",
     "check:imu": "node scripts/imu-pose-check.mjs",
     "check:speech": "node scripts/speech-check.mjs",
@@ -29,7 +31,10 @@
     "dist:mac": "pnpm run build && electron-builder --mac",
     "dist:win": "pnpm run build && electron-builder --win",
     "dist:linux": "pnpm run build && electron-builder --linux",
-    "check:hardware": "node scripts/hardware-eval-check.mjs"
+    "check:hardware": "node scripts/hardware-eval-check.mjs",
+    "check:hardware:output": "node scripts/hardware-build-output-check.cjs",
+    "check:hardware:logic": "node scripts/hardware-deadline-check.mjs && node scripts/hardware-connectivity-check.mjs && node scripts/hardware-assembly-check.mjs",
+    "check:hardware:reference": "node scripts/hardware-reference-check.mjs"
   },
   "dependencies": {
     "basic-ftp": "^6.2.0",

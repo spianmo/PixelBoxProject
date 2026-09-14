@@ -324,6 +324,7 @@ function NotificationList(): React.JSX.Element {
               <span className="text-[11px] text-ink-500">{fmt(n.ts)}</span>
             </div>
             <div className="selectable mt-0.5 break-all pl-3.5 text-xs text-jb-text">{n.text}</div>
+            {n.action && <button className="ml-3.5 mt-1 text-xs text-accent hover:underline" onClick={n.action.onClick}>{n.action.label}</button>}
           </div>
         ))
       )}

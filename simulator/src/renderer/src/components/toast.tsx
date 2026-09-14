@@ -21,6 +21,8 @@ export interface ToastOptions {
   durationMs?: number
   /** 是否记入通知历史(缺省 true);「复制路径」这类高频轻操作传 false,避免刷掉历史里的真事件 */
   history?: boolean
+  /** 通知的后续操作，例如打开完整构建输出。 */
+  action?: { label: string; onClick: () => void }
 }
 
 interface ToastItem {
@@ -29,6 +31,7 @@ interface ToastItem {
   text: string
   title?: string
   durationMs: number
+  action?: ToastOptions['action']
 }
 
 type Listener = (items: ToastItem[]) => void
@@ -55,6 +58,7 @@ export interface NotificationItem {
   kind: ToastKind
   text: string
   ts: number
+  action?: ToastOptions['action']
 }
 
 export interface NotificationState {
@@ -89,13 +93,13 @@ const KIND_DURATION: Record<ToastKind, number> = {
 /** 弹出一条 toast(自动消失按级别,见 KIND_DURATION);同时记入通知历史 */
 export function showToast(text: string, kind: ToastKind = 'info', opts?: ToastOptions): void {
   const id = nextId++
-  items = [...items, { id, kind, text, title: opts?.title, durationMs: opts?.durationMs ?? KIND_DURATION[kind] }]
+  items = [...items, { id, kind, text, title: opts?.title, action: opts?.action, durationMs: opts?.durationMs ?? KIND_DURATION[kind] }]
   emit()
 
   if (opts?.history === false) return
   const ns = notificationStore.get()
   notificationStore.set({
-    items: [{ id, kind, text, ts: Date.now() }, ...ns.items].slice(0, NOTIFY_MAX),
+    items: [{ id, kind, text, action: opts?.action, ts: Date.now() }, ...ns.items].slice(0, NOTIFY_MAX),
     unread: ns.unread + 1
   })
 }
@@ -152,6 +156,13 @@ function ToastCard({ item }: { item: ToastItem }): React.JSX.Element {
           >
             {item.text}
           </div>
+          {item.action && (
+            <button className="mt-1 text-[11px] text-accent hover:underline" onClick={(e) => {
+              e.stopPropagation()
+              item.action?.onClick()
+              dismissToast(item.id)
+            }}>{item.action.label}</button>
+          )}
         </div>
         <button
           title={t('notifications.close')}

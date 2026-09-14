@@ -209,6 +209,8 @@ const api = {
   buildWatchStart: (root: string): Promise<void> => ipcRenderer.invoke('build:watch-start', root),
   buildWatchStop: (): Promise<void> => ipcRenderer.invoke('build:watch-stop'),
   onBuildLog: (cb: (line: BuildLogLine) => void): (() => void) => subscribe('build:log', cb),
+  reportBuildLogs: (lines: Array<Pick<BuildLogLine, 'level' | 'text'>>): Promise<void> =>
+    ipcRenderer.invoke('build:report', lines),
   onBuildDone: (cb: (result: BuildResult) => void): (() => void) => subscribe('build:done', cb),
 
   // ---- IDE 设置(SettingsService,单一 JSON 落盘 + 全窗口广播) ----
@@ -358,7 +360,7 @@ const api = {
   /** 导出文件到 <root>/export/<kind>/(base64 内容;完成后文件管理器定位目录) */
   hardwareExport: (opts: {
     root: string
-    kind: 'print' | 'gerber'
+    kind: 'print' | 'gerber' | 'validation'
     files: HardwareExportFile[]
   }): Promise<HardwareExportResult> => ipcRenderer.invoke('hardware:export', opts),
 
@@ -366,6 +368,7 @@ const api = {
   /** 连接测试,返回版本/状态描述(失败 throw printer:<code>) */
   printerTest: (): Promise<string> => ipcRenderer.invoke('printer:test'),
   /** 选择 G-code 文件(.gcode/.gco/.g;取消返回 null) */
+  printerSlice: (opts: { root: string; part: 'base' | 'lid' }): Promise<string | null> => ipcRenderer.invoke('printer:slice', opts),
   printerPickGcode: (): Promise<string | null> => ipcRenderer.invoke('printer:pick-gcode'),
   /** 上传 G-code(startPrint 请求立即开打;printStarted 以服务器回执为准) */
   printerUpload: (opts: { path: string; startPrint: boolean }): Promise<PrinterUploadResult> =>

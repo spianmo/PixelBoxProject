@@ -182,8 +182,8 @@ export function buildBatteryPart(spec: BoardSpec, params: EnclosureParams): THRE
   const bat = params.batteryMM
   if (!bat || bat.w <= 0 || bat.h <= 0 || bat.t <= 0) return null
   const wall = Math.max(params.wallMM, 0.8)
-  const innerW = spec.widthMM + 2 * params.clearanceMM
-  const innerD = spec.heightMM + 2 * params.clearanceMM
+  const innerW = params.outerSizeMM ? params.outerSizeMM.w - 2 * wall : spec.widthMM + 2 * params.clearanceMM
+  const innerD = params.outerSizeMM ? params.outerSizeMM.d - 2 * wall : spec.heightMM + 2 * params.clearanceMM
   const boardTopY = wall + params.standoffHeightMM
   const outerR = Math.max(params.standoffOuterR, params.standoffInnerR + 0.6)
   const sx = Math.max(spec.widthMM / 2 - outerR, outerR)
@@ -215,8 +215,8 @@ export function buildEnclosure(
   screen: ScreenPlacement | null
 ): EnclosureParts {
   const wall = Math.max(params.wallMM, 0.8)
-  const innerW = spec.widthMM + 2 * params.clearanceMM
-  const innerD = spec.heightMM + 2 * params.clearanceMM
+  const innerW = params.outerSizeMM ? params.outerSizeMM.w - 2 * wall : spec.widthMM + 2 * params.clearanceMM
+  const innerD = params.outerSizeMM ? params.outerSizeMM.d - 2 * wall : spec.heightMM + 2 * params.clearanceMM
   const outerW = innerW + 2 * wall
   const outerD = innerD + 2 * wall
   const baseTopY = wall + params.baseHeightMM // 底盒壁顶
@@ -279,12 +279,15 @@ export function buildEnclosure(
   const inset = outerR // 柱边缘与板边对齐
   const sx = Math.max(spec.widthMM / 2 - inset, outerR)
   const sy = Math.max(spec.heightMM / 2 - inset, outerR)
-  for (const [px, py] of [
-    [sx, sy],
-    [-sx, sy],
-    [sx, -sy],
-    [-sx, -sy]
-  ] as const) {
+  const centers = params.standoffCenters?.length
+    ? params.standoffCenters
+    : [
+        { x: sx, y: sy },
+        { x: -sx, y: sy },
+        { x: sx, y: -sy },
+        { x: -sx, y: -sy }
+      ]
+  for (const { x: px, y: py } of centers) {
     const ring = new THREE.Shape()
     ring.absarc(px, py, outerR, 0, Math.PI * 2, false)
     const hole = new THREE.Path()
@@ -304,14 +307,21 @@ export function buildEnclosure(
       roundedRectHole(
         screen.x,
         screen.y, // plan 坐标即 circuit 坐标(extrudePlan 内部做 y→-z 映射)
-        screen.w + 2 * SCREEN_WINDOW_MARGIN_MM,
-        screen.h + 2 * SCREEN_WINDOW_MARGIN_MM,
-        SCREEN_WINDOW_CORNER_R_MM
+        screen.w + 2 * (params.screenMarginMM ?? SCREEN_WINDOW_MARGIN_MM),
+        screen.h + 2 * (params.screenMarginMM ?? SCREEN_WINDOW_MARGIN_MM),
+        params.screenCornerRMM ?? SCREEN_WINDOW_CORNER_R_MM
       )
     )
   }
   const lidPlateBottomY = baseTopY + params.lidHeightMM
-  lid.add(extrudePlan(plate, wall, lidPlateBottomY, lidMat))
+  const seat = params.screenSeat
+  const seatDepth = seat && params.screenWindow && screen ? Math.min(Math.max(seat.depth, 0), wall - 0.1) : 0
+  lid.add(extrudePlan(plate, wall - seatDepth, lidPlateBottomY, lidMat))
+  if (seat && screen && seatDepth > 0) {
+    const upper = roundedRectShape(outerW, outerD, cornerR)
+    upper.holes.push(roundedRectHole(screen.x, screen.y, seat.w + 2 * seat.clearance, seat.h + 2 * seat.clearance, seat.cornerR))
+    lid.add(extrudePlan(upper, seatDepth, lidPlateBottomY + wall - seatDepth, lidMat))
+  }
 
   // 外裙边:与盒壁同截面的环,盖住顶盖内腔侧面,y∈[baseTopY, lidPlateBottomY]
   if (params.lidHeightMM > 0.05) {

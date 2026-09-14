@@ -10,11 +10,12 @@
         'unsafe-inline' → 沙箱 iframe srcdoc 内联运行时脚本
         blob:           → 用户 bundle 以 Blob 模块动态 import;AudioWorklet 模块
         'unsafe-eval'   → Blob import 不可用时的 eval 回退
+      connect-src blob:/data: 供模型查看器读取 IPC 转换及内嵌的二进制/贴图资源。
       本应用为本地开发工具,不加载远程页面,风险可控
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ws: wss: http: https:; frame-src 'self' blob: data:; media-src 'self' blob: data:"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' blob: data: ws: wss: http: https:; frame-src 'self' blob: data:; media-src 'self' blob: data:"
     />
   </head>
   <body class="bg-ink-900 text-gray-200 antialiased overflow-hidden">

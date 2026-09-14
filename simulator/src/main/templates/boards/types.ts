@@ -1,6 +1,6 @@
 /**
  * 硬件工程按芯片选板的模板契约 —— 每颗 ChipId 对应一块微雪(Waveshare)
- * 参考板卡的 1:1 复刻模板(tscircuit board + 真实模组封装 + 参数化外壳)。
+ * 参考板卡的可编辑模板；对齐程度由各模板 reference 声明。
  *
  * 实现约定(与 boards/esp32s3.ts 的微雪 ESP32-S3-Touch-AMOLED-2.16 模板一致):
  * - 离线可评估:不引 @tsci/*(CDN 运行时解析)、模组封装不带 cadModel CDN 段
@@ -9,6 +9,7 @@
  * - 名字以 SCREEN/DISPLAY/LCD/AMOLED/OLED 开头的元件被识别为屏幕
  *   (3D 视图贴模拟器画面;外壳顶盖按 screenRect 开窗)
  */
+import type { HardwareReference } from '../../../shared/hardwareReference'
 import type { ChipId } from '../../../shared/chipCapabilities'
 import type { EnclosureParams } from '../../../shared/ipc-types'
 
@@ -21,7 +22,7 @@ export interface HardwareBoardTemplate {
   docsUrl: string
   /** 官方原理图 PDF */
   schematicUrl: string
-  /** 主控模组真实封装文件(落盘到 design/<fileName>;content 为 ?raw 内嵌全文) */
+  /** 电路导入模块（封装或数据）(落盘到 design/<fileName>;content 为 ?raw 内嵌全文) */
   moduleFile: { fileName: string; content: string }
   /** design/board.tsx 全文生成器(name = 项目名,仅用于头注释) */
   boardTsx: (name: string) => string
@@ -33,6 +34,10 @@ export interface HardwareBoardTemplate {
   screenRect: { x: number; y: number; w: number; h: number } | null
   /** 实机屏幕分辨率(README「添加到模拟器」建议值;无屏为 null) */
   screenResolution: { w: number; h: number } | null
+  /** 官方基准尺寸/接口方位，落盘为 design/reference.json 供校验和制造前检查使用 */
+  reference?: HardwareReference
+  /** 随模板落盘的独立对照资料 */
+  extraFiles?: Array<{ fileName: string; content: string }>
   /** README.md 全文生成器 */
   readme: (name: string, chip: string) => string
 }

@@ -357,6 +357,34 @@
     "notSupported": "No structure for this file type",
     "empty": "No symbols to show"
   },
+  "modelPreview": {
+    "title": "3D model preview",
+    "loading": "Loading model…",
+    "reset": "Reset view",
+    "wireframe": "Wireframe",
+    "reload": "Reload model",
+    "counts": "{{triangles}} triangles · {{vertices}} vertices",
+    "size": "Size {{size}} (file coordinate units)",
+    "controls": "Left drag: rotate · Right drag: pan · Scroll: zoom",
+    "readFailed": "Unable to read the model. Check that the file exists and is readable.",
+    "invalid": "Unable to preview the model. The file is damaged or contains no valid geometry.",
+    "resourceFailed": "Unable to load model resources. Keep the MTL, BIN and texture files at their referenced local relative paths.",
+    "compressed": "This model uses unsupported compression. Export an uncompressed glTF / GLB to preview it.",
+    "graphicsFailed": "3D rendering is unavailable. Retry or restart the IDE.",
+    "timeout": "Model loading exceeded 20 seconds. Check the model size and associated resources, then retry."
+  },
+  "imagePreview": {
+    "title": "Image preview",
+    "loading": "Loading image…",
+    "readFailed": "Unable to read the image. Check that the file exists and is readable.",
+    "decodeFailed": "Unable to preview the image. The file is damaged or its format is unsupported.",
+    "retry": "Retry",
+    "reload": "Reload image",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit to window",
+    "actualSize": "Actual size"
+  },
   "markdown": {
     "modeEdit": "Editor",
     "modeSplit": "Split",
@@ -498,6 +526,21 @@
     "failed": "Push failed: {{message}}"
   },
   "hw": {
+    "build": {
+      "title": "Hardware design checks",
+      "viewOutput": "View build output",
+      "outputFailed": "Could not write build output",
+      "pcb": "PCB evaluation",
+      "enclosure": "Enclosure compilation",
+      "manufacturing": "Circuit and fabrication",
+      "assembly": "Dimensions and assembly",
+      "note": "Note / unverified",
+      "started": "Starting hardware design checks",
+      "evaluated": "PCB evaluated in {{seconds}} s",
+      "summary": "Design checks: {{components}} components · {{pins}} pins · {{nets}} nets · {{unroutedConnections}} unrouted · {{issues}} issues · {{notes}} notes",
+      "failed": "Design checks: {{issues}} issues, {{notes}} notes. See build output for details.",
+      "passed": "Design checks: 0 errors, {{notes}} notes / unverified items. See build output for details."
+    },
     "toolbar": {
       "run": "Run Design",
       "runHint": "Evaluate design/board.tsx and refresh PCB/schematic/3D",
@@ -505,7 +548,8 @@
       "addToSim": "Add to Simulator",
       "addToSimHint": "Register the board and enclosure as a simulator device profile",
       "export": "Export",
-      "exportGerber": "Gerber (PCB fabrication)"
+      "exportGerber": "Gerber (PCB fabrication)",
+      "cancelEval": "Cancel evaluation"
     },
     "tabs": {
       "pcb": "PCB",
@@ -526,11 +570,12 @@
       "error": "Design evaluation failed"
     },
     "errors": {
-      "evalTimeout": "Evaluation timed out (30s); the circuit engine was reset, please retry",
+      "evalTimeout": "Evaluation reached the {{seconds}}s limit; engine stopped. Review circuit size or routing constraints.",
       "noBoardEntry": "Entry file design/board.tsx not found",
       "noBoard": "No <board> element found in the design (default export must return a <board>)",
       "noWorkspace": "Export root must be inside the current workspace",
-      "badFileName": "Invalid export file name"
+      "badFileName": "Invalid export file name",
+      "evalCancelled": "Evaluation cancelled"
     },
     "view3d": {
       "explode": "Exploded view",
@@ -632,6 +677,12 @@
         "requestFailed": "Printer request failed",
         "badFile": "Invalid G-code file path"
       }
+    },
+    "evalPhases": {
+      "loading": "Loading engine",
+      "executing": "Evaluating code",
+      "routing": "Rendering and routing",
+      "reading": "Reading results"
     }
   },
   "printer": {

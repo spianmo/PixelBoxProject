@@ -16,9 +16,9 @@
  *            sdkconfig.defaults / README.md / .gitignore
  * - hardware pixelbox.json(type:'hardware')/ design/board.tsx + design/<模组封装>.tsx
  *            + design/enclosure.scad(按目标芯片从 templates/boards 注册表取微雪
- *            参考板卡模板 1:1 复刻:esp32s3 → ESP32-S3-Touch-AMOLED-2.16 等,
- *            单一数据源见 templates/boards/index.ts;各板均经 /tmp/tsc-probe
- *            沙箱多文件 fsMap 实测 0 DRC error)/
+ *            参考板卡资料重建模板:esp32s3 → ESP32-S3-Touch-AMOLED-2.16 等,
+ *            单一数据源见 templates/boards/index.ts;
+ *            参考资料与制造限制保存在 design/reference.json)/
  *            tsconfig.json(jsx: react-jsx,与 IDE Monaco 对齐;类型由 IDE 注入)/
  *            README.md / .gitignore
  *
@@ -390,7 +390,7 @@ async function createHardwareProject(root: string, name: string, chip: string): 
   await Promise.all([
     fsp.writeFile(join(root, 'pixelbox.json'), manifestJson(manifest), 'utf8'),
     fsp.writeFile(entryFile, tpl.boardTsx(name), 'utf8'),
-    // 真实主控模组封装(board.tsx 相对导入;evaluateDesign 会把 design/ 下全部
+    // 电路导入模块(board.tsx 相对导入;evaluateDesign 会把 design/ 下全部
     // .ts/.tsx 一并放进 fsMap,多文件工程开箱即用)
     fsp.writeFile(join(root, 'design', tpl.moduleFile.fileName), tpl.moduleFile.content, 'utf8'),
     // tsconfig:jsx 配置与 IDE Monaco 对齐;类型由 IDE 注入,不落 8MB d.ts 进工程
@@ -402,6 +402,10 @@ async function createHardwareProject(root: string, name: string, chip: string): 
       enclosureScadFromParams(tpl.enclosure, tpl.boardSizeMM, tpl.screenRect),
       'utf8'
     ),
+    ...(tpl.extraFiles ?? []).map((file) => fsp.writeFile(join(root, 'design', file.fileName), file.content, 'utf8')),
+    ...(tpl.reference
+      ? [fsp.writeFile(join(root, 'design', 'reference.json'), `${JSON.stringify(tpl.reference, null, 2)}\n`, 'utf8')]
+      : []),
     fsp.writeFile(join(root, 'README.md'), tpl.readme(name, chip), 'utf8'),
     fsp.writeFile(join(root, '.gitignore'), 'export/\n.ide/\n', 'utf8')
   ])

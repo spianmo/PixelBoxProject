@@ -68,6 +68,9 @@ import { FlashDialog } from './shell/FlashDialog'
 import { NewProjectModal } from './shell/NewProjectModal'
 import { StructureView } from './editor/StructureView'
 import { MarkdownPreview } from './editor/MarkdownPreview'
+import { ImagePreview } from './editor/ImagePreview'
+import { isImageFile } from './editor/imageFile'
+import { isModelFile } from './editor/modelFile'
 import { getMdViewMode, setMdViewMode, type MdViewMode } from './editor/mdViewMode'
 import {
   CHIP_TARGETS,
@@ -89,6 +92,9 @@ import { DiffView, type DiffSpec } from './editor/DiffView'
 import { gitFileStatusMap, gitChangeCount, initGitStore, setGitRoot, useGitState } from './git/store'
 
 const MAX_LOG_LINES = 2000
+
+// 模型加载器与 WebGL 查看器只在打开模型时加载,不增加普通文本/图片页签的启动成本。
+const ModelPreview = lazy(() => import('./editor/ModelPreview').then((m) => ({ default: m.ModelPreview })))
 
 /** 硬件设计工具窗(three.js/tscircuit 重资产,懒加载保持启动 chunk 干净) */
 const HardwareDesignPanel = lazy(() =>
@@ -122,7 +128,7 @@ function fmtSize(bytes: number): string {
 }
 
 /**
- * 编辑器组(分屏单元):页签条 + EditorHost + Markdown 预览 / Git diff 页签的
+ * 编辑器组(分屏单元):页签条 + EditorHost + 图片 / Markdown 预览 / Git diff 页签的
  * 组内渲染。Markdown 查看模式为组内状态(每组各自按自己的激活页签判定);
  * diff/虚拟页签的合成键可能以 .md 结尾,判定时排除(历史缺陷回归防线)。
  */
@@ -151,6 +157,8 @@ function EditorGroupView(props: {
     (tb) => tb.path === activePath && (tb.kind === 'diff' || tb.virtual === true)
   )
   const isMdFile = activePath !== null && !activeTabSpecial && /\.(md|markdown)$/i.test(activePath)
+  const isImage = activePath !== null && !activeTabSpecial && isImageFile(activePath)
+  const isModel = activePath !== null && !activeTabSpecial && isModelFile(activePath)
   const [mdMode, setMdModeState] = useState<MdViewMode>('split')
   useEffect(() => {
     if (isMdFile && activePath) setMdModeState(getMdViewMode(activePath))
@@ -207,10 +215,10 @@ function EditorGroupView(props: {
         />
       )}
       <div className="relative flex min-h-0 flex-1">
-        {/* 预览模式 / diff 页签:编辑器隐藏但保持挂载(monaco 实例/模型不销毁) */}
+        {/* 图片 / 预览模式 / diff 页签:编辑器隐藏但保持挂载,保留文本页签的编辑状态 */}
         <div
           className={`h-full min-w-0 ${
-            (isMdFile && mdMode === 'preview') || activeDiffTab ? 'hidden' : 'flex-1'
+            (isMdFile && mdMode === 'preview') || activeDiffTab || isImage || isModel ? 'hidden' : 'flex-1'
           }`}
         >
           <EditorHost
@@ -220,6 +228,12 @@ function EditorGroupView(props: {
             onFocused={props.onFocused}
           />
         </div>
+        {isImage && activePath && <ImagePreview key={activePath} path={activePath} />}
+        {isModel && activePath && (
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-jb-muted" role="status">{t('modelPreview.loading')}</div>}>
+            <ModelPreview key={activePath} path={activePath} />
+          </Suspense>
+        )}
         {/* Git diff 页签(EditorHost hidden 兄弟节点;key 按页签路径,切换即重建) */}
         {activeDiffTab?.diff && props.workspaceRoot && (
           <div className="h-full min-w-0 flex-1">
@@ -399,6 +413,13 @@ export default function App(): React.JSX.Element {
     setBottomTab(tab)
     setBottomOpen(true)
   }, [])
+
+  // 通知与硬件工具窗只请求打开输出，底部布局仍由 IDE 外壳统一管理。
+  useEffect(() => {
+    const openBuildOutput = (): void => openBottomTab('build')
+    window.addEventListener('pixelbox:open-build-output', openBuildOutput)
+    return () => window.removeEventListener('pixelbox:open-build-output', openBuildOutput)
+  }, [openBottomTab])
 
   const appendLog = useCallback((target: 'app' | 'build', line: LogLine | LogLine[]): void => {
     const add = Array.isArray(line) ? line : [line]
@@ -2161,7 +2182,7 @@ export default function App(): React.JSX.Element {
       {/* 状态栏 */}
       <StatusBar
         workspaceRoot={workspaceRoot}
-        activePath={activePath}
+        activePath={activeGroupIdx === 1 ? activePath2 : activePath}
         gitBranch={gitBranch}
         cursor={cursor}
         busy={busy}

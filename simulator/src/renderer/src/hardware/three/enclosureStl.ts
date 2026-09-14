@@ -103,7 +103,7 @@ export function buildScadEnclosureParts(
     display = new THREE.Group()
     display.name = 'display'
     const shape = new THREE.Shape()
-    const r = Math.min(SCREEN_WINDOW_CORNER_R_MM, screen.w / 2, screen.h / 2)
+    const r = Math.min(scad.meta?.design?.screen?.[4] ?? SCREEN_WINDOW_CORNER_R_MM, screen.w / 2, screen.h / 2)
     const x0 = screen.x - screen.w / 2
     const y0 = screen.y - screen.h / 2
     shape.moveTo(x0 + r, y0)

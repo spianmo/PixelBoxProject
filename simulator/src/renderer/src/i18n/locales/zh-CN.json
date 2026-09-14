@@ -357,6 +357,34 @@
     "notSupported": "此文件类型暂无结构",
     "empty": "没有可显示的符号"
   },
+  "modelPreview": {
+    "title": "3D 模型预览",
+    "loading": "正在加载模型…",
+    "reset": "复位视图",
+    "wireframe": "线框",
+    "reload": "重新加载模型",
+    "counts": "{{triangles}} 三角面 · {{vertices}} 顶点",
+    "size": "尺寸 {{size}}（文件坐标单位）",
+    "controls": "左键旋转 · 右键平移 · 滚轮缩放",
+    "readFailed": "无法读取模型，请检查文件是否存在及读取权限。",
+    "invalid": "无法预览模型：文件已损坏，或没有有效几何数据。",
+    "resourceFailed": "模型的材质或数据文件无法加载，请保留本地相对路径引用的 MTL、BIN 和贴图文件。",
+    "compressed": "模型使用了暂不支持的压缩，请导出未压缩的 glTF / GLB 后查看。",
+    "graphicsFailed": "3D 渲染不可用，请重试或重启 IDE。",
+    "timeout": "模型加载超过 20 秒，请检查模型大小及关联资源后重试。"
+  },
+  "imagePreview": {
+    "title": "图片预览",
+    "loading": "正在加载图片…",
+    "readFailed": "无法读取图片，请检查文件是否存在及读取权限。",
+    "decodeFailed": "无法预览图片，文件已损坏或格式不受支持。",
+    "retry": "重试",
+    "reload": "重新加载图片",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "fit": "适应窗口",
+    "actualSize": "原始尺寸"
+  },
   "markdown": {
     "modeEdit": "编辑",
     "modeSplit": "分屏",
@@ -498,6 +526,21 @@
     "failed": "推送失败:{{message}}"
   },
   "hw": {
+    "build": {
+      "title": "硬件设计检查",
+      "viewOutput": "查看构建输出",
+      "outputFailed": "构建日志写入失败",
+      "pcb": "PCB 评估",
+      "enclosure": "外壳编译",
+      "manufacturing": "电路与制造",
+      "assembly": "尺寸与装配",
+      "note": "说明 / 待验证",
+      "started": "开始硬件设计检查",
+      "evaluated": "PCB 评估完成，耗时 {{seconds}} 秒",
+      "summary": "设计检查：{{components}} 元件 · {{pins}} 引脚 · {{nets}} 网络 · 未布线 {{unroutedConnections}} · {{issues}} 项待处理 · {{notes}} 项说明",
+      "failed": "设计检查：{{issues}} 项待处理，{{notes}} 项说明。详情见构建输出。",
+      "passed": "设计检查：0 项错误，{{notes}} 项说明 / 待验证。详情见构建输出。"
+    },
     "toolbar": {
       "run": "运行设计",
       "runHint": "评估 design/board.tsx 并刷新 PCB/原理图/3D",
@@ -505,7 +548,8 @@
       "addToSim": "添加到模拟器",
       "addToSimHint": "将板卡与外壳注册为模拟器设备档案",
       "export": "导出",
-      "exportGerber": "Gerber(PCB 制造)"
+      "exportGerber": "Gerber(PCB 制造)",
+      "cancelEval": "取消评估"
     },
     "tabs": {
       "pcb": "PCB",
@@ -526,11 +570,12 @@
       "error": "设计评估失败"
     },
     "errors": {
-      "evalTimeout": "评估超时(30 秒),电路引擎已重置,请重试",
+      "evalTimeout": "评估达到 {{seconds}} 秒总时限，引擎已停止；请检查电路规模或布线约束",
       "noBoardEntry": "未找到入口文件 design/board.tsx",
       "noBoard": "设计中未找到 <board> 元素(需默认导出返回 <board> 的组件)",
       "noWorkspace": "导出目录必须位于当前工作区内",
-      "badFileName": "非法导出文件名"
+      "badFileName": "非法导出文件名",
+      "evalCancelled": "评估已取消"
     },
     "view3d": {
       "explode": "爆炸视图",
@@ -632,6 +677,12 @@
         "requestFailed": "打印机请求失败",
         "badFile": "无效的 G-code 文件路径"
       }
+    },
+    "evalPhases": {
+      "loading": "加载电路引擎",
+      "executing": "解析电路代码",
+      "routing": "生成电路并布线",
+      "reading": "读取评估结果"
     }
   },
   "printer": {
