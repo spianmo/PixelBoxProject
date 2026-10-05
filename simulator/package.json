@@ -21,6 +21,7 @@
     "check:speech": "node scripts/speech-check.mjs",
     "check:imu:browser": "node scripts/imu-browser-check.mjs",
     "check:toolchain": "node scripts/toolchain-check.mjs",
+    "check:firmware-backends": "node scripts/firmware-backends-check.mjs",
     "check:clangd": "node scripts/clangd-check.mjs",
     "check:terminal": "node scripts/terminal-check.mjs",
     "check:settings": "node scripts/settings-check.mjs",

@@ -22,6 +22,7 @@ import type { IconType } from 'react-icons'
 import { LuCircuitBoard, LuCpu, LuFilePlus2, LuFolderOpen, LuLayoutTemplate, LuX } from 'react-icons/lu'
 import { VscLoading } from 'react-icons/vsc'
 import type {
+  FirmwareBackend,
   ProjectCreateOptions,
   ProjectCreateResult,
   ProjectKind,
@@ -29,6 +30,7 @@ import type {
 } from '../../../shared/ipc-types'
 import { showToast } from '../components/toast'
 import { CHIP_TARGETS, chipLabel, type ChipTarget } from './store'
+import { firmwareChipTargets } from './firmware'
 
 const NAME_RE = /^[a-zA-Z0-9_-]+$/
 const APP_ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]*(\.[a-zA-Z0-9_-]+)+$/
@@ -97,6 +99,7 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
   /** 应用 ID 被手动编辑后不再跟随名称 */
   const [appIdTouched, setAppIdTouched] = useState(false)
   const [chip, setChip] = useState<ChipTarget>('esp32s3')
+  const [firmwareBackend, setFirmwareBackend] = useState<FirmwareBackend>('esp-idf')
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -113,10 +116,17 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
   const trimmedName = name.trim()
   const nameInvalid = trimmedName.length > 0 && !NAME_RE.test(trimmedName)
   const appIdInvalid = appId.trim().length > 0 && !APP_ID_RE.test(appId.trim())
+  const chipTargets = kind === 'firmware' ? firmwareChipTargets(firmwareBackend) : CHIP_TARGETS
   const valid =
     NAME_RE.test(trimmedName) &&
     location.trim().length > 0 &&
-    (kind !== 'app' || APP_ID_RE.test(appId.trim()))
+    (kind !== 'app' || APP_ID_RE.test(appId.trim())) &&
+    (kind !== 'firmware' || chipTargets.includes(chip))
+
+  // 切到 NuttX 时立即回到已支持的目标，不能把另一后端的芯片选择带入创建请求。
+  useEffect(() => {
+    if (kind === 'firmware' && !chipTargets.includes(chip)) setChip(chipTargets[0])
+  }, [kind, chipTargets, chip])
 
   const changeName = (v: string): void => {
     setName(v)
@@ -135,6 +145,9 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
     if (!NAME_RE.test(trimmedName)) return t('newProject.errors.nameInvalid')
     if (location.trim().length === 0) return t('newProject.errors.locationRequired')
     if (kind === 'app' && !APP_ID_RE.test(appId.trim())) return t('newProject.errors.appIdInvalid')
+    if (kind === 'firmware' && !chipTargets.includes(chip)) {
+      return t('newProject.errors.unsupportedBackendTarget')
+    }
     return null
   }
 
@@ -150,7 +163,9 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
       const opts: ProjectCreateOptions =
         kind === 'app'
           ? { kind, name: trimmedName, location: location.trim(), appId: appId.trim(), template }
-          : { kind, name: trimmedName, location: location.trim(), chip }
+          : kind === 'firmware'
+            ? { kind, name: trimmedName, location: location.trim(), chip, firmwareBackend }
+            : { kind, name: trimmedName, location: location.trim(), chip }
       const result = await window.api.projectCreate(opts)
       showToast(t('newProject.created', { name: trimmedName }), 'success')
       onCreated(result)
@@ -316,8 +331,31 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
                 </div>
               </Section>
 
-              {/* 节 2:选项(app → 模板 + 应用 ID;firmware|hardware → 目标芯片) */}
+              {/* 固件实现写入清单；切换后端只影响新工程，不修改已打开工程。 */}
               <Section title={t('newProject.sectionOptions')}>
+                {kind === 'firmware' && (
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <span className={LABEL_CLASS}>{t('newProject.firmwareBackend')}</span>
+                      <select
+                        aria-label={t('newProject.firmwareBackend')}
+                        value={firmwareBackend}
+                        onChange={(e) => {
+                          setFirmwareBackend(e.target.value as FirmwareBackend)
+                          setError(null)
+                        }}
+                        style={{ width: 220 }}
+                        className={SELECT_CLASS}
+                      >
+                        <option value="esp-idf">ESP-IDF</option>
+                        <option value="nuttx">Apache NuttX</option>
+                      </select>
+                    </div>
+                    <div className={HINT_CLASS}>
+                      {t(`newProject.firmwareBackendHint.${firmwareBackend}`)}
+                    </div>
+                  </div>
+                )}
                 {kind === 'app' ? (
                   <>
                     <div>
@@ -371,12 +409,13 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
                     <div className="flex items-center gap-3">
                       <span className={LABEL_CLASS}>{t('newProject.chip')}</span>
                       <select
+                        aria-label={t('newProject.chip')}
                         value={chip}
                         onChange={(e) => setChip(e.target.value as ChipTarget)}
                         style={{ width: 220 }}
                         className={SELECT_CLASS}
                       >
-                        {CHIP_TARGETS.map((c) => (
+                        {chipTargets.map((c) => (
                           <option key={c} value={c}>
                             {chipLabel(c)}
                           </option>
@@ -385,7 +424,13 @@ export function NewProjectModal({ onCreated, onClose }: Props): React.JSX.Elemen
                     </div>
                     {/* hardware 的芯片选择决定生成哪块微雪参考板卡模板(templates/boards 注册表) */}
                     <div className={HINT_CLASS}>
-                      {t(kind === 'hardware' ? 'newProject.chipHintHardware' : 'newProject.chipHint')}
+                      {t(
+                        kind === 'hardware'
+                          ? 'newProject.chipHintHardware'
+                          : firmwareBackend === 'nuttx'
+                            ? 'newProject.chipHintNuttX'
+                            : 'newProject.chipHint'
+                      )}
                     </div>
                   </div>
                 )}

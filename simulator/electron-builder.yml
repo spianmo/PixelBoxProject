@@ -7,6 +7,53 @@ directories:
 files:
   - out/**
   - '!node_modules/.cache/**'
+extraResources:
+  # 新建 NuttX 工程必须在安装包内取得模板与 QuickJS，不能回读源码仓库。
+  - from: ../firmware-nuttx
+    to: firmware-templates/firmware-nuttx
+    filter:
+      - '**/*'
+      - '!build{,/**}'
+      - '!build-host{,/**}'
+      - '!.cache{,/**}'
+      - '!.nuttx-build.lock'
+      - '!dist{,/**}'
+      - '!generated{,/**}'
+      - '!quickjs-ng{,/**}'
+      - '!shared{,/**}'
+      - '!**/__pycache__/**'
+  - from: ../firmware/components/jsvm/quickjs-ng
+    to: firmware-templates/firmware/components/jsvm/quickjs-ng
+    filter:
+      - '**/*'
+      - '!.git{,/**}'
+      - '!build{,/**}'
+  - from: ../firmware/components/jsvm/src/prelude_core.js
+    to: firmware-templates/firmware/components/jsvm/src/prelude_core.js
+  - from: ../firmware/components/appmgr/src/settings_app.js
+    to: firmware-templates/firmware/components/appmgr/src/settings_app.js
+  - from: ../firmware/components/appmgr/src/default_app.js
+    to: firmware-templates/firmware/components/appmgr/src/default_app.js
+  - from: ../firmware/components/hal_display
+    to: firmware-templates/firmware/components/hal_display
+    filter:
+      - fonts/*.pxf
+      - src/pxfont.c
+      - include/hal_display/pxfont.h
+      - vendor/*.c
+      - vendor/*.h
+      - vendor/README.md
+  - from: ../firmware/managed_components/espressif__esp_jpeg/tjpgd
+    to: firmware-templates/firmware/managed_components/espressif__esp_jpeg/tjpgd
+    filter:
+      - tjpgd.c
+      - tjpgd.h
+  - from: ../LICENSE
+    to: firmware-templates/LICENSE
+  - from: src/renderer/src/device-sim/sandbox/fonts/OFL.txt
+    to: firmware-templates/simulator/src/renderer/src/device-sim/sandbox/fonts/OFL.txt
+  - from: ../tools/fontgen/README.md
+    to: firmware-templates/tools/fontgen/README.md
 asarUnpack:
   # esbuild 含平台原生二进制,必须解包
   - node_modules/esbuild/**

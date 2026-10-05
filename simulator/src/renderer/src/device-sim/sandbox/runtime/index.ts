@@ -13,7 +13,7 @@
  *   - window.onerror / unhandledrejection(含堆栈)经 'uncaught' 事件上报
  */
 import { HostLink } from './rpc'
-import { blendPoints, projectPoints, projectPointRuns } from './projection'
+import { blendPoints, projectPoints, projectPointRuns, projectPointBounds } from './projection'
 import { installFonts } from './fonts'
 import { Vfs, KvStore, normalizePath } from './storage'
 import { ScreenImpl, createImageResolver } from './screen'
@@ -193,6 +193,7 @@ async function boot(init: SandboxInitPayload): Promise<void> {
       blendPoints,
       projectPoints,
       projectPointRuns,
+      projectPointBounds,
       b64encode,
       b64decode,
       hexEncode,

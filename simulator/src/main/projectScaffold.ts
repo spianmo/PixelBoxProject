@@ -26,8 +26,9 @@
  */
 import { app, ipcMain, dialog, BrowserWindow } from 'electron'
 import { promises as fsp } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import type {
+  FirmwareBackend,
   PixelboxManifest,
   ProjectCreateOptions,
   ProjectCreateResult,
@@ -35,6 +36,8 @@ import type {
   ProjectKind
 } from '../shared/ipc-types'
 import { CHIP_IDS } from '../shared/chipCapabilities'
+import { isFirmwareBackend, supportsFirmwareTarget } from '../shared/firmwareBackends'
+import { firmwareTemplateDir, firmwareTemplateRoot } from './firmwareProject'
 import { enclosureScadFromParams } from '../shared/enclosureScadTemplate'
 // 唯一契约文件全文(构建期 ?raw 内嵌;生成的项目自带一份,Monaco 与 tsc 共用)
 import pixelboxDts from '../../../sdk/types/pixelbox.d.ts?raw'
@@ -355,7 +358,8 @@ async function createFirmwareProject(root: string, name: string, chip: string): 
     name,
     version: '0.1.0',
     entry: '',
-    chip
+    chip,
+    firmwareBackend: 'esp-idf'
   }
   await fsp.mkdir(join(root, 'main'), { recursive: true })
   const entryFile = join(root, 'main', 'main.c')
@@ -372,6 +376,80 @@ async function createFirmwareProject(root: string, name: string, chip: string): 
     fsp.writeFile(join(root, '.clangd'), clangdConfig(chip), 'utf8')
   ])
   return entryFile
+}
+
+/** NuttX 工程携带 QuickJS 与共享 FFI prelude，脱离仓库后不依赖 ESP-IDF 目录。 */
+async function createNuttxProject(root: string, name: string, chip: string): Promise<string> {
+  const template = firmwareTemplateDir('nuttx')
+  const resources = firmwareTemplateRoot()
+  const quickjs = join(resources, 'firmware', 'components', 'jsvm', 'quickjs-ng')
+  const prelude = join(resources, 'firmware', 'components', 'jsvm', 'src', 'prelude_core.js')
+  const builtinApps = ['settings_app.js', 'default_app.js'].map((name) => ({
+    name, source: join(resources, 'firmware', 'components', 'appmgr', 'src', name)
+  }))
+  const displayRoot = join(resources, 'firmware', 'components', 'hal_display')
+  const displayFiles = [
+    ...['fonts/pixel8.pxf', 'fonts/pixel12.pxf', 'fonts/pixel16.pxf', 'src/pxfont.c', 'include/hal_display/pxfont.h',
+      'vendor/pngle.c', 'vendor/pngle.h', 'vendor/miniz.c', 'vendor/miniz.h', 'vendor/gifdec.c', 'vendor/gifdec.h', 'vendor/README.md']
+      .map((name) => ({ name, source: join(displayRoot, name) })),
+    { name: 'LICENSE', source: join(resources, 'LICENSE') },
+    { name: 'fonts/OFL.txt', source: join(resources, 'simulator/src/renderer/src/device-sim/sandbox/fonts/OFL.txt') },
+    { name: 'FONT-SOURCES.md', source: join(resources, 'tools/fontgen/README.md') }
+  ]
+  const jpegFiles = ['tjpgd.c', 'tjpgd.h'].map((name) => ({
+    name, source: join(resources, 'firmware', 'managed_components', 'espressif__esp_jpeg', 'tjpgd', name)
+  }))
+  // dtoa 是 NuttX 独立工程的数值转换实现，必须随模板和安装包一起存在。
+  const dtoa = join(template, 'vendor', 'quickjs-dtoa')
+  const required = [
+    join(template, 'scripts', 'nuttx.py'),
+    join(template, 'src', 'main.c'),
+    join(quickjs, 'quickjs.c'),
+    join(dtoa, 'dtoa.c'),
+    join(dtoa, 'dtoa.h'),
+    join(dtoa, 'LICENSE'),
+    prelude,
+    ...builtinApps.map((item) => item.source),
+    ...displayFiles.map((item) => item.source),
+    ...jpegFiles.map((item) => item.source)
+  ]
+  // 写入前校验完整模板，打包资源不齐时不生成一半的工程。
+  try { await Promise.all(required.map((file) => fsp.access(file))) } catch {
+    throw new Error('project:firmwareTemplateMissing')
+  }
+  const excluded = new Set(['.git', 'build', 'build-host', '.cache', '.nuttx-build.lock', 'dist', 'generated', 'quickjs-ng', 'shared', '__pycache__'])
+  await fsp.cp(template, root, {
+    recursive: true,
+    filter: (source) => !relative(template, source).split(/[\\/]/).some((part) => excluded.has(part))
+  })
+  await fsp.cp(quickjs, join(root, 'quickjs-ng'), {
+    recursive: true,
+    filter: (source) => !relative(quickjs, source).split(/[\\/]/).some((part) => part === '.git' || part === 'build')
+  })
+  await fsp.mkdir(join(root, 'shared'), { recursive: true })
+  await fsp.mkdir(join(root, 'shared', 'tjpgd'), { recursive: true })
+  // 内置设置/欢迎页逐字节带入独立工程，离线prepare不能再依赖原ESP-IDF目录。
+  await Promise.all([
+    fsp.copyFile(prelude, join(root, 'shared', 'prelude_core.js')),
+    ...builtinApps.map((item) => fsp.copyFile(item.source, join(root, 'shared', item.name))),
+    ...jpegFiles.map((item) => fsp.copyFile(item.source, join(root, 'shared', 'tjpgd', item.name))),
+    ...displayFiles.map(async (item) => {
+      const target = join(root, 'shared', 'hal_display', item.name)
+      await fsp.mkdir(join(target, '..'), { recursive: true })
+      await fsp.copyFile(item.source, target)
+    })
+  ])
+  const manifest: PixelboxManifest = {
+    type: 'firmware', id: name, name, version: '0.1.0', entry: '', chip,
+    firmwareBackend: 'nuttx', nuttxProfile: 'esp32s3-multinet7', nuttxBoard: 'esp32s3-devkit:nsh'
+  }
+  await Promise.all([
+    fsp.writeFile(join(root, 'pixelbox.json'), manifestJson(manifest), 'utf8'),
+    fsp.writeFile(join(root, '.clangd'), clangdConfig(chip), 'utf8'),
+    // 独立工程必须提交 vendored 源码；模板仓库的忽略规则不能沿用。
+    fsp.writeFile(join(root, '.gitignore'), 'build/\nbuild-host/\n.cache/\n.nuttx-build.lock\ndist/\ngenerated/\n__pycache__/\n.ide/\n', 'utf8')
+  ])
+  return join(root, 'src', 'main.c')
 }
 
 async function createHardwareProject(root: string, name: string, chip: string): Promise<string> {
@@ -427,13 +505,20 @@ export async function createProject(opts: ProjectCreateOptions): Promise<Project
   // firmware/hardware 目标芯片:缺省 esp32s3,非法值拦截(单一数据源 CHIP_IDS)
   const chip = (opts.chip ?? 'esp32s3').trim()
   if (!(CHIP_IDS as readonly string[]).includes(chip)) throw new Error('project:chipInvalid')
+  const firmwareBackend: FirmwareBackend = opts.firmwareBackend ?? 'esp-idf'
+  if (!isFirmwareBackend(firmwareBackend)) throw new Error('project:firmwareBackendInvalid')
+  if (kind === 'firmware' && !supportsFirmwareTarget(firmwareBackend, chip)) {
+    throw new Error('project:unsupportedBackendTarget')
+  }
 
   const root = resolve(join(location, name))
   await assertCreatable(root)
 
   let entryFile: string
   if (kind === 'app') entryFile = await createAppProject(root, name, opts)
-  else if (kind === 'firmware') entryFile = await createFirmwareProject(root, name, chip)
+  else if (kind === 'firmware') entryFile = firmwareBackend === 'nuttx'
+    ? await createNuttxProject(root, name, chip)
+    : await createFirmwareProject(root, name, chip)
   else entryFile = await createHardwareProject(root, name, chip)
   return { root, kind, entryFile }
 }
@@ -491,6 +576,7 @@ export async function readProjectInfo(root: string): Promise<ProjectInfo> {
     kind,
     name: typeof manifest?.name === 'string' && manifest.name.length > 0 ? manifest.name : null,
     chip: typeof manifest?.chip === 'string' && manifest.chip.length > 0 ? manifest.chip : null,
+    ...(kind === 'firmware' ? { firmwareBackend: manifest?.firmwareBackend === 'nuttx' ? 'nuttx' as const : 'esp-idf' as const } : {}),
     manifest
   }
 }

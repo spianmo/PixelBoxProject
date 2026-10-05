@@ -30,6 +30,7 @@ import { VscLoading } from 'react-icons/vsc'
 import type { SimDeviceTag, SimManifest } from './device-sim/types'
 import type {
   DevdDevice,
+  FirmwareBackend,
   FirmwareTaskKind,
   FirmwareTaskResult,
   ProjectCreateResult,
@@ -66,6 +67,12 @@ import { QuickOpen } from './shell/QuickOpen'
 import { SearchInFiles } from './shell/SearchInFiles'
 import { FlashDialog } from './shell/FlashDialog'
 import { NewProjectModal } from './shell/NewProjectModal'
+import {
+  firmwareChipTargets,
+  firmwareManifestChip,
+  firmwareTaskFromStatus,
+  type ActiveFirmwareTask
+} from './shell/firmware'
 import { StructureView } from './editor/StructureView'
 import { MarkdownPreview } from './editor/MarkdownPreview'
 import { ImagePreview } from './editor/ImagePreview'
@@ -73,8 +80,8 @@ import { isImageFile } from './editor/imageFile'
 import { isModelFile } from './editor/modelFile'
 import { getMdViewMode, setMdViewMode, type MdViewMode } from './editor/mdViewMode'
 import {
-  CHIP_TARGETS,
   applyDefaultChip,
+  autoSelectedDeviceKey,
   chipLabel,
   deviceKey,
   isSimDeviceKey,
@@ -372,6 +379,9 @@ export default function App(): React.JSX.Element {
   const [projectKind, setProjectKind] = useState<ProjectKind | null>(null)
   const projectKindRef = useRef<ProjectKind | null>(null)
   projectKindRef.current = projectKind
+  const [firmwareBackend, setFirmwareBackend] = useState<FirmwareBackend>('esp-idf')
+  const firmwareBackendRef = useRef<FirmwareBackend>('esp-idf')
+  firmwareBackendRef.current = firmwareBackend
   /** project:info 请求序号(快速切换工作区时丢弃过期结果) */
   const projectInfoSeqRef = useRef(0)
   /** 上次已应用的 manifest.chip(pixelbox.json 任意 fs-event 都会重取项目信息,
@@ -385,21 +395,39 @@ export default function App(): React.JSX.Element {
       const info = await window.api.projectInfo(root)
       if (seq !== projectInfoSeqRef.current) return
       setProjectKind(info.kind)
+      const backend = info.firmwareBackend ?? 'esp-idf'
+      setFirmwareBackend(backend)
       // 固件/硬件工程打开时按 manifest.chip 切换目标芯片(非法值忽略);
       // 同值重复事件(版本号改动等)不再 setChip,保留用户下拉选择
-      const manifestChip =
-        info.chip && (CHIP_TARGETS as readonly string[]).includes(info.chip) ? info.chip : null
-      if (manifestChip && manifestChip !== appliedManifestChipRef.current) {
+      const manifestChip = firmwareManifestChip(backend, info.chip)
+      const supportedTargets = firmwareChipTargets(backend)
+      if (
+        manifestChip &&
+        (manifestChip !== appliedManifestChipRef.current ||
+          (info.kind === 'firmware' &&
+            !supportedTargets.includes(shellDeviceStore.get().chip) &&
+            supportedTargets.includes(manifestChip as ChipTarget)))
+      ) {
         setChip(manifestChip as ChipTarget)
+      } else if (
+        info.kind === 'firmware' &&
+        !manifestChip &&
+        !supportedTargets.includes(shellDeviceStore.get().chip)
+      ) {
+        // 缺少 chip 的旧清单仍可打开；后端切换时不能沿用不受支持的全局芯片记忆。
+        setChip(supportedTargets[0])
       }
       appliedManifestChipRef.current = manifestChip
     } catch {
-      if (seq === projectInfoSeqRef.current) setProjectKind(null)
+      if (seq === projectInfoSeqRef.current) {
+        setProjectKind(null)
+        setFirmwareBackend('esp-idf')
+      }
     }
   }, [])
 
   // ---- 固件工具链(阶段 3):任务状态 / 烧录对话框 ----
-  const [fwTask, setFwTask] = useState<FirmwareTaskKind | null>(null)
+  const [fwTask, setFwTask] = useState<ActiveFirmwareTask | null>(null)
   const [flashOpen, setFlashOpen] = useState(false)
   // 新建项目向导
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -457,7 +485,7 @@ export default function App(): React.JSX.Element {
       })
     )
 
-    // 固件工具链输出流(idf.py/esptool,批量行)→ 构建输出页(ANSI 解析在渲染层)
+    // 固件工具链输出流(ESP-IDF / NuttX,批量行)→ 构建输出页(ANSI 解析在渲染层)
     unsubs.push(
       window.api.onFirmwareLog((lines) =>
         appendLog(
@@ -489,10 +517,15 @@ export default function App(): React.JSX.Element {
             'success'
           )
         } else if (r.kind === 'merge') {
-          const merged = r.artifacts.find((a) => a.path.endsWith('-merged.bin'))
+          // 完成事件携带任务后端；切换工作区不改变已运行任务的产物语义。
+          const nuttx = r.firmwareBackend === 'nuttx'
+          const merged = r.artifacts.find((a) => a.path.endsWith(nuttx ? '-nuttx.bin' : '-merged.bin'))
           showToast(
             merged
-              ? t('fw.mergeDone', { path: merged.path, size: fmtSize(merged.sizeBytes) })
+              ? t(nuttx ? 'fw.nuttxPackageDone' : 'fw.mergeDone', {
+                  path: merged.path,
+                  size: fmtSize(merged.sizeBytes)
+                })
               : t('fw.buildDoneBare', { chip }),
             'success'
           )
@@ -504,8 +537,16 @@ export default function App(): React.JSX.Element {
       })
     )
 
-    // 设备实时发现 → 外壳共享 store(标题栏/日志/状态栏联动)
-    unsubs.push(window.api.onDevdDevices((list) => shellDeviceStore.set({ devices: list })))
+    // 设备实时发现 → 外壳共享 store(标题栏/日志/状态栏联动)。启动默认是虚拟设备，
+    // 首次发现真机时自动切换，确保 logs.subscribe 能建立并且日志过滤 key 一致。
+    unsubs.push(
+      window.api.onDevdDevices((list) => {
+        const previous = shellDeviceStore.get()
+        shellDeviceStore.set({ devices: list })
+        const key = autoSelectedDeviceKey(previous, list, runningRef.current)
+        if (key) shellDeviceStore.set({ selectedKey: key })
+      })
+    )
 
     // 推送进度
     unsubs.push(
@@ -658,7 +699,7 @@ export default function App(): React.JSX.Element {
     // 固件任务状态恢复(renderer 重载时任务可能仍在 main 进程运行)
     window.api
       .firmwareStatus()
-      .then((s) => setFwTask(s.running))
+      .then((s) => setFwTask(firmwareTaskFromStatus(s)))
       .catch(() => undefined)
     // eslint 无此工程:仅首挂载执行一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -814,7 +855,11 @@ export default function App(): React.JSX.Element {
   async function refreshDevices(): Promise<void> {
     shellDeviceStore.set({ scanning: true })
     try {
-      shellDeviceStore.set({ devices: await window.api.devdDiscover(3000) })
+      const devices = await window.api.devdDiscover(3000)
+      const previous = shellDeviceStore.get()
+      shellDeviceStore.set({ devices })
+      const key = autoSelectedDeviceKey(previous, devices, runningRef.current)
+      if (key) shellDeviceStore.set({ selectedKey: key })
     } catch {
       // mDNS 失败静默(无网卡等)
     } finally {
@@ -931,6 +976,7 @@ export default function App(): React.JSX.Element {
         setWorkspaceRoot(root)
         workspaceRootRef.current = root
         setProjectKind(null) // 先复位门控,project:info 返回后按真实类型放开
+        setFirmwareBackend('esp-idf')
         appliedManifestChipRef.current = null // 新工作区打开时 manifest.chip 必定重新应用
         setLeftTool('project')
         workspaceRealRootRef.current = root // 先按拼写兜底,realpath 返回后覆盖
@@ -1447,8 +1493,7 @@ export default function App(): React.JSX.Element {
   //  按自己的激活页签判定,互不干扰)
 
   /**
-   * 启动固件任务(阶段 3:🔨 构建 / ⋮ 打包 merged.bin / 烧录 / 清理;
-   * 目标 = 标题栏芯片下拉 shellDeviceStore.chip,按芯片名传参 idf.py)
+   * 启动固件任务：后端来自项目清单，目标来自标题栏；主进程再次校验两者。
    */
   const startFirmwareTask = useCallback(
     async (kind: FirmwareTaskKind, port?: string, baud?: number): Promise<void> => {
@@ -1458,12 +1503,19 @@ export default function App(): React.JSX.Element {
         return
       }
       const target = shellDeviceStore.get().chip
+      const backend = firmwareBackendRef.current
+      if (!firmwareChipTargets(backend).includes(target)) {
+        showToast(t('fw.errors.unsupportedBackendTarget'), 'warn')
+        return
+      }
       openBottomTab('build')
-      setFwTask(kind) // 先置忙防重入(双击/菜单连点)
+      // 保存任务快照，切换工作区或芯片后状态与取消入口仍指向实际运行的任务。
+      setFwTask({ kind, target, firmwareBackend: backend })
       try {
         // cwd = 当前工作区(IDE v3:固件任务作用于工作区工程,不再指向 monorepo firmware/)
         await window.api.firmwareStart({
           kind,
+          firmwareBackend: backend,
           target,
           port,
           baud,
@@ -1616,6 +1668,9 @@ export default function App(): React.JSX.Element {
         showToast(t('titlebar.pushNoDevice'), 'warn')
         return
       }
+      // 推送目标是扫描到的真机时同步切换全局设备选择；日志订阅和日志过滤
+      // 都依赖 selectedKey，否则推送成功后真机日志既不会订阅也不会显示。
+      shellDeviceStore.set({ selectedKey: deviceKey(found[0]) })
       await handlePush(found[0])
     } finally {
       setBusy(null)
@@ -1992,6 +2047,7 @@ export default function App(): React.JSX.Element {
         workspaceRoot={workspaceRoot}
         gitBranch={gitBranch}
         projectKind={projectKind}
+        firmwareBackend={firmwareBackend}
         running={running}
         building={busy === 'build'}
         pushBusy={busy === 'push'}
@@ -2242,6 +2298,7 @@ export default function App(): React.JSX.Element {
       {flashOpen && (
         <FlashDialog
           target={shellDeviceStore.get().chip}
+          firmwareBackend={firmwareBackend}
           busy={fwTask !== null}
           defaultBaud={defaultBaud}
           onFlash={(port, baud) => {

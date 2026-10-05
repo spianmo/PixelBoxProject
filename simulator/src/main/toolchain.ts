@@ -1,6 +1,8 @@
 /**
  * ToolchainService(main 进程)—— IDE 内多芯片固件 编译 / 打包 / 烧录(阶段 3)
  *
+ * - 按 pixelbox.json 的 firmwareBackend 选择 ESP-IDF / NuttX，旧工程缺省 ESP-IDF
+ * - NuttX 独立调用 scripts/nuttx.py，不加载 IDF 环境；只开放已有 profile 的 ESP32-S3
  * - 检测 ESP-IDF:设置覆盖 > $IDF_PATH > ~/esp/esp-idf,解析 esp_idf_version.h 报版本
  * - 构建:POSIX 使用 login shell + export.sh,Windows 使用 PowerShell + export.ps1,
  *   cwd = StartTaskOptions.cwd 指定的固件工程目录(IDE v3:作用于当前工作区,
@@ -17,7 +19,7 @@
  * - 设置来源:SettingsService(settings.json 的 toolchain 段;旧 toolchain.json
  *   已由 SettingsService 首启迁移并标记弃用),变更即时生效无需重启
  */
-import { app, ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow } from 'electron'
 import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import { promises as fsp } from 'node:fs'
@@ -26,6 +28,7 @@ import { homedir } from 'node:os'
 import { join, resolve, dirname, basename } from 'node:path'
 import type {
   BuildLogLine,
+  FirmwareBackend,
   FirmwareArtifact,
   FirmwareStatus,
   FirmwareTaskKind,
@@ -36,6 +39,9 @@ import type {
 } from '../shared/ipc-types'
 import { getSettings } from './settings'
 import { emitFsEventIfWatched } from './workspace'
+import { firmwareTemplateDir, resolveFirmwareProject } from './firmwareProject'
+import { isFirmwareBackend, supportsFirmwareTarget } from '../shared/firmwareBackends'
+import { detectNuttxToolchain, nuttxTaskArgs } from './nuttxToolchain'
 
 /** 工具链设置(SettingsService 的 toolchain 段) */
 async function loadSettings(): Promise<ToolchainSettings> {
@@ -45,11 +51,6 @@ async function loadSettings(): Promise<ToolchainSettings> {
 // ---------------------------------------------------------------
 // ESP-IDF 检测
 // ---------------------------------------------------------------
-
-/** 仓库 firmware/ 目录(开发形态:simulator/ 与 firmware/ 同级) */
-function firmwareDir(): string {
-  return resolve(app.getAppPath(), '..', 'firmware')
-}
 
 /** 解析 esp_idf_version.h → "v5.5.0"(读不到返回 null) */
 async function readIdfVersion(idfPath: string): Promise<string | null> {
@@ -118,13 +119,32 @@ async function windowsIdfCandidates(): Promise<string[]> {
 }
 
 /**
- * 检测 ESP-IDF 环境(设置覆盖 > $IDF_PATH > ~/esp/esp-idf)。
+ * 检测指定后端环境；传 cwd 时必须与工程清单一致，未声明的旧工程按 ESP-IDF。
  * overridePath:设置窗口草稿路径实时检测用 —— 传入(含空串)时替代持久化覆盖值,
  * 不落盘;undefined 时用已保存设置。
  */
-export async function detectToolchain(overridePath?: string): Promise<ToolchainInfo> {
-  const fw = firmwareDir()
+export async function detectToolchain(overridePath?: string, requestedBackend?: FirmwareBackend, cwd?: string): Promise<ToolchainInfo> {
+  let backend: FirmwareBackend = isFirmwareBackend(requestedBackend) ? requestedBackend : 'esp-idf'
+  let fw = typeof cwd === 'string' && cwd.trim() ? resolve(cwd.trim()) : firmwareTemplateDir(backend)
+  if (requestedBackend !== undefined && !isFirmwareBackend(requestedBackend)) {
+    return { ok: false, backend, idfPath: '', version: null, firmwareDir: fw, error: 'backendMismatch' }
+  }
+  if (cwd !== undefined) {
+    try {
+      const project = await resolveFirmwareProject(fw, requestedBackend)
+      backend = project.backend
+      fw = project.root
+    } catch (error) {
+      return { ok: false, backend, idfPath: '', version: null, firmwareDir: fw,
+        error: error instanceof Error && error.message === 'toolchain:backendMismatch' ? 'backendMismatch' : 'notFirmwareProject' }
+    }
+  }
+  const settings = await loadSettings()
+  if (backend === 'nuttx') {
+    return detectNuttxToolchain(fw, overridePath !== undefined ? overridePath : settings.nuttxPathOverride)
+  }
   const base: Omit<ToolchainInfo, 'ok' | 'error'> = {
+    backend,
     idfPath: '',
     version: null,
     firmwareDir: fw
@@ -132,7 +152,6 @@ export async function detectToolchain(overridePath?: string): Promise<ToolchainI
   if (!['win32', 'darwin', 'linux'].includes(process.platform)) {
     return { ...base, ok: false, error: 'unsupportedPlatform' }
   }
-  const settings = await loadSettings()
   const candidates = [
     overridePath !== undefined ? overridePath.trim() : settings.idfPathOverride,
     process.env.IDF_PATH ?? '',
@@ -215,6 +234,7 @@ async function appBinOf(fw: string, buildDir: string): Promise<string | null> {
 
 interface ActiveTask {
   kind: FirmwareTaskKind
+  firmwareBackend: FirmwareBackend
   target: string
   proc: ChildProcess
   cancelled: boolean
@@ -222,6 +242,8 @@ interface ActiveTask {
 }
 
 let active: ActiveTask | null = null
+/** 异步识别清单/读取设置期间也占用任务槽，防止两个 IPC 同时启动子进程。 */
+let starting = false
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -240,7 +262,7 @@ function line(level: BuildLogLine['level'], text: string): BuildLogLine {
 
 /** 输出行级别启发式(idf.py 非 TTY 下无 ANSI 颜色,按关键词着色) */
 function classify(text: string): BuildLogLine['level'] {
-  if (/\b(error|failed|fatal)\b|ninja: build stopped/i.test(text)) return 'error'
+  if (/\b(error|failed|fatal)\b|ninja: build stopped|错误|失败/i.test(text)) return 'error'
   if (/\bwarning\b/i.test(text)) return 'warn'
   return 'info'
 }
@@ -262,20 +284,23 @@ async function collectArtifacts(
   kind: FirmwareTaskKind,
   fw: string,
   buildDir: string,
-  mergedPath: string | null
+  mergedPath: string | null,
+  backend: FirmwareBackend
 ): Promise<FirmwareArtifact[]> {
   const out: FirmwareArtifact[] = []
   const push = async (p: string | null): Promise<void> => {
     if (!p) return
     try {
       const st = await fsp.stat(p)
+      if (!st.isFile() || st.size <= 0) throw new Error('empty artifact')
       out.push({ path: p, sizeBytes: st.size })
     } catch {
-      // 产物缺失不阻塞成功汇报
+      if (backend === 'nuttx') throw new Error(`NuttX 固件产物缺失或为空: ${p}`)
+      // ESP-IDF 沿用历史行为，工具自身负责对构建结果判错。
     }
   }
   if (kind === 'build' || kind === 'merge' || kind === 'flash') {
-    await push(await appBinOf(fw, buildDir))
+    await push(backend === 'nuttx' ? join(fw, buildDir, 'nuttx.bin') : await appBinOf(fw, buildDir))
   }
   if (kind === 'merge') await push(mergedPath)
   return out
@@ -283,39 +308,70 @@ async function collectArtifacts(
 
 export interface StartTaskOptions {
   kind: FirmwareTaskKind
+  /** 请求声明仅用于核验，实际后端来自 cwd/pixelbox.json。 */
+  firmwareBackend?: FirmwareBackend
   target: string
   /** 烧录串口(kind === 'flash' 必填) */
   port?: string
   /** 烧录波特率(缺省用设置值) */
   baud?: number
   /**
-   * 固件工程目录(IDE v3:idf.py 作用于当前工作区;须含 CMakeLists.txt,
-   * 否则 throw toolchain:notFirmwareProject)。缺省保持旧行为:仓库 firmware/
+   * 固件工程目录；NuttX 校验 runner 与入口，ESP-IDF 校验 CMakeLists.txt。
+   * 缺省使用所选后端的仓库/内置模板目录。
    */
   cwd?: string
 }
 
 /** 启动固件任务;并发/环境错误直接 throw(错误消息为 i18n 错误码) */
 async function startTask(opts: StartTaskOptions): Promise<void> {
-  if (active) throw new Error('toolchain:busy')
+  if (active || starting) throw new Error('toolchain:busy')
+  starting = true
+  try { await startTaskInternal(opts) } finally { starting = false }
+}
+
+async function startTaskInternal(opts: StartTaskOptions): Promise<void> {
   const target = opts.target
   if (!/^[a-z0-9]+$/.test(target)) throw new Error('toolchain:badTarget')
-
-  const info = await detectToolchain()
-  // cwd 模式只依赖 IDF 环境本身:monorepo firmware/ 缺失(打包分发形态)不阻塞
-  if (!info.ok && !(opts.cwd && info.error === 'firmwareMissing')) {
-    throw new Error(`toolchain:${info.error ?? 'idfNotFound'}`)
-  }
-  // 任务工作目录:cwd 指定的固件工程(校验 CMakeLists.txt)> 旧 monorepo firmware/
-  let fw: string
-  if (typeof opts.cwd === 'string' && opts.cwd.trim().length > 0) {
-    fw = resolve(opts.cwd.trim())
-    if (!existsSync(join(fw, 'CMakeLists.txt'))) throw new Error('toolchain:notFirmwareProject')
-  } else {
-    fw = info.firmwareDir
-  }
-  const buildDir = buildDirOf(target)
+  if (!['build', 'merge', 'flash', 'clean'].includes(opts.kind)) throw new Error('toolchain:badTask')
+  const requested = opts.firmwareBackend
+  if (requested !== undefined && !isFirmwareBackend(requested)) throw new Error('toolchain:backendMismatch')
+  const cwd = typeof opts.cwd === 'string' && opts.cwd.trim() ? resolve(opts.cwd.trim()) : firmwareTemplateDir(requested ?? 'esp-idf')
+  const project = await resolveFirmwareProject(cwd, requested)
+  const fw = project.root
+  const backend = project.backend
+  if (!supportsFirmwareTarget(backend, target)) throw new Error('toolchain:unsupportedBackendTarget')
+  // renderer 的 target 始终是芯片名；NuttX profile 才是 runner 的真实目标。
+  // 例如 esp32s3-multinet7 会选择 MultiNet7 Kconfig 覆盖并隔离自己的缓存。
+  const runnerTarget = backend === 'nuttx' ? (project.nuttxProfile ?? target) : target
+  const buildDir = backend === 'nuttx' ? join('build', runnerTarget) : buildDirOf(target)
   const startedAt = Date.now()
+  const settings = await loadSettings()
+  if (opts.kind === 'flash') {
+    const port = opts.port ?? ''
+    const validPort = process.platform === 'win32' ? /^COM[1-9]\d*$/i.test(port) : /^\/dev\/[\w.-]+$/.test(port)
+    if (!validPort) throw new Error('toolchain:badPort')
+  }
+
+  if (backend === 'nuttx') {
+    if (!['darwin', 'linux'].includes(process.platform)) throw new Error('toolchain:unsupportedPlatform')
+    // clean 只清理工程自己的 build/<target>，无需 SDK 源码或交叉编译器可用。
+    let nuttxPath = settings.nuttxPathOverride
+    if (opts.kind !== 'clean') {
+      const info = await detectToolchain(undefined, backend, fw)
+      if (!info.ok) throw new Error(`toolchain:${info.error ?? 'nuttxNotFound'}`)
+      nuttxPath = info.nuttxPath!
+    }
+    const baud = typeof opts.baud === 'number' && Number.isFinite(opts.baud) && opts.baud >= 9600 && opts.baud <= 4000000
+      ? Math.floor(opts.baud) : settings.baudRate
+    emitLines([line('info', `[toolchain] NuttX profile=${runnerTarget} (chip=${target})`),
+      line('info', `[toolchain] python3 ${nuttxTaskArgs(opts.kind, nuttxPath, runnerTarget, opts.port, baud).map(q).join(' ')}`)])
+    const args = nuttxTaskArgs(opts.kind, nuttxPath, runnerTarget, opts.port, baud)
+    // NuttX 直接执行独立 runner；不 source export.sh、不读取 IDF 工具路径。
+    const proc = spawn('python3', args, { cwd: fw, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } })
+    watchTaskProcess(proc, opts, backend, fw, buildDir, opts.kind === 'merge' ? join(fw, 'dist', `${runnerTarget}-nuttx.bin`) : null, startedAt)
+    return
+  }
 
   // ---- clean:直接删除构建目录(不需要 IDF 环境;非默认目录连内嵌 sdkconfig 一起清) ----
   if (opts.kind === 'clean') {
@@ -329,6 +385,7 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
       emitLines([line('info', `[toolchain] 清理完成(${target} 下次构建将全量重新配置)`)])
       emitDone({
         kind: 'clean',
+        firmwareBackend: backend,
         target,
         success: true,
         cancelled: false,
@@ -341,6 +398,7 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
       emitLines([line('error', `[toolchain] 清理失败: ${msg}`)])
       emitDone({
         kind: 'clean',
+        firmwareBackend: backend,
         target,
         success: false,
         cancelled: false,
@@ -354,7 +412,8 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
   }
 
   // ---- build / merge / flash:login shell + export.sh + idf.py ----
-  const settings = await loadSettings()
+  const info = await detectToolchain(undefined, backend, fw)
+  if (!info.ok) throw new Error(`toolchain:${info.error ?? 'idfNotFound'}`)
 
   // idf.py 全局参数:独立构建目录;非默认目录显式 SDKCONFIG 防止污染仓库根 sdkconfig
   const idfArgs: string[] = ['-B', buildDir]
@@ -431,8 +490,14 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
       PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
       ...(pyEnv ? { IDF_PYTHON_ENV_PATH: pyEnv } : {}) }
   })
-  active = { kind: opts.kind, target, proc, cancelled: false, startedAt }
-  emitLines([line('info', `[toolchain] 任务开始:${opts.kind} → ${target}(cwd=${fw})`)])
+  watchTaskProcess(proc, opts, backend, fw, buildDir, mergedPath, startedAt)
+}
+
+/** 两种后端共用日志、取消、退出与产物回报，保持上层任务接口一致。 */
+function watchTaskProcess(proc: ChildProcess, opts: StartTaskOptions, backend: FirmwareBackend,
+  fw: string, buildDir: string, mergedPath: string | null, startedAt: number): void {
+  active = { kind: opts.kind, target: opts.target, firmwareBackend: backend, proc, cancelled: false, startedAt }
+  emitLines([line('info', `[toolchain] 任务开始:${backend}/${opts.kind} → ${opts.target}(cwd=${fw})`)])
 
   const stdoutBuf = { rest: '' }
   const stderrBuf = { rest: '' }
@@ -454,6 +519,7 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
     emitLines([line('error', `[toolchain] 进程启动失败: ${err.message}`)])
     emitDone({
       kind: task.kind,
+      firmwareBackend: task.firmwareBackend,
       target: task.target,
       success: false,
       cancelled: false,
@@ -475,13 +541,23 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
         .map((s) => line(classify(s), s))
     )
     const durationMs = Date.now() - task.startedAt
-    const success = code === 0 && !task.cancelled
+    let success = code === 0 && !task.cancelled
     void (async (): Promise<void> => {
-      const artifacts = success ? await collectArtifacts(task.kind, fw, buildDir, mergedPath) : []
+      let artifacts: FirmwareArtifact[] = []
+      let message: string | undefined
+      if (success) {
+        try {
+          artifacts = await collectArtifacts(task.kind, fw, buildDir, mergedPath, task.firmwareBackend)
+        } catch (error) {
+          success = false
+          message = error instanceof Error ? error.message : String(error)
+          emitLines([line('error', `[toolchain] ${message}`)])
+        }
+      }
       if (success) {
         // build*/dist 被 watcher 忽略,首次构建产生的目录不会有真实 fs 事件 →
         // 合成 addDir 让文件树刷新父目录,显示新出现的构建产物目录
-        emitFsEventIfWatched('addDir', join(fw, buildDir))
+        emitFsEventIfWatched(task.kind === 'clean' ? 'unlinkDir' : 'addDir', join(fw, buildDir))
         if (task.kind === 'merge') emitFsEventIfWatched('addDir', join(fw, 'dist'))
       }
       const secs = (durationMs / 1000).toFixed(1)
@@ -501,12 +577,14 @@ async function startTask(opts: StartTaskOptions): Promise<void> {
       }
       emitDone({
         kind: task.kind,
+        firmwareBackend: task.firmwareBackend,
         target: task.target,
         success,
         cancelled: task.cancelled,
         exitCode: code,
         durationMs,
-        artifacts
+        artifacts,
+        ...(message ? { message } : {})
       })
     })()
   })
@@ -585,8 +663,8 @@ export function registerToolchainIpc(): void {
   // 环境检测(设置页实时回显 / 构建前预检);可传草稿覆盖路径做不落盘试探
   ipcMain.handle(
     'toolchain:detect',
-    async (_e, overridePath?: string): Promise<ToolchainInfo> =>
-      detectToolchain(typeof overridePath === 'string' ? overridePath : undefined)
+    async (_e, overridePath?: string, backend?: FirmwareBackend, cwd?: string): Promise<ToolchainInfo> =>
+      detectToolchain(typeof overridePath === 'string' ? overridePath : undefined, backend, typeof cwd === 'string' ? cwd : undefined)
   )
 
   // 启动任务(构建/打包/烧录/清理);完成经 toolchain:done 事件回报
@@ -599,7 +677,7 @@ export function registerToolchainIpc(): void {
 
   // 运行状态(renderer 重载后恢复按钮禁用态)
   ipcMain.handle('toolchain:status', (): FirmwareStatus => {
-    return { running: active?.kind ?? null, target: active?.target ?? null }
+    return { running: active?.kind ?? null, target: active?.target ?? null, firmwareBackend: active?.firmwareBackend }
   })
 
   // 串口扫描(烧录对话框轮询刷新)

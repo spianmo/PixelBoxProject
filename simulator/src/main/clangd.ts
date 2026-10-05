@@ -19,8 +19,9 @@ import { join, resolve, dirname, basename, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { getSettingsSync } from './settings'
 import { getWatchedRoot } from './workspace'
-import { detectToolchain } from './toolchain'
-import type { ClangdStatus, ClangdServerNotification } from '../shared/ipc-types'
+import { buildDirOf, detectToolchain } from './toolchain'
+import { resolveFirmwareProject } from './firmwareProject'
+import type { ClangdStatus, ClangdServerNotification, FirmwareBackend } from '../shared/ipc-types'
 
 /** 请求超时(clangd 首次解析 ESP-IDF 头文件可达数秒,给足余量) */
 const REQUEST_TIMEOUT_MS = 20_000
@@ -94,6 +95,8 @@ class ClangdSession {
   constructor(
     readonly root: string,
     readonly clangdPath: string,
+    private compileCommandsDir: string,
+    private queryDrivers: string[],
     private onServerNotification: (msg: ClangdServerNotification) => void,
     private onAsyncStatus: (status: ClangdStatus) => void
   ) {}
@@ -102,9 +105,9 @@ class ClangdSession {
   async start(): Promise<void> {
     const args = [
       '--background-index',
-      '--compile-commands-dir=' + join(this.root, 'build'),
+      '--compile-commands-dir=' + this.compileCommandsDir,
       // 交叉编译器白名单:clangd 询问 driver 提取 xtensa/riscv 系统头文件路径
-      '--query-driver=' + join(homedir(), '.espressif', 'tools', '**', 'bin', '*'),
+      ...(this.queryDrivers.length > 0 ? ['--query-driver=' + this.queryDrivers.join(',')] : []),
       '--log=error',
       '--pch-storage=memory',
       '--limit-results=80'
@@ -357,15 +360,22 @@ function fileUriToPath(uri: unknown): string | null {
 }
 
 /** 会话可读根目录集合(工作区 → IDF → 工具链 → clangd 前缀) */
-async function computeAllowedReadRoots(root: string, clangdPath: string): Promise<string[]> {
+async function computeAllowedReadRoots(root: string, clangdPath: string, backend: FirmwareBackend, queryDrivers: string[]): Promise<string[]> {
   const spelled = [root]
   try {
-    const info = await detectToolchain()
+    const info = await detectToolchain(undefined, backend, root)
     if (info.idfPath) spelled.push(resolve(info.idfPath))
+    if (info.nuttxPath) {
+      spelled.push(resolve(info.nuttxPath))
+      spelled.push(resolve(info.nuttxPath, '..', 'apps'))
+    }
   } catch {
     // IDF 未装:仅剩工作区与工具链目录,跳转到 IDF 头文件自然失败
   }
-  spelled.push(resolve(process.env.IDF_TOOLS_PATH ?? join(homedir(), '.espressif')))
+  if (backend === 'esp-idf') spelled.push(resolve(process.env.IDF_TOOLS_PATH ?? join(homedir(), '.espressif')))
+  for (const driver of queryDrivers) {
+    if (!driver.includes('*')) spelled.push(dirname(dirname(driver)))
+  }
   spelled.push(dirname(dirname(resolve(clangdPath))))
   // clangd 返回 realpath 规范化的 URI(macOS /tmp → /private/tmp;符号链接 IDF →
   // 真实目录),牢笼比较两侧都可能出现拼写路径或真实路径 → 两种形态都收进根集合
@@ -379,6 +389,30 @@ async function computeAllowedReadRoots(root: string, clangdPath: string): Promis
     }
   }
   return [...roots]
+}
+
+/** 跟随工程后端与芯片查找编译数据库，不把 NuttX 固定到 ESP-IDF 的 build/。 */
+export async function resolveCompileCommandsDir(root: string): Promise<{ path: string; backend: FirmwareBackend } | null> {
+  try {
+    const project = await resolveFirmwareProject(root)
+    const target = project.chip ?? 'esp32s3'
+    const nuttxTarget = project.nuttxProfile ?? target
+    const path = join(root, project.backend === 'nuttx' ? join('build', nuttxTarget) : buildDirOf(target))
+    if (existsSync(join(path, 'compile_commands.json'))) return { path, backend: project.backend }
+  } catch { /* 普通 CMake 工程继续尝试历史 build/ 位置。 */ }
+  return existsSync(join(root, 'build', 'compile_commands.json')) ? { path: join(root, 'build'), backend: 'esp-idf' } : null
+}
+
+/** NuttX 只查询 PATH 中显式找到的独立交叉编译器，不要求安装 ESP-IDF。 */
+function clangdQueryDrivers(backend: FirmwareBackend): string[] {
+  if (backend === 'esp-idf') return [join(homedir(), '.espressif', 'tools', '**', 'bin', '*')]
+  const drivers: string[] = []
+  for (const name of ['xtensa-esp32s3-elf-gcc', 'xtensa-esp-elf-gcc']) {
+    const result = spawnSync('which', [name], { encoding: 'utf8', timeout: 2000 })
+    const path = result.status === 0 ? result.stdout.split('\n')[0]?.trim() : ''
+    if (path && existsSync(path)) drivers.push(path)
+  }
+  return drivers
 }
 
 async function startSession(requestedRoot: string | undefined): Promise<ClangdStatus> {
@@ -404,15 +438,19 @@ async function startSession(requestedRoot: string | undefined): Promise<ClangdSt
     allowedReadRoots = []
   }
 
-  if (!existsSync(join(root, 'build', 'compile_commands.json'))) {
+  const compileCommands = await resolveCompileCommandsDir(root)
+  if (!compileCommands) {
     return { state: 'noCompileCommands' }
   }
   const clangdPath = resolveClangd()
   if (!clangdPath) return { state: 'noClangd' }
+  const queryDrivers = clangdQueryDrivers(compileCommands.backend)
 
   const s = new ClangdSession(
     root,
     clangdPath,
+    compileCommands.path,
+    queryDrivers,
     (msg) => broadcast('clangd:event', msg),
     (status) => broadcast('clangd:status', status)
   )
@@ -424,7 +462,7 @@ async function startSession(requestedRoot: string | undefined): Promise<ClangdSt
     return { state: 'failed' }
   }
   session = s
-  allowedReadRoots = await computeAllowedReadRoots(root, clangdPath)
+  allowedReadRoots = await computeAllowedReadRoots(root, clangdPath, compileCommands.backend, queryDrivers)
   watchClangdConfig(root) // .clangd 变更 → 自动重启会话(诊断按新配置刷新)
   return { state: 'running', clangdPath }
 }

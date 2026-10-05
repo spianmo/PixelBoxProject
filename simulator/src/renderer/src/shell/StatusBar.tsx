@@ -7,12 +7,13 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LuGitBranch, LuPlus, LuSmartphone } from 'react-icons/lu'
 import { VscLoading } from 'react-icons/vsc'
-import type { FirmwareTaskKind, GitBranchInfo } from '../../../shared/ipc-types'
+import type { GitBranchInfo } from '../../../shared/ipc-types'
 import { chipLabel, selectedDeviceName, useDeviceProfiles, useShellDevices } from './store'
 import { MenuButton, type DropdownItem } from './Dropdown'
 import { InputModal } from '../components/Modal'
 import { showToast } from '../components/toast'
 import { isPreviewFile } from '../editor/previewFile'
+import { firmwareBackendLabel, type ActiveFirmwareTask } from './firmware'
 
 interface Props {
   workspaceRoot: string | null
@@ -26,7 +27,7 @@ interface Props {
   /** 推送进度 0-100(-1 无) */
   pushPercent: number
   /** 进行中的固件任务(阶段 3) */
-  fwTask: FirmwareTaskKind | null
+  fwTask: ActiveFirmwareTask | null
 }
 
 function baseName(p: string): string {
@@ -160,7 +161,8 @@ export function StatusBar(props: Props): React.JSX.Element {
       {props.fwTask && (
         <span className="flex shrink-0 items-center gap-1.5 text-accent">
           <VscLoading className="animate-spin" />
-          {t(`fw.status.${props.fwTask}`)} · {chipLabel(dev.chip)}
+          {t(`fw.status.${props.fwTask.kind}`)} · {firmwareBackendLabel(props.fwTask.firmwareBackend)} ·{' '}
+          {chipLabel(props.fwTask.target ?? '—')}
         </span>
       )}
 

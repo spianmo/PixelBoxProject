@@ -20,12 +20,19 @@ import {
   CHIP_IDS,
   type ChipId
 } from '../../../shared/chipCapabilities'
+import {
+  autoSelectedDeviceKey,
+  DEFAULT_SIM_KEY,
+  deviceKey
+} from './deviceSelection'
+
+export { autoSelectedDeviceKey, DEFAULT_SIM_KEY, deviceKey }
 
 export { isSimDeviceKey, simDeviceKey }
 export { BUILTIN_PROFILE_ID }
 
 /** 内置默认虚拟设备的 key(初始选中) */
-export const DEFAULT_SIM_KEY = simDeviceKey(BUILTIN_PROFILE_ID)
+// DEFAULT_SIM_KEY/deviceKey/autoSelectedDeviceKey 保持从纯模块导出，供 main/宿主测试复用。
 
 /** 目标芯片(固件构建目标;与设备档案芯片相互独立) */
 export const CHIP_TARGETS = CHIP_IDS
@@ -34,10 +41,6 @@ export type ChipTarget = ChipId
 /** 芯片显示名 */
 export function chipLabel(chip: string): string {
   return chip.replace(/^esp32(.+)$/, (_m, s: string) => `ESP32-${s.toUpperCase()}`).replace(/^esp32$/, 'ESP32')
-}
-
-export function deviceKey(d: DevdDevice): string {
-  return `${d.ip}:${d.port}`
 }
 
 const CHIP_STORAGE_KEY = 'pixelbox-sim.chip'

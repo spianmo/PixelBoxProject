@@ -9,8 +9,9 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LuCircleAlert, LuRefreshCw, LuUsb } from 'react-icons/lu'
-import type { SerialPortInfo } from '../../../shared/ipc-types'
+import type { FirmwareBackend, SerialPortInfo } from '../../../shared/ipc-types'
 import { chipLabel } from './store'
+import { firmwareBackendLabel } from './firmware'
 
 /** 常用烧录波特率档位 */
 export const BAUD_OPTIONS = [115200, 230400, 460800, 921600] as const
@@ -31,6 +32,7 @@ function FormRow(props: { label: string; children: React.ReactNode }): React.JSX
 interface Props {
   /** 目标芯片(标题展示) */
   target: string
+  firmwareBackend: FirmwareBackend
   /** 固件任务进行中(禁用开始按钮防重入) */
   busy: boolean
   /** 默认波特率(设置页持久化值) */
@@ -87,10 +89,16 @@ export function FlashDialog(props: Props): React.JSX.Element {
         {/* 标题 */}
         <div className="flex items-center gap-2 border-b border-ink-700 px-4 py-2.5 text-sm font-medium text-jb-text">
           <LuUsb className="text-jb-muted" />
-          {t('fw.flashDialog.title', { chip: chipLabel(props.target) })}
+          {t('fw.flashDialog.title', {
+            chip: chipLabel(props.target),
+            backend: firmwareBackendLabel(props.firmwareBackend)
+          })}
         </div>
 
         <div className="space-y-3 px-4 py-4">
+          {props.firmwareBackend === 'nuttx' && (
+            <p className="text-[11px] leading-4 text-jb-muted">{t('fw.flashDialog.nuttxHint')}</p>
+          )}
           {/* 端口列表 */}
           <FormRow label={t('fw.flashDialog.port')}>
             <div className="max-h-40 overflow-auto rounded border border-ink-600 bg-ink-900">

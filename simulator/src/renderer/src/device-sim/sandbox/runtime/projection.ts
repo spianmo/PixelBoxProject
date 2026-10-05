@@ -26,7 +26,7 @@ export function blendPoints(pointSets: Float32Array[], weights: Float32Array, ou
   }
 }
 
-export function projectPoints(points: Float32Array, options: ProjectionOptions, output: Int32Array): void {
+function projectInto(points: Float32Array, options: ProjectionOptions, output: Int32Array, bounds: boolean, indices?: Uint32Array): number {
   if (!(points instanceof Float32Array) || !options || typeof options !== 'object' || !(output instanceof Int32Array))
     throw new TypeError('projectPoints needs Float32Array, options, Int32Array')
   const option = (key: keyof ProjectionOptions, fallback: number): number => {
@@ -42,10 +42,20 @@ export function projectPoints(points: Float32Array, options: ProjectionOptions, 
   // Construct views after reading options: getters may detach a supplied buffer.
   new Uint8Array(points.buffer)
   new Uint8Array(output.buffer)
-  if (points.length % 3 || points.length > 8192 * 3 || output.length < points.length / 3 * 2 ||
+  if (indices !== undefined) {
+    if (!(indices instanceof Uint32Array)) throw new TypeError('projection indices must be Uint32Array')
+    new Uint8Array(indices.buffer)
+  }
+  if (points.length % 3 || points.length > 8192 * 3 || output.length < (bounds ? 4 : points.length / 3 * 2) ||
+    (indices && indices.length > 8192) ||
     (points.length && points.buffer === output.buffer)) throw new RangeError('invalid projection lengths or aliased buffers')
   const ca = Math.cos(yaw), sa = Math.sin(yaw), cb = Math.cos(pitch), sb = Math.sin(pitch)
-  for (let i = 0, j = 0; i < points.length; i += 3, j += 2) {
+  const count = indices ? indices.length : points.length / 3
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (let k = 0, j = 0; k < count; k++, j += 2) {
+    const index = indices ? indices[k] : k
+    if (index >= points.length / 3) throw new RangeError('projection index is out of range')
+    const i = index * 3
     const x = points[i] * ca + points[i + 2] * sa
     const z = -points[i] * sa + points[i + 2] * ca
     const y = points[i + 1] * squash * cb - z * sb
@@ -56,8 +66,25 @@ export function projectPoints(points: Float32Array, options: ProjectionOptions, 
     if (depth >= distance || !Number.isFinite(gx) || !Number.isFinite(gy) ||
       gx < -2147483648 || gx > 2147483647 || gy < -2147483648 || gy > 2147483647)
       throw new RangeError('point is outside the projection range')
-    output[j] = gx; output[j + 1] = gy
+    if (!bounds) { output[j] = gx; output[j + 1] = gy }
+    if (gx < minX) minX = gx
+    if (gx > maxX) maxX = gx
+    if (gy < minY) minY = gy
+    if (gy > maxY) maxY = gy
   }
+  if (bounds) {
+    output[0] = count ? minX : 0; output[1] = count ? minY : 0
+    output[2] = count ? maxX : 0; output[3] = count ? maxY : 0
+  }
+  return count
+}
+
+export function projectPoints(points: Float32Array, options: ProjectionOptions, output: Int32Array): void {
+  projectInto(points, options, output, false)
+}
+
+export function projectPointBounds(points: Float32Array, options: ProjectionOptions, output: Int32Array, indices?: Uint32Array): number {
+  return projectInto(points, options, output, true, indices)
 }
 
 export function projectPointRuns(points: Float32Array, options: ProjectionOptions, output: Int32Array): number {

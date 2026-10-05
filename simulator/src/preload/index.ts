@@ -13,6 +13,7 @@ import type {
   DevdLogEvent,
   DeviceProfile,
   EffectiveTheme,
+  FirmwareBackend,
   FirmwareStatus,
   FirmwareTaskKind,
   FirmwareTaskResult,
@@ -257,13 +258,13 @@ const api = {
     subscribe('smoke:session-prepare', cb),
 
   // ---- 固件工具链(阶段 3:编译/打包/烧录) ----
-  /** 检测 ESP-IDF 环境(路径 + 版本);可传设置窗口草稿路径做不落盘试探 */
-  toolchainDetect: (overridePath?: string): Promise<ToolchainInfo> =>
-    ipcRenderer.invoke('toolchain:detect', overridePath),
+  /** 按固件实现检测工具链；cwd 存在时以工程清单为准并核验 backend。 */
+  toolchainDetect: (overridePath?: string, backend?: FirmwareBackend, cwd?: string): Promise<ToolchainInfo> =>
+    ipcRenderer.invoke('toolchain:detect', overridePath, backend, cwd),
   /**
    * 启动固件任务(build/merge/flash/clean);完成经 onFirmwareDone 事件回报。
-   * cwd = 固件工程目录(IDE v3:作用于当前工作区,须含 CMakeLists.txt);
-   * 缺省保持旧行为(仓库 firmware/)
+   * cwd = 固件工程目录，主进程依据 pixelbox.json 校验后端；旧工程默认 ESP-IDF。
+   * 缺省使用对应后端的仓库/内置固件目录。
    */
   firmwareStart: (opts: {
     kind: FirmwareTaskKind
@@ -271,6 +272,7 @@ const api = {
     port?: string
     baud?: number
     cwd?: string
+    firmwareBackend?: FirmwareBackend
   }): Promise<void> => ipcRenderer.invoke('toolchain:start', opts),
   /** 取消当前固件任务(杀进程树) */
   firmwareCancel: (): Promise<void> => ipcRenderer.invoke('toolchain:cancel'),

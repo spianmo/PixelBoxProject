@@ -25,6 +25,7 @@ import {
   type DecodedImage
 } from './images'
 import type { Vfs } from './storage'
+import { fillRunLayers, fillRectLayers, type RunLayerOptions, type RunLayerResult, type RectLayerOptions } from '../../../../../../../sdk/src/run-layers'
 
 /** 缺省分辨率(PixelBox 一代内置档案;正常路径由 init.device 注入,不再硬编码使用) */
 export const DEFAULT_SCREEN_W = 368
@@ -237,6 +238,16 @@ export class DrawSurface {
       if (rects[at + 2] <= 0 || rects[at + 3] <= 0) continue
       this.fillRect(rects[at], rects[at + 1], rects[at + 2], rects[at + 3], rects[at + 4])
     }
+  }
+
+  fillRunLayers(runs: Int32Array, options?: RunLayerOptions): RunLayerResult {
+    this.assertAlive()
+    return fillRunLayers(this, runs, options)
+  }
+
+  fillRectLayers(rects: Int32Array, options?: RectLayerOptions): void {
+    this.assertAlive()
+    fillRectLayers(this, rects, options)
   }
 
   drawCircle(x: number, y: number, r: number, color: number): void {

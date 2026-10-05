@@ -30,6 +30,7 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   },
   toolchain: {
     idfPathOverride: '',
+    nuttxPathOverride: '',
     defaultTarget: 'esp32s3',
     baudRate: 460800,
     clangdPath: ''
@@ -89,6 +90,7 @@ const SANITIZERS: Record<string, Sanitizer> = {
   'editor.tabSize': (v) => (v === 2 || v === 4 ? v : undefined),
   'editor.fontFamily': trimmedString(128),
   'toolchain.idfPathOverride': trimmedString(1024),
+  'toolchain.nuttxPathOverride': trimmedString(1024),
   'toolchain.defaultTarget': (v) =>
     typeof v === 'string' && /^[a-z0-9]{2,32}$/.test(v) ? v : undefined,
   'toolchain.baudRate': (v) =>

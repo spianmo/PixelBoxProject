@@ -17,8 +17,14 @@ export interface FsWatchEvent {
   path: string
 }
 
-/** 项目类型(app = TS 应用工程;firmware = ESP-IDF 固件工程;hardware = PCB+外壳硬件设计工程) */
+/** 项目类型(app = TS 应用工程;firmware = 固件工程;hardware = PCB+外壳硬件设计工程) */
 export type ProjectKind = 'app' | 'firmware' | 'hardware'
+
+/** 固件底层实现；旧工程未声明时使用 ESP-IDF。 */
+export type FirmwareBackend = 'esp-idf' | 'nuttx'
+
+/** NuttX 工程 profile；profile 名同时决定配置覆盖与独立构建目录。 */
+export type NuttxProfile = 'esp32s3' | 'esp32s3-multinet7' | 'esp32s3-timed-sleep'
 
 /** 最近工作区条目(workspace:recents;kind 供标题栏下拉按项目类型显示图标) */
 export interface RecentWorkspace {
@@ -40,6 +46,12 @@ export interface PixelboxManifest {
   type?: ProjectKind
   /** firmware/hardware 工程记录默认目标芯片(ChipId) */
   chip?: string
+  /** 固件实现；仅 type=firmware 使用，缺省 esp-idf。 */
+  firmwareBackend?: FirmwareBackend
+  /** NuttX 构建 profile；默认 esp32s3，支持启用 MultiNet7 的 esp32s3-multinet7。 */
+  nuttxProfile?: NuttxProfile
+  /** NuttX 板级配置，如 esp32s3-devkit:nsh（再应用工程内的配置覆盖）。 */
+  nuttxBoard?: string
 }
 
 /** 工作区项目信息(project:info) */
@@ -49,6 +61,7 @@ export interface ProjectInfo {
   name: string | null
   /** manifest.chip ?? null */
   chip: string | null
+  firmwareBackend?: FirmwareBackend
   manifest: PixelboxManifest | null
 }
 
@@ -68,6 +81,8 @@ export interface ProjectCreateOptions {
   template?: ProjectTemplate
   /** kind=firmware|hardware:目标芯片 ChipId,默认 'esp32s3' */
   chip?: string
+  /** kind=firmware：底层实现，默认 esp-idf。 */
+  firmwareBackend?: FirmwareBackend
 }
 
 /** 新建项目向导:创建结果 */
@@ -75,7 +90,7 @@ export interface ProjectCreateResult {
   /** 新项目根目录绝对路径 */
   root: string
   kind: ProjectKind
-  /** 创建后要在编辑器打开的文件绝对路径(app=src/main.ts,firmware=main/main.c,hardware=design/board.tsx) */
+  /** 创建后编辑器入口绝对路径（固件：ESP-IDF main/main.c；NuttX src/main.c）。 */
   entryFile: string
 }
 
@@ -359,21 +374,25 @@ export interface ContentSearchResult {
 // 固件工具链(阶段 3:IDE 内多芯片 编译/打包/烧录)
 // ---------------------------------------------------------------
 
-/** 固件任务类型:构建 / 打包 merged.bin / 烧录 / 清理构建目录 */
+/** 固件任务类型：构建 / 导出单文件镜像 / 烧录 / 清理构建目录。 */
 export type FirmwareTaskKind = 'build' | 'merge' | 'flash' | 'clean'
 
-/** ESP-IDF 环境检测结果 */
+/** 固件工具链环境检测结果 */
 export interface ToolchainInfo {
-  /** 环境可用(IDF 存在且 export.ps1 或 export.sh / firmware 目录齐备) */
+  backend?: FirmwareBackend
+  /** 所选后端源码/环境入口与固件工程齐备；编译器可用性由实际构建校验。 */
   ok: boolean
   /** 实际选用的 ESP-IDF 根目录(设置覆盖 > $IDF_PATH > ~/esp/esp-idf) */
   idfPath: string
-  /** IDF 版本号(如 "v5.5.0";解析失败为 null) */
+  /** NuttX 源码根目录，非 ESP-IDF 工具链路径。 */
+  nuttxPath?: string
+  /** 所选 SDK 版本号（解析失败为 null）。 */
   version: string | null
-  /** 仓库 firmware/ 目录绝对路径(构建 cwd) */
+  /** 当前固件工程或内置模板目录绝对路径。 */
   firmwareDir: string
   /** 失败原因错误码(i18n key 后缀) */
   error?: 'idfNotFound' | 'exportMissing' | 'firmwareMissing' | 'unsupportedPlatform'
+    | 'nuttxNotFound' | 'nuttxInvalid' | 'backendMismatch' | 'notFirmwareProject'
 }
 
 /** 一份固件产物(路径 + 体积) */
@@ -386,6 +405,7 @@ export interface FirmwareArtifact {
 /** 固件任务结束事件(toolchain:done) */
 export interface FirmwareTaskResult {
   kind: FirmwareTaskKind
+  firmwareBackend?: FirmwareBackend
   /** 目标芯片(esp32s3 / esp32c6 / esp32p4 …) */
   target: string
   success: boolean
@@ -404,6 +424,7 @@ export interface FirmwareTaskResult {
 export interface FirmwareStatus {
   running: FirmwareTaskKind | null
   target: string | null
+  firmwareBackend?: FirmwareBackend
 }
 
 /** 扫描到的串口设备 */
@@ -418,6 +439,8 @@ export interface SerialPortInfo {
 export interface ToolchainSettings {
   /** ESP-IDF 路径覆盖(空串 = 自动检测 $IDF_PATH / ~/esp/esp-idf) */
   idfPathOverride: string
+  /** NuttX 源码根目录覆盖（空串 = $NUTTX_PATH / ~/nuttxspace/nuttx）。 */
+  nuttxPathOverride: string
   /** 默认目标芯片(标题栏芯片下拉的初始值) */
   defaultTarget: string
   /** 烧录串口波特率 */

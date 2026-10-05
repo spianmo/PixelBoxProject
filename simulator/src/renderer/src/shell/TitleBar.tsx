@@ -43,10 +43,9 @@ import {
   LuX
 } from 'react-icons/lu'
 import { VscChromeMaximize, VscChromeRestore, VscLoading } from 'react-icons/vsc'
-import type { FirmwareTaskKind, ProjectKind, RecentWorkspace } from '../../../shared/ipc-types'
+import type { FirmwareBackend, ProjectKind, RecentWorkspace } from '../../../shared/ipc-types'
 import i18n from '../i18n'
 import {
-  CHIP_TARGETS,
   chipLabel,
   deviceKey,
   selectedDeviceName,
@@ -56,6 +55,7 @@ import {
   useShellDevices,
   shellDeviceStore
 } from './store'
+import { firmwareBackendLabel, firmwareChipTargets, type ActiveFirmwareTask } from './firmware'
 import { openDeviceWizard } from './DeviceWizardModal'
 import { MenuButton, PopoverButton, type DropdownItem } from './Dropdown'
 import {
@@ -70,13 +70,14 @@ interface Props {
   gitBranch: string | null
   /** 工程类型(§5 门控矩阵;null = 传统目录,保留 ▶ 运行兼容旧行为) */
   projectKind: ProjectKind | null
+  firmwareBackend: FirmwareBackend
   running: boolean
   building: boolean
   pushBusy: boolean
   /** 推送进度 0-100,-1 表示无进行中的推送 */
   pushPercent: number
   /** 进行中的固件任务(阶段 3;null = 空闲) */
-  fwTask: FirmwareTaskKind | null
+  fwTask: ActiveFirmwareTask | null
   onOpenWorkspace: () => void
   onOpenWorkspacePath: (path: string) => void
   /** 「新建项目…」向导(项目下拉置顶入口) */
@@ -85,7 +86,7 @@ interface Props {
   onStop: () => void
   /** 🔨 构建当前目标芯片的固件 */
   onFirmwareBuild: () => void
-  /** ⋮ 打包 merged.bin */
+  /** ⋮ 导出当前后端对应的烧录镜像 */
   onFirmwarePackage: () => void
   /** ⋮ 烧录…(打开端口选择对话框) */
   onFirmwareFlash: () => void
@@ -432,8 +433,8 @@ export function TitleBar(props: Props): React.JSX.Element {
 
   const selectedDeviceLabel = selectedDeviceName(dev, t('titlebar.simulatorDevice'))
 
-  // ---- 芯片下拉(阶段 3 接真:🔨/打包/烧录 均按此目标传参 idf.py;仅 firmware 工程渲染) ----
-  const chipItems: DropdownItem[] = CHIP_TARGETS.map((c) => ({
+  // NuttX 仅展示已有板级配置的目标，ESP-IDF 保持原有芯片列表。
+  const chipItems: DropdownItem[] = firmwareChipTargets(props.firmwareBackend).map((c) => ({
     key: c,
     label: chipLabel(c),
     checked: dev.chip === c,
@@ -446,24 +447,33 @@ export function TitleBar(props: Props): React.JSX.Element {
   const showRun = kind === 'app' || kind === null // null = 传统目录,兼容旧行为
   const showPush = kind === 'app'
   const showFw = kind === 'firmware'
+  const backendName = firmwareBackendLabel(props.firmwareBackend)
+  const isNuttX = props.firmwareBackend === 'nuttx'
+  const firmwareGroup = t('fw.menuGroup', { chip: chipLabel(dev.chip), backend: backendName })
+  const activeFirmwareGroup = props.fwTask
+    ? t('fw.menuGroup', {
+        chip: chipLabel(props.fwTask.target ?? '—'),
+        backend: firmwareBackendLabel(props.fwTask.firmwareBackend)
+      })
+    : ''
 
-  // ---- ⋮ 更多(固件:打包 merged.bin / 烧录… / 清理构建,仅固件工程) ----
+  // NuttX 使用 Simple Boot 单镜像，导出动作不能标作 ESP-IDF 分区合并。
   const moreItems: DropdownItem[] = [
     ...(showFw
       ? [
           {
             key: 'fw-package',
-            label: t('fw.menuPackage'),
+            label: t(isNuttX ? 'fw.menuPackageNuttX' : 'fw.menuPackage'),
             icon: <LuPackage />,
-            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            group: firmwareGroup,
             disabled: fwBusy,
             onSelect: props.onFirmwarePackage
           },
           {
             key: 'fw-flash',
-            label: t('fw.menuFlash'),
+            label: t(isNuttX ? 'fw.menuFlashNuttX' : 'fw.menuFlash'),
             icon: <LuUsb />,
-            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            group: firmwareGroup,
             disabled: fwBusy,
             onSelect: props.onFirmwareFlash
           },
@@ -471,7 +481,7 @@ export function TitleBar(props: Props): React.JSX.Element {
             key: 'fw-clean',
             label: t('fw.menuClean'),
             icon: <LuTrash2 />,
-            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            group: firmwareGroup,
             disabled: fwBusy,
             onSelect: props.onFirmwareClean
           }
@@ -484,7 +494,7 @@ export function TitleBar(props: Props): React.JSX.Element {
             key: 'fw-cancel',
             label: t('fw.cancelTask'),
             icon: <LuX />,
-            group: t('fw.menuGroup', { chip: chipLabel(dev.chip) }),
+            group: activeFirmwareGroup,
             danger: true,
             onSelect: props.onFirmwareCancel
           }
@@ -586,11 +596,15 @@ export function TitleBar(props: Props): React.JSX.Element {
           <LuChevronDown className="text-xs" />
         </MenuButton>
 
-        {/* 目标芯片下拉:只决定 idf.py 的编译目标,app 模拟走设备档案芯片,
+        {/* 目标芯片下拉:只决定固件后端的编译目标,app 模拟走设备档案芯片,
             hardware 只在创建时记录 manifest.chip → 仅固件工程显示(§5) */}
         {showFw && (
-          <MenuButton items={chipItems} title={t('titlebar.chip')}>
+          <MenuButton
+            items={chipItems}
+            title={isNuttX ? t('newProject.chipHintNuttX') : t('titlebar.chip')}
+          >
             <LuCpu className="text-jb-muted" />
+            <span className="text-jb-muted">{backendName}</span>
             <span>{chipLabel(dev.chip)}</span>
             <LuChevronDown className="text-xs" />
           </MenuButton>
@@ -624,9 +638,9 @@ export function TitleBar(props: Props): React.JSX.Element {
         {(showFw || fwBusy) && (
           <IconButton
             title={
-              fwBusy
-                ? `${t(`fw.status.${props.fwTask}`)} — ${t('fw.cancelTask')}`
-                : `${t('titlebar.buildFirmware')} (${chipLabel(dev.chip)})`
+              props.fwTask
+                ? `${t(`fw.status.${props.fwTask.kind}`)} · ${activeFirmwareGroup} — ${t('fw.cancelTask')}`
+                : `${t('titlebar.buildFirmware')} (${backendName} · ${chipLabel(dev.chip)})`
             }
             onClick={fwBusy ? props.onFirmwareCancel : props.onFirmwareBuild}
           >
