@@ -595,6 +595,8 @@ interface PxTcpSocket {
   send(data: string | BinaryLike): void;
   close(): void;
   readonly connected: boolean;
+  /** 尚在发送队列中的字节数；当前由 NuttX 网络后端提供。 */
+  readonly bufferedAmount?: number;
   readonly remoteHost: string;
   readonly remotePort: number;
   onData(cb: (data: ArrayBuffer) => void): Unsubscribe;

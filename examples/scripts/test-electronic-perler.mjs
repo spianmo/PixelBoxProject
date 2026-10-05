@@ -92,6 +92,9 @@ function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, opti
   const writes = [];
   const removals = [];
   const playUrls = [];
+  const timeouts = new Map();
+  let nextTimeout = 0;
+  let onConnection = null;
   const handle = {
     pauseCount: 0,
     resumeCount: 0,
@@ -151,7 +154,10 @@ function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, opti
     wifi: { status: () => ({ ip: '192.168.1.8' }) },
     net: {
       hostname: () => 'pixelbox',
-      listenTcp: () => ({ close() {} }),
+      listenTcp: ({ onConnection: callback }) => {
+        onConnection = callback;
+        return { close() {} };
+      },
       mdns: { advertise: () => () => {} },
     },
     screen: {
@@ -174,6 +180,9 @@ function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, opti
       },
     },
     app: {
+      readAssetText(name) {
+        return readFileSync(join(examplesRoot, '05-electronic-perler', 'assets', name), 'utf8');
+      },
       onExit(callback) { exitCallback = callback; },
     },
   };
@@ -182,8 +191,14 @@ function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, opti
     console: { log() {}, warn() {}, error() {} },
     TextEncoder,
     TextDecoder,
-    setTimeout,
-    clearTimeout,
+    setTimeout: options.fakeTimers
+      ? (callback, delay) => {
+        const id = ++nextTimeout;
+        timeouts.set(id, { callback, delay });
+        return id;
+      }
+      : setTimeout,
+    clearTimeout: options.fakeTimers ? (id) => timeouts.delete(id) : clearTimeout,
     setInterval: () => 1,
     clearInterval() {},
   });
@@ -198,6 +213,35 @@ function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, opti
     finishPlay() { resolvePlay?.(handle); },
     tickFrame() { frameCallback?.(16); },
     exit() { exitCallback?.(); },
+    acceptHttp(queuedBytes = 0) {
+      const sent = [];
+      let onData = null;
+      let bufferedAmount = queuedBytes;
+      let closeCount = 0;
+      const socket = {
+        connected: true,
+        get bufferedAmount() { return bufferedAmount; },
+        get closeCount() { return closeCount; },
+        sent,
+        send(data) { sent.push(data); },
+        close() { closeCount++; this.connected = false; },
+        onData(callback) { onData = callback; },
+        onClose() {},
+        onError() {},
+        receive(data) { onData?.(new TextEncoder().encode(data).buffer); },
+        setQueued(value) { bufferedAmount = value; },
+      };
+      onConnection?.(socket);
+      return socket;
+    },
+    pendingTimeouts() { return [...timeouts.values()].map((item) => item.delay); },
+    runTimeouts() {
+      const pending = [...timeouts];
+      for (const [id, item] of pending) {
+        if (!timeouts.delete(id)) continue;
+        item.callback();
+      }
+    },
   };
 }
 
@@ -331,6 +375,30 @@ test('持久化键不超过 ESP-IDF NVS 的 15 字节限制', () => {
   assert.ok(Buffer.byteLength(patternModule.MODE_STORAGE_KEY, 'utf8') <= 15);
   assert.ok(Buffer.byteLength(patternModule.MEDIA_STORAGE_KEY, 'utf8') <= 15);
   assert.ok(Buffer.byteLength(patternModule.MUSIC_STORAGE_KEY, 'utf8') <= 15);
+});
+
+test('NuttX 的大脚本响应在发送队列排空后才关闭连接', () => {
+  const runtime = loadPerlerRuntime(null, null, null, { fakeTimers: true });
+  const socket = runtime.acceptHttp(1024);
+  assert.deepEqual(runtime.pendingTimeouts(), [5000]);
+  socket.receive('GET /app.js HTTP/1.1\r\nHost: pixelbox\r\n\r\n');
+
+  const response = socket.sent.join('');
+  const headerEnd = response.indexOf('\r\n\r\n');
+  assert.ok(headerEnd > 0);
+  const declaredLength = Number(response.slice(0, headerEnd).match(/Content-Length: (\d+)/)?.[1]);
+  const body = response.slice(headerEnd + 4);
+  assert.ok(Buffer.byteLength(body, 'utf8') > 30000);
+  assert.equal(declaredLength, Buffer.byteLength(body, 'utf8'));
+  assert.deepEqual(runtime.pendingTimeouts(), [10]);
+
+  runtime.runTimeouts();
+  assert.equal(socket.closeCount, 0);
+  assert.deepEqual(runtime.pendingTimeouts(), [10]);
+  socket.setQueued(0);
+  runtime.runTimeouts();
+  assert.equal(socket.closeCount, 1);
+  assert.deepEqual(runtime.pendingTimeouts(), []);
 });
 
 test('音乐协议接受 HTTP(S) MP3 地址并清理首尾空白', () => {

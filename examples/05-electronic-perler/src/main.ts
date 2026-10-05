@@ -304,9 +304,19 @@ function sendResponse(
   sock.send(headers);
   if (body.length > 0) sock.send(body);
 
-  // PxTcpSocket.send() 进入异步发送队列，按响应体大小留出排空时间。
-  const closeDelayMs = Math.min(1500, 150 + Math.ceil(byteLength(body) / 1024) * 30);
-  setTimeout(() => sock.close(), closeDelayMs);
+  // NuttX 的 send() 仅写入软件队列，关闭前必须等队列排空。
+  if (sock.bufferedAmount !== undefined) {
+    const deadline = Date.now() + 30000;
+    const drain = (): void => {
+      if (!sock.connected) return;
+      if (sock.bufferedAmount === 0 || Date.now() >= deadline) sock.close();
+      else setTimeout(drain, 10);
+    };
+    setTimeout(drain, 10);
+  } else {
+    const closeDelayMs = Math.min(1500, 150 + Math.ceil(byteLength(body) / 1024) * 30);
+    setTimeout(() => sock.close(), closeDelayMs);
+  }
 }
 
 function sendJson(sock: PxTcpSocket, status: number, value: unknown): void {
@@ -539,6 +549,7 @@ function handleConnection(sock: PxTcpSocket): void {
 
   const rejectLargeRequest = (): void => {
     handled = true;
+    clearTimeout(idleTimeout);
     sendJson(sock, 413, { ok: false, error: '请求体过大' });
   };
 
@@ -558,6 +569,7 @@ function handleConnection(sock: PxTcpSocket): void {
       const requestLine = lines.shift()?.split(' ') ?? [];
       if (requestLine.length < 2) {
         handled = true;
+        clearTimeout(idleTimeout);
         sendJson(sock, 400, { ok: false, error: 'HTTP 请求行无效' });
         return;
       }
@@ -579,6 +591,7 @@ function handleConnection(sock: PxTcpSocket): void {
     const bodyStart = headerEnd + 4;
     if (buffer.byteLength < bodyStart + contentLength) return;
     handled = true;
+    clearTimeout(idleTimeout);
     routeRequest(sock, method, path, buffer.slice(bodyStart, bodyStart + contentLength));
   });
   sock.onClose(() => clearTimeout(idleTimeout));

@@ -23,6 +23,7 @@ const tcpObject = (id, host, port, connected) => {
     send(data) { if (!record.connected) throw new Error('socket is closed'); network.send(id,data); },
     close() {if(record.closed||record.closing)return;record.closing=true;record.connected=false;network.close(id);},
     get connected() { return record.connected; },
+    get bufferedAmount() { return record.connected ? netQueued(object) : 0; },
     get remoteHost() { return host; }, get remotePort() { return port; },
     onData:callback=>netSubscription(record.data,callback),
     onClose:callback=>netSubscription(record.close,callback),

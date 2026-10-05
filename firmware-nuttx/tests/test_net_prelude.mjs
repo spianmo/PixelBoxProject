@@ -5,11 +5,12 @@ import vm from 'node:vm';
 const source=fs.readFileSync(new URL('../src/prelude_net.js',import.meta.url),'utf8');
 function fixture(){
   const events=[],calls=[],timers=new Map(),errors=[],exitHandlers=new Set();
-  let id=0,timer=0,pollError=null;
+  let id=0,timer=0,pollError=null,queued=0;
   const network={connect(...args){calls.push(['connect',...args]);return ++id;},
     listen(port){calls.push(['listen',port]);return {id:++id,port:port||32123};},
     udp(port){calls.push(['udp',port]);return {id:++id,port:port||32124};},
     send(...args){calls.push(['send',...args]);},close(value){calls.push(['close',value]);},
+    queued(value){calls.push(['queued',value]);return queued;},
     poll(){if(pollError)throw pollError;return events.shift()||null;},shutdown(){calls.push(['shutdown']);}};
   const context={px:{},native:{net:network,hostname:'test-board'},exitHandlers,
     rejected:()=>Promise.reject(new Error('ENOTSUP')),unsupported:()=>{throw new Error('ENOTSUP');},
@@ -18,7 +19,7 @@ function fixture(){
   vm.runInNewContext(source,context);
   return {net:context.px.net,events,calls,timers,errors,exitHandlers,
     pump(){for(const callback of [...timers.values()])callback();},
-    fail(){pollError=new Error('poll failed');},id(){return id;}};
+    fail(){pollError=new Error('poll failed');},id(){return id;},setQueued(value){queued=value;}};
 }
 {
   const f=fixture();let resolved=false;
@@ -27,6 +28,8 @@ function fixture(){
   assert.deepEqual(f.calls[0],['connect','localhost',1234,false,10000]);
   f.events.push({id:1,type:1});f.pump();const socket=await promise;
   assert.equal(socket.connected,true);assert.equal(socket.remoteHost,'localhost');assert.equal(socket.remotePort,1234);
+  f.setQueued(1234);assert.equal(socket.bufferedAmount,1234);
+  assert(f.calls.some(value=>value[0]==='queued'&&value[1]===1));
   let received=0,closed=0;const buffer=new Uint8Array([0,255]).buffer;
   const unsubscribe=socket.onData(data=>{assert.equal(data,buffer);received++;});
   socket.onData(()=>{throw new Error('callback failure');});
@@ -34,6 +37,7 @@ function fixture(){
   f.events.push({id:1,type:3,data:buffer});f.pump();assert.equal(received,1);assert.equal(f.errors.length,1);
   unsubscribe();unsubscribe();f.events.push({id:1,type:3,data:buffer});f.pump();assert.equal(received,1);
   socket.send('hello');socket.close();socket.close();assert.equal(socket.connected,false);assert.throws(()=>socket.send('late'));
+  assert.equal(socket.bufferedAmount,0);
   assert.equal(f.calls.filter(value=>value[0]==='close').length,1);
   f.events.push({id:1,type:5,error:0},{id:1,type:5,error:0});f.pump();assert.equal(closed,1);assert.equal(f.timers.size,0);
   socket.close();assert.equal(f.calls.filter(value=>value[0]==='close').length,1);
