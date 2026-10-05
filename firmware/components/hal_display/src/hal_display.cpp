@@ -344,12 +344,17 @@ void mark_dirty(int x, int y, int w, int h)
     if (x0 >= x1 || y0 >= y1) return;
     Rect r{x0, y0, x1 - x0, y1 - y0};
 
-    // 与已有矩形相交/相邻则合并
-    for (int i = 0; i < s.dirty_count; ++i) {
+    // 吸收所有相交/相邻矩形。新矩形可能桥接多个旧矩形，单次合并会
+    // 留下重复窗口，逐个移除可把一次 flush 的 DMA 提交数压到最低。
+    for (int i = 0; i < s.dirty_count;) {
         if (rect_overlap_or_touch(s.dirty[i], r)) {
-            s.dirty[i] = rect_union(s.dirty[i], r);
-            return;
+            r = rect_union(s.dirty[i], r);
+            s.dirty[i] = s.dirty[--s.dirty_count];
+            // union 后范围可能触碰此前跳过的矩形，重新扫描以完成传递合并。
+            i = 0;
+            continue;
         }
+        ++i;
     }
     if (s.dirty_count < kMaxDirty) {
         s.dirty[s.dirty_count++] = r;

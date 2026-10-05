@@ -88,6 +88,8 @@ struct FrameSub {
 };
 
 std::vector<FrameSub> g_frame_subs;
+// onFrame 每帧只借用这些 dup 后的引用；复用容量可避免 JS 线程频繁 malloc/free。
+std::vector<JSValue> g_frame_fns;
 uint32_t g_next_sub_id = 1;
 int g_fps = 30;
 int64_t g_last_tick_us = 0;
@@ -122,11 +124,12 @@ void frame_tick_js(JSContext *ctx)
     g_last_tick_us = now;
     if (dt <= 0 || dt > 10000) dt = 1000.0 / g_fps;
 
-    // 拷贝一份列表并 dup: 回调内 unsubscribe (会 free 原引用) 不影响本轮遍历
-    std::vector<JSValue> fns;
-    fns.reserve(g_frame_subs.size());
-    for (auto &sub : g_frame_subs) fns.push_back(JS_DupValue(ctx, sub.fn));
-    for (JSValue fn : fns) {
+    // 拷贝一份列表并 dup: 回调内 unsubscribe (会 free 原引用) 不影响本轮遍历。
+    // 容器保留容量，避免每帧产生一次短命堆分配。
+    g_frame_fns.clear();
+    if (g_frame_fns.capacity() < g_frame_subs.size()) g_frame_fns.reserve(g_frame_subs.size());
+    for (auto &sub : g_frame_subs) g_frame_fns.push_back(JS_DupValue(ctx, sub.fn));
+    for (JSValue fn : g_frame_fns) {
         JSValue arg = JS_NewFloat64(ctx, dt);
         JSValue ret = jsvm::stopping() ? JS_UNDEFINED : jsvm::call(ctx, fn, JS_UNDEFINED, 1, &arg);
         if (JS_IsException(ret)) jsvm::dump_error(ctx);
@@ -134,6 +137,7 @@ void frame_tick_js(JSContext *ctx)
         JS_FreeValue(ctx, arg);
         JS_FreeValue(ctx, fn);
     }
+    g_frame_fns.clear();
     // 回调返回后自动提交 (d.ts onFrame 约定)
     if (!jsvm::stopping()) hal_display::flush();
 }

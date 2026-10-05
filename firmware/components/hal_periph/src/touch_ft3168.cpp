@@ -13,6 +13,7 @@
  */
 #include "hal_periph/touch_ft3168.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -56,33 +57,37 @@ void emit(const TouchEvent& ev) {
 void touch_task(void*) {
     bool was_down = false;
     uint16_t last_x = 0, last_y = 0;
+    // 至少休眠一个 tick;避免低频 FreeRTOS 配置下 5ms 舍入为 0 形成忙循环。
+    const TickType_t period = std::max<TickType_t>(1, pdMS_TO_TICKS(CONFIG_PX_TOUCH_POLL_MS));
+    TickType_t next_wake = xTaskGetTickCount();
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_PX_TOUCH_POLL_MS));
-
         // 空闲期且 INT 未触发 → 跳过 I2C 读, 省总线带宽
-        if (!was_down && int_gated_idle()) continue;
+        if (was_down || !int_gated_idle()) {
+            uint8_t buf[5] = {};
+            if (i2c_read_reg(s_dev, 0x02, buf, sizeof(buf)) == ESP_OK) {
+                uint8_t touches = buf[0] & 0x0F;
+                bool now_down = (touches > 0 && touches <= 2);
 
-        uint8_t buf[5] = {};
-        if (i2c_read_reg(s_dev, 0x02, buf, sizeof(buf)) != ESP_OK) continue;
-
-        uint8_t touches = buf[0] & 0x0F;
-        bool now_down = (touches > 0 && touches <= 2);
-
-        if (now_down) {
-            uint16_t x = static_cast<uint16_t>(((buf[1] & 0x0F) << 8) | buf[2]);
-            uint16_t y = static_cast<uint16_t>(((buf[3] & 0x0F) << 8) | buf[4]);
-            if (!was_down) {
-                emit({TouchEventType::Down, x, y});
-            } else if (x != last_x || y != last_y) {
-                emit({TouchEventType::Move, x, y});
+                if (now_down) {
+                    uint16_t x = static_cast<uint16_t>(((buf[1] & 0x0F) << 8) | buf[2]);
+                    uint16_t y = static_cast<uint16_t>(((buf[3] & 0x0F) << 8) | buf[4]);
+                    if (!was_down) {
+                        emit({TouchEventType::Down, x, y});
+                    } else if (x != last_x || y != last_y) {
+                        emit({TouchEventType::Move, x, y});
+                    }
+                    last_x = x;
+                    last_y = y;
+                } else if (was_down) {
+                    emit({TouchEventType::Up, last_x, last_y});
+                }
+                was_down = now_down;
             }
-            last_x = x;
-            last_y = y;
-        } else if (was_down) {
-            emit({TouchEventType::Up, last_x, last_y});
         }
-        was_down = now_down;
+
+        // 绝对节拍,避免 I2C/回调耗时不断累积成周期漂移。
+        vTaskDelayUntil(&next_wake, period);
     }
 }
 
@@ -114,7 +119,7 @@ esp_err_t touch_init() {
         gpio_config(&io);
     }
 
-    // 轮询任务:core0, 低优先级即可(10ms 周期)
+    // 轮询任务:core0, 低优先级即可(周期由 CONFIG_PX_TOUCH_POLL_MS 控制)
     if (xTaskCreatePinnedToCore(touch_task, "px_touch", 3072, nullptr, 5, &s_task, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

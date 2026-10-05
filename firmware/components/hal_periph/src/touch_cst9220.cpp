@@ -13,6 +13,7 @@
  */
 #include "hal_periph/touch_ft3168.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -41,14 +42,8 @@ std::mutex s_cb_mtx;
 TaskHandle_t s_task = nullptr;
 int s_int_pin = -1;
 
-/** 16 位寄存器读 (大端寄存器地址 + repeated-start) */
-esp_err_t read_reg16(uint16_t reg, uint8_t* data, size_t len) {
-    const uint8_t addr[2] = {static_cast<uint8_t>(reg >> 8), static_cast<uint8_t>(reg & 0xFF)};
-    return i2c_master_transmit_receive(s_dev, addr, sizeof(addr), data, len, 100);
-}
-
 /* 不做 INT 门控: CST92xx 的 INT 是每数据帧的短脉冲 (非 FT 系的
- * 触摸期间持续拉低), 10ms 轮询几乎总采样到高电平, 门控会永久跳过
+ * 触摸期间持续拉低), 轮询常会采样到高电平, 门控会永久跳过
  * 读取导致触摸失效。7 字节 I2C 读 @400kHz 约 0.2ms, 常轮询代价可忽略 */
 
 void emit(const TouchEvent& ev) {
@@ -63,36 +58,40 @@ void emit(const TouchEvent& ev) {
 void touch_task(void*) {
     bool was_down = false;
     uint16_t last_x = 0, last_y = 0;
+    // 至少休眠一个 tick;避免低频 FreeRTOS 配置下 5ms 舍入为 0 形成忙循环。
+    const TickType_t period = std::max<TickType_t>(1, pdMS_TO_TICKS(CONFIG_PX_TOUCH_POLL_MS));
+    TickType_t next_wake = xTaskGetTickCount();
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_PX_TOUCH_POLL_MS));
-
         uint8_t buf[7] = {};
-        if (read_reg16(kDataReg, buf, sizeof(buf)) != ESP_OK) continue;
-        if (buf[6] != kAckValue) continue;  // 帧无效 (芯片未就绪), 丢弃
+        if (i2c_read_reg16(s_dev, kDataReg, buf, sizeof(buf)) == ESP_OK &&
+            buf[6] == kAckValue) {
+            const uint8_t points = buf[5] & 0x7F;
+            const bool pressed = (buf[0] & 0x0F) == 0x06;
+            const bool now_down = points > 0 && pressed;
 
-        const uint8_t points = buf[5] & 0x7F;
-        const bool pressed = (buf[0] & 0x0F) == 0x06;
-        const bool now_down = points > 0 && pressed;
-
-        if (now_down) {
-            const uint16_t rx = static_cast<uint16_t>((buf[1] << 4) | (buf[3] >> 4));
-            const uint16_t ry = static_cast<uint16_t>((buf[2] << 4) | (buf[3] & 0x0F));
-            // 坐标系对齐: 面板 MADCTL=0xA0 (旋转) 时官方触摸配 swap_xy=1 +
-            // mirror_y=1, 等效 X=479-raw_y, Y=raw_x (与显示坐标系同向)
-            const uint16_t x = static_cast<uint16_t>(ry >= 480 ? 0 : 479 - ry);
-            const uint16_t y = rx;
-            if (!was_down) {
-                emit({TouchEventType::Down, x, y});
-            } else if (x != last_x || y != last_y) {
-                emit({TouchEventType::Move, x, y});
+            if (now_down) {
+                const uint16_t rx = static_cast<uint16_t>((buf[1] << 4) | (buf[3] >> 4));
+                const uint16_t ry = static_cast<uint16_t>((buf[2] << 4) | (buf[3] & 0x0F));
+                // 坐标系对齐: 面板 MADCTL=0xA0 (旋转) 时官方触摸配 swap_xy=1 +
+                // mirror_y=1, 等效 X=479-raw_y, Y=raw_x (与显示坐标系同向)
+                const uint16_t x = static_cast<uint16_t>(ry >= 480 ? 0 : 479 - ry);
+                const uint16_t y = rx;
+                if (!was_down) {
+                    emit({TouchEventType::Down, x, y});
+                } else if (x != last_x || y != last_y) {
+                    emit({TouchEventType::Move, x, y});
+                }
+                last_x = x;
+                last_y = y;
+            } else if (was_down) {
+                emit({TouchEventType::Up, last_x, last_y});
             }
-            last_x = x;
-            last_y = y;
-        } else if (was_down) {
-            emit({TouchEventType::Up, last_x, last_y});
+            was_down = now_down;
         }
-        was_down = now_down;
+
+        // 绝对节拍,避免 I2C/回调耗时不断累积成周期漂移。
+        vTaskDelayUntil(&next_wake, period);
     }
 }
 
@@ -110,7 +109,7 @@ esp_err_t touch_init() {
 
     // 探测: 读一帧触摸数据, I2C 应答即认为在位 (帧校验仅对有效帧断言)
     uint8_t probe[7] = {};
-    if (read_reg16(kDataReg, probe, sizeof(probe)) != ESP_OK) {
+    if (i2c_read_reg16(s_dev, kDataReg, probe, sizeof(probe)) != ESP_OK) {
         ESP_LOGW(TAG, "CST9220 无应答 (addr=0x%02X)", cfg->i2c_addr);
         return ESP_ERR_NOT_FOUND;
     }
@@ -124,7 +123,7 @@ esp_err_t touch_init() {
         gpio_config(&io);
     }
 
-    // 轮询任务: core0, 低优先级即可 (10ms 周期)
+    // 轮询任务: core0, 低优先级即可 (周期由 CONFIG_PX_TOUCH_POLL_MS 控制)
     if (xTaskCreatePinnedToCore(touch_task, "px_touch", 3072, nullptr, 5, &s_task, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

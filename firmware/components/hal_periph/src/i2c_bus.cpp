@@ -65,4 +65,15 @@ esp_err_t i2c_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t* data, 
     return err;
 }
 
+esp_err_t i2c_read_reg16(i2c_master_dev_handle_t dev, uint16_t reg, uint8_t* data, size_t len) {
+    if (dev == nullptr) return ESP_ERR_INVALID_STATE;
+    const uint8_t addr[2] = {static_cast<uint8_t>(reg >> 8), static_cast<uint8_t>(reg & 0xFF)};
+    // 触摸帧很短,缩短锁和传输超时,避免故障设备拖住其他 I2C 外设。
+    esp_err_t err = board_i2c_lock(50);
+    if (err != ESP_OK) return err;
+    err = i2c_master_transmit_receive(dev, addr, sizeof(addr), data, len, 20);
+    board_i2c_unlock();
+    return err;
+}
+
 }  // namespace hal_periph

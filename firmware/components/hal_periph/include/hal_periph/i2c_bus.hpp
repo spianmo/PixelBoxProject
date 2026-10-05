@@ -25,6 +25,9 @@ esp_err_t i2c_write_reg(i2c_master_dev_handle_t dev, uint8_t reg, const uint8_t*
 /** 读寄存器(reg 单字节地址, 自动 repeated-start) */
 esp_err_t i2c_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t* data, size_t len);
 
+/** 读 16 位寄存器地址(大端地址 + repeated-start), 用于 CST92xx 触摸控制器 */
+esp_err_t i2c_read_reg16(i2c_master_dev_handle_t dev, uint16_t reg, uint8_t* data, size_t len);
+
 /** 写单字节寄存器 */
 inline esp_err_t i2c_write_reg8(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t val) {
     return i2c_write_reg(dev, reg, &val, 1);

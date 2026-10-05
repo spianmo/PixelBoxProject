@@ -7,7 +7,7 @@ PixelBox 外设硬件抽象层,不含任何 QuickJS 依赖,JS 绑定见 `binding
 | 模块 | 文件 | 说明 |
 |---|---|---|
 | 共享 I2C | `i2c_bus.cpp` | 经 `hal_common/board.h` 的 `board_i2c_bus()` 取总线,读写统一走 `board_i2c_lock/unlock` |
-| 触摸 | `touch_ft3168.cpp` | FT3168 寄存器级驱动;INT 引脚门控 + 10ms 轮询任务;地址/引脚来自 `board_touch_config()` |
+| 触摸 | `touch_ft3168.cpp` | FT3168 寄存器级驱动;INT 引脚门控 + `CONFIG_PX_TOUCH_POLL_MS` 周期轮询(默认 5ms);地址/引脚来自 `board_touch_config()` |
 | 按键 | `button_input.cpp` | BOOT 键,基于组件注册表 `espressif/button` v4(click/doubleClick/longPress 状态机) |
 | IMU | `imu_qmi8658.cpp` | QMI8658 寄存器级驱动(±8g / ±512dps);采样任务同时驱动数据流与摇一摇/姿态检测 |
 | BLE | `ble_hal.cpp` | NimBLE 封装:peripheral 动态 GATT 建表 + central 扫描/连接/GATT 客户端(串行操作队列 + 服务发现缓存) |

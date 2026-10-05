@@ -43,6 +43,42 @@
   var frame = 0;                /* 帧计数 (动画) */
   var monoMs = 0;               /* 单调毫秒钟 (onFrame dt 累计, 不受 NTP 跳变影响) */
   var toast = null;             /* { text, color, until(monoMs) } */
+  var renderDirty = true;       /* 只有视觉状态变化才重绘并提交 framebuffer */
+  var contentDirty = true;      /* 动画与底层内容分开：连接转圈无需重画被遮住的页面 */
+  var lastWifiPollAt = -1;
+  var lastWifiVisual = '';
+  var lastMainPollAt = -1;
+  var lastMainVisual = null;
+  var lastAnimMode = '';
+  var lastAnimBucket = -1;
+  var fullRedraw = true;       /* 页面切换/布局变化时清整屏；滚动帧只清动态视区 */
+
+  /* 触摸滚动需要比静态页面更短的输入到显示延迟。
+   * 触摸回调只更新状态，真正绘制仍由 onFrame 合并执行；手指抬起后保留短暂
+   * 的高频窗口，覆盖最后一段惯性/手指离屏时间，再自动回到 30 FPS。 */
+  var scrollBoost = false;
+  var scrollBoostUntil = 0;
+  function setScrollBoost(enabled) {
+    if (scrollBoost === enabled) return;
+    scrollBoost = enabled;
+    try { px.screen.setFps(enabled ? 60 : 30); } catch (e) {}
+    /* 分隔线是否绘制属于行缓存的视觉状态；切换高频窗口时安排一次
+     * 重绘，确保进入滚动立即收窄脏区，退出滚动及时恢复分隔线。 */
+    if (page === 'wifi') {
+      renderDirty = true;
+      contentDirty = true;
+    }
+  }
+  function touchScrollStart() {
+    scrollBoostUntil = monoMs + 180;
+    setScrollBoost(true);
+  }
+  function touchScrollEnd() {
+    scrollBoostUntil = monoMs + 180;
+  }
+
+  function invalidate() { renderDirty = true; contentDirty = true; }
+  function invalidateFull() { invalidate(); fullRedraw = true; }
 
   /* wifi 页 */
   var aps = [];                 /* 扫描结果 [{ssid, rssi, secure, disp}] */
@@ -65,15 +101,59 @@
   var kbMode = 'lower';         /* lower | upper | num | sym */
   var pressedKey = null;        /* { id, ch, downAt, lastRep } 高亮 + 退格连删 */
   var passErr = null;
+  var passFormVisual = null;
+  var passKeyboardMode = null;
+  var passKeyVisuals = [];
+  var passKeysDirty = true;       /* 键盘结构/高亮变化才遍历并重绘按键 */
+  var lastPassReveal = false;
+  var passShownCacheKey = null;
+  var passShownCache = '';
+  var passShownWidth = 0;
+  var passCursorX = 0;
+  var passCursorY = 0;
+  var passCursorOn = false;
 
   /* 连接中 (wifi/pass 页共用遮罩) */
   var connecting = null;        /* { ssid, fromKeyboard } */
 
-  function showToast(text, color) { toast = { text: text, color: color || C.text, until: monoMs + 2500 }; }
+  function showToast(text, color) {
+    toast = { text: text, color: color || C.text, until: monoMs + 2500 };
+    invalidate();
+  }
 
   function wifiStatus() {
     if (!hasWifi) return { connected: false, ssid: null, ip: null, mac: '' };
     try { return px.wifi.status(); } catch (e) { return { connected: false, ssid: null, ip: null, mac: '' }; }
+  }
+
+  /* 外部连接状态可能在本应用之外变化，低频轮询即可覆盖主页和列表横幅。 */
+  function pollWifiVisual() {
+    if (!hasWifi) return;
+    var st = wifiStatus();
+    var key = (st.connected ? '1' : '0') + '|' + String(st.ssid || '') + '|' + String(st.ip || '');
+    if (key !== lastWifiVisual) {
+      lastWifiVisual = key;
+      /* connected 横幅改变会同时移动列表起点，必须清掉旧横幅残留。 */
+      invalidateFull();
+    }
+  }
+
+  /* 主页的电池/内存等系统值会变化，但不需要按帧查询；变化时才重绘。 */
+  function pollMainVisual() {
+    if (page !== 'main') return;
+    var values = [];
+    for (var i = 0; i < rows.length; i++) {
+      /* WiFi 状态由更高频的 pollWifiVisual 单独负责，避免重复调用状态接口。 */
+      if (rows[i].kind !== 'link') {
+        rows[i].visualValue = String(rows[i].get());
+        values.push(rows[i].visualValue);
+      }
+    }
+    var key = values.join('|');
+    if (key !== lastMainVisual) {
+      lastMainVisual = key;
+      invalidate();
+    }
   }
 
   /* 出厂 MAC 不会变: 缓存一次, 免得 MAC 行每帧再调一次 px.wifi.status()。
@@ -161,6 +241,7 @@
     var sr = sliderRect(r);
     var v = Math.round(((tx - sr.x) / sr.w) * 100);
     r.set(Math.max(0, Math.min(100, v)));
+    invalidate();
   }
 
   /* ------------------------------------------------------------ 绘图小件 (矢量图标, 避开字库缺字) */
@@ -168,9 +249,9 @@
   function textMidY(boxY, boxH) { return boxY + ((boxH - LH12) >> 1); }
 
   /** 右向箭头 > */
-  function drawChevron(x, cy, size, color) {
-    px.screen.drawLine(x, cy - size, x + size, cy, color);
-    px.screen.drawLine(x + size, cy, x, cy + size, color);
+  function drawChevron(x, cy, size, color, target) {
+    target.drawLine(x, cy - size, x + size, cy, color);
+    target.drawLine(x + size, cy, x, cy + size, color);
   }
   /** 左向箭头 < */
   function drawChevronL(x, cy, size, color) {
@@ -183,19 +264,19 @@
     px.screen.drawLine(x + (size * 0.4) | 0, cy + ((size * 0.4) | 0), x + size, cy - ((size * 0.5) | 0), color);
   }
   /** WiFi 信号条: 4 根, level 1-4 */
-  function drawBars(x, yBottom, level, color) {
+  function drawBars(x, yBottom, level, color, target) {
     var bw = 3 * IS, gap = 2 * IS, unit = 4 * IS;
     for (var i = 0; i < 4; i++) {
       var bh = unit * (i + 1);
-      px.screen.fillRect(x + i * (bw + gap), yBottom - bh, bw, bh, i < level ? color : C.border);
+      target.fillRect(x + i * (bw + gap), yBottom - bh, bw, bh, i < level ? color : C.border);
     }
   }
   function barsWidth() { return 3 * IS * 4 + 2 * IS * 3; }
   /** 挂锁 */
-  function drawLock(x, yTop, color) {
+  function drawLock(x, yTop, color, target) {
     var u = 2 * IS + (IS > 1 ? 1 : 0); /* 368:2px 480:5px */
-    px.screen.drawRect(x + u, yTop, u * 3, u * 3, color);       /* 锁环 */
-    px.screen.fillRect(x, yTop + u * 2, u * 5, u * 4, color);   /* 锁体 */
+    target.drawRect(x + u, yTop, u * 3, u * 3, color);       /* 锁环 */
+    target.fillRect(x, yTop + u * 2, u * 5, u * 4, color);   /* 锁体 */
   }
   function lockWidth() { return (2 * IS + (IS > 1 ? 1 : 0)) * 5; }
   /** Shift 上三角 (active 实心) */
@@ -261,6 +342,7 @@
     scanErr = null;
     scanRetries = 0;
     scanStartAt = monoMs;
+    invalidate();
     doScan();
   }
 
@@ -280,11 +362,19 @@
       var arr = [];
       for (var k in seen) arr.push(seen[k]);
       arr.sort(function (a, b) { return b.rssi - a.rssi; });
-      var maxTextW = W - PAD * 2 - barsWidth() - lockWidth() - Math.round(24 * S);
-      for (var j = 0; j < arr.length; j++) arr[j].disp = truncText(dispText(arr[j].ssid), maxTextW);
+      var maxTextW = W - PAD * 2 - WIFI_BARS_W - WIFI_LOCK_W - Math.round(24 * S);
+      for (var j = 0; j < arr.length; j++) {
+        var ap = arr[j];
+        ap.disp = truncText(dispText(ap.ssid), maxTextW);
+        /* 扫描结果在滚动期间保持稳定；把每行的文字和信号几何预计算，
+         * 避免 drawWifi() 每帧重复做 RSSI 分段和字符串拼接。 */
+        ap._rssiLevel = rssiLevel(ap.rssi);
+        ap._visualBase = ap.disp + '|' + ap._rssiLevel + '|' + !!ap.secure;
+      }
       /* 手势进行中不换列表 (防拖动跳变/点错行), up 后应用; scrollY 由 draw 钳制 */
       if (touchState) pendingAps = arr;
       else { aps = arr; pendingAps = null; }
+      invalidate();
     }).catch(function (e) {
       /* 开机自动重连窗口内 scan_start 会被拒 (WIFI_STATE), 静默重试 */
       if (scanRetries < 3 && page === 'wifi' && !connecting) {
@@ -297,6 +387,7 @@
       lastScanAt = monoMs;
       scanErr = String((e && e.message) || e);
       if (aps.length > 0) showToast('扫描失败', C.red); /* 有旧列表时只弹 toast */
+      invalidate();
     });
   }
 
@@ -304,21 +395,28 @@
     if (!hasWifi || connecting) return;
     connecting = { ssid: ssid, fromKeyboard: fromKeyboard };
     pressedKey = null; /* down 后 up 会被遮罩吞掉, 在此清理防高亮/连删卡死 */
+    passKeysDirty = true;
     passErr = null;
+    invalidate();
     px.wifi.connect(ssid, pass || undefined, { timeoutMs: 20000 }).then(function (st) {
       connecting = null;
       page = 'wifi';
+      fullRedraw = true;
       showToast('已连接 ' + dispText(ssid) + (st.ip ? '  ' + st.ip : ''), C.green);
+      invalidate();
     }).catch(function (e) {
       connecting = null;
       var msg = String((e && e.message) || e);
       if (fromKeyboard) {
         page = 'pass';
+        fullRedraw = true;
         passErr = '连接失败: 密码错误或超时';
         console.log('[settings] wifi connect fail: ' + msg);
       } else {
         showToast('连接失败 ' + dispText(ssid), C.red);
       }
+      /* 遮罩覆盖了行缓存之外的空白，失败返回也必须完整恢复页面。 */
+      invalidateFull();
     });
   }
 
@@ -363,6 +461,10 @@
   var KB_H = Math.round(H * 0.44);
   var KB_TOP = H - KB_H;
   var KB_GAP = Math.max(3, Math.round(3 * S));
+  /* 键盘几何只依赖屏幕尺寸和模式；密码页每帧复用同一数组，避免触摸命中
+   * 与绘制各自创建 40 个临时对象。模式切换时由 kbMode 自动失效。 */
+  var kbLayoutCache = null;
+  var kbLayoutCacheMode = null;
 
   /**
    * 计算键盘所有键的矩形 [{key, ri, x, y, w, h}]。
@@ -370,6 +472,7 @@
    * 9 键字母行按 10 单元分摊宽度, 左右各留半键对称边距。
    */
   function kbLayout() {
+    if (kbLayoutCache && kbLayoutCacheMode === kbMode) return kbLayoutCache;
     var out = [];
     var rowsK = kbRows();
     var rowH = Math.floor((KB_H - KB_GAP) / rowsK.length);
@@ -390,6 +493,8 @@
         xf += unit * row[j].w + KB_GAP;
       }
     }
+    kbLayoutCache = out;
+    kbLayoutCacheMode = kbMode;
     return out;
   }
 
@@ -430,6 +535,9 @@
       /* 与绘制侧的置灰一致: 空密码不发起连接 */
       if (!connecting && passInput.length > 0) connectTo(passSsid, passInput, true);
     }
+    /* 输入键、功能键和模式切换都会改变按键颜色/标签；下一次绘制重算一次键盘。 */
+    passKeysDirty = true;
+    invalidate();
   }
 
   /* ------------------------------------------------------------ 页面几何 */
@@ -498,50 +606,295 @@
   }
 
   /** 主页行值: 标签宽缓存 + 按预算截断 (长 SSID/型号防与标签重叠) */
-  function drawRowValue(r, anchorX) {
+  function drawRowValue(r, anchorX, y, value, target) {
     if (r.labelW === undefined) {
       try { r.labelW = px.screen.measureText(r.label, F12).width; } catch (e) { r.labelW = 40; }
     }
-    var v = String(r.get());
+    var v = String(value);
     if (r.vCache !== v) {
       r.vCache = v;
       r.vDisp = truncText(v, anchorX - (PAD + r.labelW + Math.round(10 * S)));
     }
-    px.screen.drawText(r.vDisp, anchorX, rowScreenY(r) + Math.round(ROW_H * 0.25), {
+    target.drawText(r.vDisp, anchorX, y + Math.round(ROW_H * 0.25), {
       color: C.text, font: 'pixel12', scale: textScale, align: 'right',
     });
+  }
+
+  /* 一屏行数加两行预取余量，内存上限不随扫描到的 AP 数量增长。
+   * NuttX Canvas 为 32 位像素；480 屏最多约 1.1 MB，主列表仅七行。
+   * 页面切换释放旧画布；分配失败回到同一行绘制函数，避免低内存时黑屏。 */
+  var rowCache = [];
+  var rowCacheIndex = Object.create(null);
+  var rowCachePage = '';
+  var paintedRowRects = [];
+  var rowRectPool = [];
+  var rowComposition = null;
+  var rowGeometryBuffer = new Int32Array(32);
+  var rowRegionBuffer = new Int32Array(256);
+  var rowGeometryViews = Object.create(null);
+  var rowRegionViews = Object.create(null);
+  var rowCacheEnabled = typeof px.screen.createCanvas === 'function';
+  var rowCacheLimit = Math.ceil(H / Math.min(ROW_H, wifiRowH())) + 2;
+
+  function releaseRowCache() {
+    finishRowFrame();
+    for (var i = 0; i < rowCache.length; i++) {
+      try { rowCache[i].canvas.dispose(); } catch (e) {}
+    }
+    rowCache = [];
+    rowCacheIndex = Object.create(null);
+    rowCachePage = '';
+    paintedRowRects = [];
+    rowRectPool = [];
+    rowComposition = null;
+  }
+
+  function typedView(bufferName, views, values) {
+    var length = values.length;
+    var buffer = bufferName === 'geometry' ? rowGeometryBuffer : rowRegionBuffer;
+    if (length > buffer.length) {
+      var nextLength = buffer.length;
+      while (nextLength < length) nextLength *= 2;
+      buffer = new Int32Array(nextLength);
+      if (bufferName === 'geometry') rowGeometryBuffer = buffer;
+      else rowRegionBuffer = buffer;
+      for (var key in views) delete views[key];
+    }
+    for (var i = 0; i < length; i++) buffer[i] = values[i];
+    var view = views[length];
+    if (!view) view = views[length] = buffer.subarray(0, length);
+    return view;
+  }
+
+  function cachedRow(id, visual, rowH) {
+    if (!rowCacheEnabled) return null;
+    if (rowCachePage !== page) {
+      releaseRowCache();
+      rowCachePage = page;
+    }
+    var item = rowCacheIndex[id];
+    var oldest = null;
+    if (item === undefined) {
+      for (var i = 0; i < rowCache.length; i++) {
+        var entry = rowCache[i];
+        if (!oldest || entry.frame < oldest.frame) oldest = entry;
+      }
+    }
+    if (!item) {
+      if (rowCache.length < rowCacheLimit) {
+        try { item = { canvas: px.screen.createCanvas(W, rowH), id: null, visual: null, frame: -1 }; }
+        catch (e) {
+          rowCacheEnabled = false;
+          releaseRowCache();
+          return null;
+        }
+        rowCache.push(item);
+      } else item = oldest;
+      if (item.id !== null && item.id !== undefined) delete rowCacheIndex[item.id];
+      item.id = id;
+      rowCacheIndex[id] = item;
+      item.visual = null;
+    }
+    item.frame = frame;
+    item.redraw = item.visual !== visual;
+    item.visual = visual;
+    return item;
+  }
+
+  function clearVisibleRow(y, rowH, top, bottom) {
+    var first = Math.max(top, Math.floor(y)), last = Math.min(bottom, Math.floor(y) + rowH);
+    if (last > first) px.screen.fillRect(0, first, W, last - first, C.bg);
+  }
+
+  /* 缓存同时保存图元边界。滚动只读取文字/图标所在的小块；上一帧
+   * 的内容先按小块恢复背景，所有恢复必须在新行绘制之前完成。 */
+  function rowPainter(item) {
+    var canvas = item.canvas;
+    var rects = item.rects = [];
+    function record(x, y, width, height) {
+      var left = Math.max(0, Math.floor(x)), top = Math.max(0, Math.floor(y));
+      var right = Math.min(W, Math.ceil(x + width)), bottom = Math.min(canvas.height, Math.ceil(y + height));
+      if (left >= right || top >= bottom) return;
+      var rect = { x: left, y: top, w: right - left, h: bottom - top };
+      /* 小图标的相邻笔画合并，避免每根信号柱都跨一次 JS/C 边界。
+       * 面积门限保留左右文字之间的大段空白，不扩成整行。 */
+      for (var i = rects.length - 1; i >= 0; i--) {
+        var old = rects[i];
+        var l = Math.min(old.x, rect.x), t = Math.min(old.y, rect.y);
+        var r = Math.max(old.x + old.w, rect.x + rect.w), b = Math.max(old.y + old.h, rect.y + rect.h);
+        if ((r - l) * (b - t) <= old.w * old.h + rect.w * rect.h + 96) {
+          rect = { x: l, y: t, w: r - l, h: b - t };
+          rects.splice(i, 1);
+        }
+      }
+      rects.push(rect);
+    }
+    return {
+      drawText: function (text, x, y, style) {
+        var m = canvas.measureText(text, style);
+        var left = x - (style.align === 'right' ? m.width : style.align === 'center' ? m.width / 2 : 0);
+        record(left, y, m.width, m.height);
+        canvas.drawText(text, x, y, style);
+      },
+      fillRect: function (x, y, w, h, color) { record(x, y, w, h); canvas.fillRect(x, y, w, h, color); },
+      drawRect: function (x, y, w, h, color) { record(x, y, w, h); canvas.drawRect(x, y, w, h, color); },
+      drawLine: function (x, y, x2, y2, color) {
+        record(Math.min(x, x2), Math.min(y, y2), Math.abs(x2 - x) + 1, Math.abs(y2 - y) + 1);
+        canvas.drawLine(x, y, x2, y2, color);
+      },
+      drawCircle: function (x, y, radius, color) {
+        record(x - radius, y - radius, radius * 2 + 1, radius * 2 + 1);
+        canvas.drawCircle(x, y, radius, color);
+      },
+    };
+  }
+
+  function beginRowFrame(top, bottom) {
+    if (rowCachePage !== page) { releaseRowCache(); rowCachePage = page; }
+    /* NuttX 在原生层一次合成新旧内容的最终值，避免先清空再复制。
+     * 旧区域仍需保留，以覆盖文本缩短、行移出视口和缓存重用。 */
+    if (rowCacheEnabled && typeof px.screen._composeRows === 'function') {
+      /* 交换数组而不是 slice；滚动帧的矩形数量较多时可避免一次整表复制。 */
+      var old = fullRedraw ? [] : paintedRowRects;
+      var next = rowRectPool;
+      if (!next) next = [];
+      next.length = 0;
+      rowRectPool = old;
+      paintedRowRects = next;
+      rowComposition = { sources: [], geometry: [], regions: old, top: top, bottom: bottom };
+      if (!fullRedraw) px.screen.fillRect(W - 3, top, 2, bottom - top, C.bg);
+      return;
+    }
+    var clearRects = [];
+    if (!fullRedraw) {
+      for (var i = 0; i < paintedRowRects.length; i += 4) {
+        var first = Math.max(top, paintedRowRects[i + 1]);
+        var last = Math.min(bottom, paintedRowRects[i + 1] + paintedRowRects[i + 3]);
+        if (last > first) clearRects.push(paintedRowRects[i], first, paintedRowRects[i + 2], last - first, C.bg);
+      }
+    }
+    paintedRowRects = [];
+    /* 滚动条不在行缓存中，单独恢复两像素宽的轨道。 */
+    if (!fullRedraw) clearRects.push(W - 3, top, 2, bottom - top, C.bg);
+    if (clearRects.length) {
+      if (typeof px.screen.fillRects === 'function') px.screen.fillRects(new Int32Array(clearRects));
+      else for (var j = 0; j < clearRects.length; j += 5)
+        px.screen.fillRect(clearRects[j], clearRects[j + 1], clearRects[j + 2], clearRects[j + 3], clearRects[j + 4]);
+    }
+  }
+
+  function finishRowFrame() {
+    var c = rowComposition;
+    rowComposition = null;
+    if (c) px.screen._composeRows(c.sources, typedView('geometry', rowGeometryViews, c.geometry),
+      typedView('regions', rowRegionViews, c.regions), c.top, c.bottom, C.bg);
+  }
+
+  function appendPaintedRect(x, y, w, h) {
+    if (w <= 0 || h <= 0) return;
+    var n = paintedRowRects.length;
+    if (n >= 4) {
+      var lastX = paintedRowRects[n - 4], lastY = paintedRowRects[n - 3];
+      var lastW = paintedRowRects[n - 2], lastH = paintedRowRects[n - 1];
+      /* 同一横向范围且上下相接时合并，保持候选区域精确不扩张。 */
+      if (lastX === x && lastW === w && lastY + lastH >= y && y + h >= lastY) {
+        var end = Math.max(lastY + lastH, y + h);
+        paintedRowRects[n - 3] = Math.min(lastY, y);
+        paintedRowRects[n - 1] = end - paintedRowRects[n - 3];
+        return;
+      }
+    }
+    paintedRowRects.push(x, y, w, h);
+  }
+
+  function blitRow(item, y, top, bottom) {
+    var iy = Math.floor(y);
+    var batch = typeof px.screen._drawImageRegions === 'function';
+    if (rowComposition) {
+      rowComposition.sources.push(item.canvas);
+      rowComposition.geometry.push(iy, item.canvas.height);
+    } else if (batch) {
+      if (item.redraw || !item.regionData) {
+        var data = [];
+        for (var n = 0; n < item.rects.length; n++) {
+          var b = item.rects[n]; data.push(b.x, b.y, b.w, b.h);
+        }
+        item.regionData = new Int32Array(data);
+      }
+      px.screen._drawImageRegions(item.canvas, 0, iy, item.regionData, top, bottom);
+    }
+    for (var i = 0; i < item.rects.length; i++) {
+      var r = item.rects[i];
+      var first = Math.max(top, iy + r.y), last = Math.min(bottom, iy + r.y + r.h);
+      if (last <= first) continue;
+      if (rowComposition) rowComposition.regions.push(r.x, first, r.w, last - first);
+      else if (!batch) px.screen.drawImage(item.canvas, r.x, first, {
+        sx: r.x, sy: first - iy, sw: r.w, sh: last - first, w: r.w, h: last - first,
+      });
+      appendPaintedRect(r.x, first, r.w, last - first);
+    }
+  }
+
+  function drawMainRow(target, r, y, value) {
+    var ty = y + Math.round(ROW_H * 0.25);
+    target.drawText(r.label, PAD, ty, {
+      color: C.dim, font: 'pixel12', scale: textScale, align: 'left',
+    });
+    if (r.kind === 'slider') {
+      var sr = { x: W - PAD - VAL_W - SLIDER_W, y: y + Math.round(ROW_H * 0.28),
+                 w: SLIDER_W, h: Math.round(ROW_H * 0.34) };
+      target.fillRect(sr.x, sr.y, sr.w, sr.h, C.panel);
+      target.fillRect(sr.x, sr.y, Math.round(sr.w * value / 100), sr.h, C.accent);
+      target.drawRect(sr.x, sr.y, sr.w, sr.h, C.border);
+      target.drawText(String(value), W - PAD, ty, {
+        color: C.text, font: 'pixel12', scale: textScale, align: 'right',
+      });
+    } else if (r.kind === 'link') {
+      var chs = Math.round(5 * S);
+      drawChevron(W - PAD - chs, ty + (LH12 >> 1), chs, C.dimmer, target);
+      drawRowValue(r, W - PAD - chs * 2 - Math.round(8 * S), y, value, target);
+    } else drawRowValue(r, W - PAD, y, value, target);
   }
 
   function drawMain() {
     clampMainScroll(); /* 行数/几何变化后重钳, 与命中用同一个 mainScrollY */
     var bot = mainViewBottom();
     var ms = mainMaxScroll();
+    var spillTop = MAIN_TOP, spillBottom = bot;
+    beginRowFrame(MAIN_TOP, bot);
 
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var y = rowScreenY(r);
       if (y + ROW_H <= MAIN_TOP || y >= bot) continue; /* 视区外整行跳过 */
-      var ty = y + Math.round(ROW_H * 0.25);
-      px.screen.drawText(r.label, PAD, ty, {
-        color: C.dim, font: 'pixel12', scale: textScale, align: 'left',
-      });
-      if (r.kind === 'slider') {
-        var sr = sliderRect(r);
-        var v = r.get();
-        px.screen.fillRect(sr.x, sr.y, sr.w, sr.h, C.panel);
-        px.screen.fillRect(sr.x, sr.y, Math.round(sr.w * v / 100), sr.h, C.accent);
-        px.screen.drawRect(sr.x, sr.y, sr.w, sr.h, C.border);
-        px.screen.drawText(String(v), W - PAD, ty, {
-          color: C.text, font: 'pixel12', scale: textScale, align: 'right',
-        });
-      } else if (r.kind === 'link') {
-        var chs = Math.round(5 * S);
-        drawChevron(W - PAD - chs, ty + (LH12 >> 1), chs, C.dimmer);
-        drawRowValue(r, W - PAD - chs * 2 - Math.round(8 * S));
+      /* 信息行由已有的一秒轮询更新，滚动时不再反复查询系统内存/电池。 */
+      var value = r.kind === 'info' && r.visualValue !== undefined ? r.visualValue : r.get();
+      var cached = cachedRow('main:' + i, String(value), ROW_H);
+      if (cached) {
+        if (cached.redraw) {
+          cached.canvas.clear(C.bg);
+          drawMainRow(rowPainter(cached), r, 0, value);
+        }
+        blitRow(cached, y, MAIN_TOP, bot);
       } else {
-        drawRowValue(r, W - PAD);
+        clearVisibleRow(y, ROW_H, MAIN_TOP, bot);
+        drawMainRow(px.screen, r, y, value);
+        var ty = y + Math.round(ROW_H * 0.25);
+        spillTop = Math.min(spillTop, ty);
+        spillBottom = Math.max(spillBottom, ty + LH12);
+        if (r.kind === 'slider') {
+          var sr = sliderRect(r);
+          spillTop = Math.min(spillTop, sr.y);
+          spillBottom = Math.max(spillBottom, sr.y + sr.h);
+        } else if (r.kind === 'link') {
+          var chs = Math.round(5 * S);
+          spillTop = Math.min(spillTop, ty + (LH12 >> 1) - chs);
+          spillBottom = Math.max(spillBottom, ty + (LH12 >> 1) + chs + 1);
+        }
       }
     }
+
+    finishRowFrame();
 
     /* 滚动条 (同 wifi 页画法) */
     if (ms > 0) {
@@ -551,35 +904,79 @@
       px.screen.fillRect(W - 3, barY, 2, barH, C.border);
     }
 
-    /* 上下不透明覆盖带: gfx 无裁剪, 半可见行会画进标题/提示区, 后画盖掉 */
-    px.screen.fillRect(0, 0, W, MAIN_TOP, C.bg);
-    px.screen.fillRect(0, bot, W, H - bot, C.bg);
-
-    px.screen.drawText('设置', PAD, yTitle, { color: 0xffffff, font: 'pixel16', scale: textScale + 1, align: 'left' });
+    /* 绘图接口没有视口裁剪，仅擦除半可见行实际溢出的细条。
+     * 标题/提示未被细条覆盖时保留原像素，避免每次滚动重画整条固定区。 */
+    spillTop = Math.floor(spillTop);
+    spillBottom = Math.ceil(spillBottom);
+    if (spillTop < MAIN_TOP) px.screen.fillRect(0, spillTop, W, MAIN_TOP - spillTop, C.bg);
+    if (spillBottom > bot) px.screen.fillRect(0, bot, W, spillBottom - bot, C.bg);
+    if (fullRedraw || spillTop < yTitle + 16 * (textScale + 1)) {
+      px.screen.drawText('设置', PAD, yTitle, { color: 0xffffff, font: 'pixel16', scale: textScale + 1, align: 'left' });
+    }
 
     /* 注意: 带圈数字 U+2460-2462 不在 GB2312 一级字库, 用半角数字。 */
-    px.screen.drawText('键1 设置  键2 返回应用', (W / 2) | 0, HINT_TOP, {
-      color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
-    });
-    px.screen.drawText('键3 短按息屏 长按关机', (W / 2) | 0, H - Math.round(H * 0.115), {
-      color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
-    });
-    px.screen.drawText('键1+键3 长按 网页配网', (W / 2) | 0, H - Math.round(H * 0.06), {
-      color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
-    });
+    if (fullRedraw || spillBottom > HINT_TOP) {
+      px.screen.drawText('键1 设置  键2 返回应用', (W / 2) | 0, HINT_TOP, {
+        color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
+      });
+    }
+    var hint2 = H - Math.round(H * 0.115);
+    if (fullRedraw || spillBottom > hint2) {
+      px.screen.drawText('键3 短按息屏 长按关机', (W / 2) | 0, hint2, {
+        color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
+      });
+    }
+    var hint3 = H - Math.round(H * 0.06);
+    if (fullRedraw || spillBottom > hint3) {
+      px.screen.drawText('键1+键3 长按 网页配网', (W / 2) | 0, hint3, {
+        color: C.dimmer, font: 'pixel12', scale: textScale, align: 'center',
+      });
+    }
   }
 
   var bannerCache = { key: null, disp: '' };
+  var wifiChromeVisual = null;
+  var wifiListVisual = null;
+  var wifiListEnd = -1;
+  /* 这些值只由屏幕尺寸决定，避免 Wi-Fi 滚动时每行重复计算几何。 */
+  var WIFI_BARS_W = barsWidth();
+  var WIFI_LOCK_W = lockWidth();
+
+  function drawWifiRow(target, a, y, rowH, isCur, showDivider) {
+    target.drawText(a.disp, PAD, textMidY(y, rowH), {
+      color: isCur ? C.green : C.text, font: 'pixel12', scale: textScale, align: 'left',
+    });
+    var bx = W - PAD - WIFI_BARS_W;
+    drawBars(bx, y + rowH - Math.round(rowH * 0.32), a._rssiLevel === undefined ? rssiLevel(a.rssi) : a._rssiLevel,
+      isCur ? C.green : C.accent, target);
+    if (a.secure) drawLock(bx - WIFI_LOCK_W - Math.round(10 * S), y + Math.round(rowH * 0.3), C.dimmer, target);
+    /* 滚动期间分隔线每行都跨越近乎整屏宽度，会把 QSPI 脏区放大到整行。
+     * 行静止后再恢复，保持设置页的视觉层次不变。 */
+    if (showDivider) target.drawLine(PAD, y + rowH - 1, W - PAD, y + rowH - 1, 0x1a2230);
+  }
 
   function drawWifi() {
     /* 状态帧内单快照: banner 出现与否/覆盖带高度/命中全用同一值, 消除撕裂 */
     var st = wifiStatus();
     var top = wifiListTop(st.connected);
     var ms = maxScroll(st.connected);
+    var spillTop = top;
+    var listVisual = top + '|' + (aps.length > 0);
+    /* 扫描提示变为列表、连接横幅改变高度时，旧内容不属于行缓存。
+     * 只在这些结构变化时清视口，普通滚动仍只恢复内容小块。 */
+    if (!fullRedraw && wifiListVisual !== listVisual) px.screen.fillRect(0, top, W, H - top, C.bg);
+    if (!fullRedraw && wifiListVisual !== listVisual) wifiListEnd = -1;
+    wifiListVisual = listVisual;
+    beginRowFrame(top, H);
+    /* 缓存行直接覆盖目标，不能先清视口，否则原生比较会把未变像素也算脏。 */
+    if (!fullRedraw && aps.length === 0) px.screen.fillRect(0, top, W, H - top, C.bg);
     if (scrollY > ms) scrollY = ms; /* 连接状态变化会移动 listTop, 重钳 */
 
     var rowH = wifiRowH();
+    var showDivider = !scrollBoost;
     if (scanning && aps.length === 0) {
+      /* 点号长度每帧变化，先清掉提示行，避免短字符串覆盖不完整留下旧点。 */
+      px.screen.fillRect(0, top, W, Math.round(H * 0.22), C.bg);
       var dots = '';
       for (var d = 0; d < ((frame / 6) | 0) % 4; d++) dots += '.';
       px.screen.drawText('正在扫描' + dots, (W / 2) | 0, top + Math.round(H * 0.1), {
@@ -598,19 +995,44 @@
       });
     }
 
-    for (var i = 0; i < aps.length; i++) {
+    /* 滚动帧只遍历视口前后各一行；行缓存负责恢复刚移出视口的内容。 */
+    var firstRow = Math.max(0, Math.floor(scrollY / rowH) - 1);
+    var lastRow = Math.min(aps.length, Math.ceil((scrollY + H - top) / rowH) + 1);
+    for (var i = firstRow; i < lastRow; i++) {
       var y = top + i * rowH - scrollY;
       if (y + rowH <= top || y >= H) continue;
       var a = aps[i];
-      var textY = textMidY(y, rowH);
       var isCur = st.connected && st.ssid === a.ssid;
-      px.screen.drawText(a.disp, PAD, textY, {
-        color: isCur ? C.green : C.text, font: 'pixel12', scale: textScale, align: 'left',
-      });
-      var bx = W - PAD - barsWidth();
-      drawBars(bx, y + rowH - Math.round(rowH * 0.32), rssiLevel(a.rssi), isCur ? C.green : C.accent);
-      if (a.secure) drawLock(bx - lockWidth() - Math.round(10 * S), y + Math.round(rowH * 0.3), C.dimmer);
-      px.screen.drawLine(PAD, y + rowH - 1, W - PAD, y + rowH - 1, 0x1a2230);
+      var visual = (a._visualBase || (a.disp + '|' + (a._rssiLevel === undefined ? rssiLevel(a.rssi) : a._rssiLevel) + '|' + !!a.secure)) + '|' + isCur + '|' + showDivider;
+      var cached = cachedRow(a.ssid, visual, rowH);
+      if (cached) {
+        if (cached.redraw) {
+          cached.canvas.clear(C.bg);
+          drawWifiRow(rowPainter(cached), a, 0, rowH, isCur, showDivider);
+        }
+        blitRow(cached, y, top, H);
+      } else {
+        clearVisibleRow(y, rowH, top, H);
+        drawWifiRow(px.screen, a, y, rowH, isCur, showDivider);
+        spillTop = Math.min(spillTop, textMidY(y, rowH), y + rowH - Math.round(rowH * 0.32) - 16 * IS);
+        if (a.secure) spillTop = Math.min(spillTop, y + Math.round(rowH * 0.3));
+      }
+    }
+
+    finishRowFrame();
+
+    /* 少量 AP 时只清理滚动后新暴露的尾部，避免每帧擦除整个列表下方区域。 */
+    var listEnd = Math.max(top, Math.floor(top + aps.length * rowH - scrollY));
+    if (aps.length > 0) {
+      if (!fullRedraw && wifiListEnd >= 0 && listEnd < wifiListEnd) {
+        px.screen.fillRect(0, listEnd, W, wifiListEnd - listEnd, C.bg);
+      }
+      wifiListEnd = listEnd;
+    } else {
+      /* 空列表的视口必须在提示文字之前清理；否则会把本帧刚画出的
+       * "正在扫描"/错误提示再次擦掉。结构变化时前面的清理已足够。 */
+      if (!fullRedraw && !scanning && aps.length === 0) px.screen.fillRect(0, top, W, H - top, C.bg);
+      wifiListEnd = -1;
     }
 
     /* 滚动条 */
@@ -621,116 +1043,162 @@
       px.screen.fillRect(W - 3, barY, 2, barH, C.border);
     }
 
-    /* 顶部不透明覆盖带 (gfx 无裁剪, 滚动的半可见行会画进头部, 后画盖掉) */
-    px.screen.fillRect(0, 0, W, top, C.bg);
-    drawHeader('WiFi', true);
-    if (st.connected) {
-      px.screen.fillRect(0, HDR_H, W, BANNER_H, C.panel);
+    /* 只修复列表越过顶部的像素；状态未变时，固定标题和连接横幅保留。 */
+    var chrome = (st.connected ? '1' : '0') + '|' + String(st.ssid || '') + '|' + String(st.ip || '') + '|' + scanning;
+    spillTop = Math.floor(spillTop);
+    if (fullRedraw || chrome !== wifiChromeVisual) spillTop = 0;
+    wifiChromeVisual = chrome;
+    if (spillTop < top) px.screen.fillRect(0, spillTop, W, top - spillTop, C.bg);
+    if (fullRedraw || spillTop < HDR_H) drawHeader('WiFi', true);
+    if (st.connected && spillTop < HDR_H + BANNER_H) {
+      var repairTop = Math.max(HDR_H, spillTop);
+      px.screen.fillRect(0, repairTop, W, HDR_H + BANNER_H - repairTop, C.panel);
       var ckS = Math.round(7 * S);
-      drawCheck(PAD, HDR_H + (BANNER_H >> 1) - Math.round(2 * S), ckS, C.green);
+      var ckY = HDR_H + (BANNER_H >> 1) - Math.round(2 * S);
+      if (spillTop <= ckY + ((ckS * 0.4) | 0)) drawCheck(PAD, ckY, ckS, C.green);
       var tx = PAD + ckS + Math.round(10 * S);
       var dr = disconnectRect();
       if (bannerCache.key !== st.ssid) {
         bannerCache.key = st.ssid;
         bannerCache.disp = truncText(dispText(st.ssid || ''), dr.x - tx - Math.round(8 * S));
       }
-      px.screen.drawText(bannerCache.disp, tx, HDR_H + Math.round(BANNER_H * 0.16), {
+      var ssidY = HDR_H + Math.round(BANNER_H * 0.16);
+      if (spillTop < ssidY + LH12) px.screen.drawText(bannerCache.disp, tx, ssidY, {
         color: C.text, font: 'pixel12', scale: textScale, align: 'left',
       });
-      px.screen.drawText(st.ip || '', tx, HDR_H + Math.round(BANNER_H * 0.55), {
+      var ipY = HDR_H + Math.round(BANNER_H * 0.55);
+      if (spillTop < ipY + LH12) px.screen.drawText(st.ip || '', tx, ipY, {
         color: C.dim, font: 'pixel12', scale: textScale, align: 'left',
       });
-      px.screen.drawRect(dr.x, dr.y, dr.w, dr.h, C.border); /* 幽灵按钮: 红字描边 */
-      px.screen.drawText('断开', dr.x + (dr.w >> 1), textMidY(dr.y, dr.h), {
-        color: C.red, font: 'pixel12', scale: textScale, align: 'center',
-      });
+      if (spillTop < dr.y + dr.h) {
+        px.screen.drawRect(dr.x, dr.y, dr.w, dr.h, C.border); /* 幽灵按钮: 红字描边 */
+        px.screen.drawText('断开', dr.x + (dr.w >> 1), textMidY(dr.y, dr.h), {
+          color: C.red, font: 'pixel12', scale: textScale, align: 'center',
+        });
+      }
       px.screen.drawLine(0, HDR_H + BANNER_H - 1, W, HDR_H + BANNER_H - 1, C.border);
     }
   }
 
   function drawPass() {
-    drawHeader(passDispTitle, false);
+    if (fullRedraw) drawHeader(passDispTitle, false);
 
     var ir = inputRect();
-    px.screen.fillRect(ir.x, ir.y, ir.w, ir.h, C.panel);
-    px.screen.drawRect(ir.x, ir.y, ir.w, ir.h, passErr ? C.red : C.border);
-
-    var er = eyeRect();
     var reveal = monoMs - lastTypeAt < 1200;
-    var shown;
-    if (showPass) {
-      shown = passInput;
-    } else {
-      shown = '';
-      for (var i = 0; i < passInput.length; i++) {
-        shown += (reveal && i === passInput.length - 1) ? passInput.charAt(i) : '*';
+    var cursorOn = ((frame / 10) | 0) % 2 === 0 && !connecting;
+    var formVisual = passInput + '|' + showPass + '|' + reveal + '|' + passErr;
+    lastPassReveal = reveal;
+    /* 输入内容/显示模式变化才重绘输入框；光标闪烁只改两像素宽的小区域。 */
+    if (fullRedraw || formVisual !== passFormVisual) {
+      passFormVisual = formVisual;
+      if (passCursorOn) {
+        px.screen.fillRect(passCursorX, passCursorY, 2, LH12, C.panel);
+        passCursorOn = false;
       }
-    }
-    var maxW = er.x - ir.x - Math.round(16 * S);
-    /* 超宽时保尾部 (光标处) */
-    while (shown.length > 1) {
-      var mw = 0;
-      try { mw = px.screen.measureText(shown, F12).width; } catch (e) { break; }
-      if (mw <= maxW) break;
-      shown = shown.substring(1);
-    }
-    var tY = textMidY(ir.y, ir.h);
-    px.screen.drawText(shown, ir.x + Math.round(8 * S), tY, {
-      color: C.text, font: 'pixel12', scale: textScale, align: 'left',
-    });
-    /* 光标 */
-    if (((frame / 10) | 0) % 2 === 0 && !connecting) {
-      var cw = 0;
-      try { cw = px.screen.measureText(shown, F12).width; } catch (e) {}
-      px.screen.fillRect(ir.x + Math.round(8 * S) + cw + 2, tY, 2, LH12, C.accent);
-    }
-    drawEye((er.x + er.w / 2) | 0, (er.y + er.h / 2) | 0, Math.round(er.h * 0.3), showPass ? C.accent : C.dimmer, showPass);
+      px.screen.fillRect(0, ir.y, W, ir.h + Math.round(6 * S) + LH12, C.bg);
+      px.screen.fillRect(ir.x, ir.y, ir.w, ir.h, C.panel);
+      px.screen.drawRect(ir.x, ir.y, ir.w, ir.h, passErr ? C.red : C.border);
 
-    var hintY = ir.y + ir.h + Math.round(6 * S);
-    if (passErr) {
-      px.screen.drawText(passErr, PAD, hintY, { color: C.red, font: 'pixel12', scale: textScale, align: 'left' });
-    } else if (passInput.length > 0 && passInput.length < 8) {
-      px.screen.drawText('WPA 密码至少 8 位', PAD, hintY, { color: C.dimmer, font: 'pixel12', scale: textScale, align: 'left' });
-    }
-
-    /* 键盘 */
-    px.screen.fillRect(0, KB_TOP, W, KB_H, 0x0e1420);
-    var keys = kbLayout();
-    for (var k = 0; k < keys.length; k++) {
-      var it = keys[k];
-      var key = it.key;
-      var isFn = key.id !== 'ch';
-      var isOk = key.id === 'ok';
-      var pressed = keyMatches(pressedKey, key);
-      var okOn = isOk && passInput.length > 0;
-      var bg = isOk ? (okOn ? C.green : C.keyFn)
-                    : (pressed ? C.panelHi : (isFn ? C.keyFn : C.keyBg));
-      px.screen.fillRect(it.x, it.y, it.w, it.h, bg);
-      px.screen.drawRect(it.x, it.y, it.w, it.h, pressed ? C.accent : C.border);
-      var cx = it.x + (it.w >> 1);
-      if (key.id === 'shift') {
-        drawShift(cx, it.y + (it.h >> 1), Math.round(it.h * 0.22), kbMode === 'upper' ? C.accent : C.dim, kbMode === 'upper');
-      } else if (key.id === 'bksp') {
-        drawBksp(cx, it.y + (it.h >> 1), Math.round(it.h * 0.24), C.dim);
-      } else {
-        var label = key.id === 'ch' ? key.ch : key.label;
-        /* 深色字上绿键 (白字对比度不足), 置灰连接键用亮灰 */
-        var lc = isOk ? (okOn ? C.bg : C.dimmer) : C.text;
-        px.screen.drawText(label, cx, textMidY(it.y, it.h), {
-          color: lc, font: 'pixel12', scale: textScale, align: 'center',
-        });
+      var er = eyeRect();
+      var maxW = er.x - ir.x - Math.round(16 * S);
+      var shownKey = passInput + '|' + showPass + '|' + reveal + '|' + maxW;
+      if (shownKey !== passShownCacheKey) {
+        var shown = showPass ? passInput : '';
+        if (!showPass) {
+          for (var i = 0; i < passInput.length; i++) {
+            shown += (reveal && i === passInput.length - 1) ? passInput.charAt(i) : '*';
+          }
+        }
+        /* 超宽时保尾部 (光标处)，并只测量缓存未命中的字符串。 */
+        while (shown.length > 1) {
+          var mw = 0;
+          try { mw = px.screen.measureText(shown, F12).width; } catch (e) { break; }
+          if (mw <= maxW) break;
+          shown = shown.substring(1);
+        }
+        passShownCacheKey = shownKey;
+        passShownCache = shown;
       }
+      shown = passShownCache;
+      var tY = textMidY(ir.y, ir.h);
+      px.screen.drawText(shown, ir.x + Math.round(8 * S), tY, {
+        color: C.text, font: 'pixel12', scale: textScale, align: 'left',
+      });
+      try { passShownWidth = px.screen.measureText(shown, F12).width; } catch (e) { passShownWidth = 0; }
+      passCursorX = ir.x + Math.round(8 * S) + passShownWidth + 2;
+      passCursorY = tY;
+      drawEye((er.x + er.w / 2) | 0, (er.y + er.h / 2) | 0, Math.round(er.h * 0.3), showPass ? C.accent : C.dimmer, showPass);
+
+      var hintY = ir.y + ir.h + Math.round(6 * S);
+      if (passErr) {
+        px.screen.drawText(passErr, PAD, hintY, { color: C.red, font: 'pixel12', scale: textScale, align: 'left' });
+      } else if (passInput.length > 0 && passInput.length < 8) {
+        px.screen.drawText('WPA 密码至少 8 位', PAD, hintY, { color: C.dimmer, font: 'pixel12', scale: textScale, align: 'left' });
+      }
+
+    }
+
+    if (cursorOn !== passCursorOn) {
+      if (passCursorOn) px.screen.fillRect(passCursorX, passCursorY, 2, LH12, C.panel);
+      if (cursorOn) px.screen.fillRect(passCursorX, passCursorY, 2, LH12, C.accent);
+      passCursorOn = cursorOn;
+    }
+
+    /* 换键盘模式、按压状态或输入可连接状态变化时才遍历按键。
+     * 光标动画帧只更新输入框的两像素光标，跳过约 40 个键的命中/绘制计算。 */
+    var modeChanged = passKeyboardMode !== kbMode;
+    var redrawKeys = passKeysDirty || fullRedraw || modeChanged;
+    if (redrawKeys) {
+      if (fullRedraw || modeChanged) px.screen.fillRect(0, KB_TOP, W, KB_H, 0x0e1420);
+      passKeyboardMode = kbMode;
+      var keys = kbLayout();
+      for (var k = 0; k < keys.length; k++) {
+        var it = keys[k];
+        var key = it.key;
+        var isFn = key.id !== 'ch';
+        var isOk = key.id === 'ok';
+        var pressed = keyMatches(pressedKey, key);
+        var okOn = isOk && passInput.length > 0;
+        var keyVisual = (pressed ? 1 : 0) | (okOn ? 2 : 0);
+        if (!fullRedraw && !modeChanged && passKeyVisuals[k] === keyVisual) continue;
+        passKeyVisuals[k] = keyVisual;
+        var bg = isOk ? (okOn ? C.green : C.keyFn)
+                      : (pressed ? C.panelHi : (isFn ? C.keyFn : C.keyBg));
+        px.screen.fillRect(it.x, it.y, it.w, it.h, bg);
+        px.screen.drawRect(it.x, it.y, it.w, it.h, pressed ? C.accent : C.border);
+        var cx = it.x + (it.w >> 1);
+        if (key.id === 'shift') {
+          drawShift(cx, it.y + (it.h >> 1), Math.round(it.h * 0.22), kbMode === 'upper' ? C.accent : C.dim, kbMode === 'upper');
+        } else if (key.id === 'bksp') {
+          drawBksp(cx, it.y + (it.h >> 1), Math.round(it.h * 0.24), C.dim);
+        } else {
+          var label = key.id === 'ch' ? key.ch : key.label;
+          /* 深色字上绿键 (白字对比度不足), 置灰连接键用亮灰 */
+          var lc = isOk ? (okOn ? C.bg : C.dimmer) : C.text;
+          px.screen.drawText(label, cx, textMidY(it.y, it.h), {
+            color: lc, font: 'pixel12', scale: textScale, align: 'center',
+          });
+        }
+      }
+      passKeysDirty = false;
     }
   }
 
-  function drawConnecting() {
+  function drawConnecting(animationOnly) {
     var bw = Math.round(W * 0.8), bh = Math.round(H * 0.24);
     var bx = (W - bw) >> 1, by = (H - bh) >> 1;
-    px.screen.fillRect(bx, by, bw, bh, C.panel);
-    px.screen.drawRect(bx, by, bw, bh, C.border);
+    if (!animationOnly) {
+      px.screen.fillRect(bx, by, bw, bh, C.panel);
+      px.screen.drawRect(bx, by, bw, bh, C.border);
+    }
     /* 转圈: 8 点环 */
     var cx = W >> 1, cy = by + Math.round(bh * 0.36);
     var rad = Math.round(10 * S);
+    if (animationOnly) {
+      /* 转圈的包围盒远小于整块遮罩，保留遮罩边框和连接说明。 */
+      var extent = rad + Math.max(2, Math.round(2.5 * S));
+      px.screen.fillRect(cx - extent, cy - extent, extent * 2 + 1, extent * 2 + 1, C.panel);
+    }
     var t = (frame / 2) | 0;
     for (var i = 0; i < 8; i++) {
       var ang = i * Math.PI / 4;
@@ -739,7 +1207,7 @@
       var col = lit < 3 ? C.accent : C.border;
       px.screen.fillCircle(cx + Math.round(Math.cos(ang) * rad), cy + Math.round(Math.sin(ang) * rad), dotR, col);
     }
-    px.screen.drawText('正在连接 ' + truncText(dispText(connecting.ssid), Math.round(bw * 0.7)), cx, by + Math.round(bh * 0.62), {
+    if (!animationOnly) px.screen.drawText('正在连接 ' + truncText(dispText(connecting.ssid), Math.round(bw * 0.7)), cx, by + Math.round(bh * 0.62), {
       color: C.text, font: 'pixel12', scale: textScale, align: 'center',
     });
   }
@@ -748,11 +1216,26 @@
     frame++;
     monoMs += (dt > 0 && dt < 10000) ? dt : 50;
 
+    /* 只在没有活动手势且高频窗口结束后降回静态页频率。 */
+    if (scrollBoost && !mainTouch && !touchState && monoMs >= scrollBoostUntil) {
+      setScrollBoost(false);
+    }
+
+    if (hasWifi && (lastWifiPollAt < 0 || monoMs - lastWifiPollAt >= 250)) {
+      lastWifiPollAt = monoMs;
+      pollWifiVisual();
+    }
+    if (page === 'main' && (lastMainPollAt < 0 || monoMs - lastMainPollAt >= 1000)) {
+      lastMainPollAt = monoMs;
+      pollMainVisual();
+    }
+
     /* 扫描看门狗: 固件层扫描被打断时的兜底 (正常路径不触发) */
     if (scanning && monoMs - scanStartAt > 25000) {
       scanning = false;
       scanErr = '扫描超时';
       lastScanAt = monoMs;
+      invalidate();
     }
     /* wifi 页空闲自动重扫 (对齐官方: 列表保持新鲜); 手势/连接中不打扰 */
     if (page === 'wifi' && hasWifi && scanned && !scanning && !connecting &&
@@ -760,32 +1243,76 @@
       startScan();
     }
 
-    px.screen.clear(C.bg);
-    if (page === 'main') drawMain();
-    else if (page === 'wifi') drawWifi();
-    else drawPass();
-
-    if (connecting) drawConnecting();
-
-    if (toast) {
-      if (monoMs > toast.until) { toast = null; }
-      else {
-        var tr = toastRect();
-        px.screen.fillRect(tr.x, tr.y, tr.w, tr.h, C.panelHi);
-        px.screen.drawRect(tr.x, tr.y, tr.w, tr.h, C.border);
-        px.screen.drawText(truncText(toast.text, tr.w - Math.round(16 * S)), (W / 2) | 0, textMidY(tr.y, tr.h), {
-          color: toast.color, font: 'pixel12', scale: textScale, align: 'center',
-        });
+    /* 动画只在画面确实变化的节拍重绘；静态设置页直接跳过 JS 绘制和 flush。 */
+    var animMode = '';
+    var animDiv = 0;
+    if (connecting) { animMode = 'connect'; animDiv = 2; }
+    else if (page === 'wifi' && scanning && aps.length === 0) { animMode = 'scan'; animDiv = 6; }
+    else if (page === 'pass') { animMode = 'pass'; animDiv = 10; }
+    if (animMode) {
+      var animBucket = (frame / animDiv) | 0;
+      if (animMode !== lastAnimMode || animBucket !== lastAnimBucket) {
+        lastAnimMode = animMode;
+        lastAnimBucket = animBucket;
+        renderDirty = true;
       }
+    } else {
+      lastAnimMode = '';
+      lastAnimBucket = -1;
     }
+
+    /* 最后一个明文字符按实际时间隐藏，不等待下一次光标闪烁。 */
+    if (page === 'pass' && !showPass && passInput.length > 0 &&
+        (monoMs - lastTypeAt < 1200) !== lastPassReveal) invalidate();
 
     /* 退格长按连删: 按住 500ms 后每 150ms 删一个 (时间驱动, 帧率无关) */
     if (pressedKey && pressedKey.id === 'bksp' && page === 'pass' && !connecting) {
       if (monoMs - pressedKey.downAt > 500 && monoMs - pressedKey.lastRep >= 150) {
         pressedKey.lastRep = monoMs;
-        passInput = passInput.substring(0, passInput.length - 1);
+        if (passInput.length > 0) {
+          passInput = passInput.substring(0, passInput.length - 1);
+          passKeysDirty = true; /* OK 键可用状态随密码长度变化 */
+          invalidate();
+        }
       }
     }
+
+    if (toast && monoMs > toast.until) {
+      toast = null;
+      invalidateFull(); /* toast 可跨固定区，移除时恢复其下方的所有内容。 */
+    }
+
+    if (!renderDirty) return false;
+
+    /* 触摸滚动只重绘可变视区；固定标题/提示由 retained framebuffer 保留。
+     * 首帧和页面切换仍整屏清除，避免跨页残留。 */
+    var overlayOnly = connecting && !fullRedraw && !contentDirty;
+    if (overlayOnly) {
+      /* 遮罩自身不透明，转圈只重画遮罩，无需先清除或重画下层列表/键盘。 */
+    } else if (fullRedraw) {
+      px.screen.clear(C.bg);
+    }
+    if (!overlayOnly) {
+      if (page === 'main') drawMain();
+      else if (page === 'wifi') drawWifi();
+      else drawPass();
+    }
+
+    if (connecting) drawConnecting(overlayOnly);
+
+    if (toast) {
+      var tr = toastRect();
+      px.screen.fillRect(tr.x, tr.y, tr.w, tr.h, C.panelHi);
+      px.screen.drawRect(tr.x, tr.y, tr.w, tr.h, C.border);
+      px.screen.drawText(truncText(toast.text, tr.w - Math.round(16 * S)), (W / 2) | 0, textMidY(tr.y, tr.h), {
+        color: toast.color, font: 'pixel12', scale: textScale, align: 'center',
+      });
+    }
+
+    renderDirty = false;
+    contentDirty = false;
+    fullRedraw = false;
+    return true;
   }
 
   /* ------------------------------------------------------------ 触摸 */
@@ -795,11 +1322,14 @@
     toast = null;
     scrollY = 0;
     touchState = null;
+    setScrollBoost(false);
     pendingAps = null;
+    invalidateFull();
     startScan();
   }
 
   function enterPassPage(ssid) {
+    releaseRowCache();
     passSsid = ssid;
     passDispTitle = truncText(dispText(ssid), Math.round(W * 0.4));
     passInput = '';
@@ -807,12 +1337,23 @@
     kbMode = 'lower';
     showPass = false;
     pressedKey = null;
+    passFormVisual = null;
+    passKeyboardMode = null;
+    passKeyVisuals.length = 0;
+    passKeysDirty = true;
+    passShownCacheKey = null;
+    passShownCache = '';
+    passShownWidth = 0;
+    passCursorX = passCursorY = 0;
+    passCursorOn = false;
     toast = null;
     page = 'pass';
+    invalidateFull();
   }
 
   function touchMain(ev) {
     if (ev.type === 'down') {
+      touchScrollStart();
       /* 标题带/提示带是覆盖画上去的, 其下可能压着半行 —— 不许穿透 */
       if (ev.y < MAIN_TOP || ev.y >= mainViewBottom()) return;
       var i, r;
@@ -850,11 +1391,13 @@
       } else {
         mainScrollY = mainTouch.scrollY - (ev.y - mainTouch.y);
         clampMainScroll();
+        invalidate();
       }
     } else if (ev.type === 'up') {
       dragging = null;
       var ts = mainTouch;
       mainTouch = null;
+      touchScrollEnd();
       if (!ts || ts.moved || !ts.tgt) return;
       /* up 必须仍落在同一行上 (滚动中途松手不算 tap) */
       if (ev.y >= rowScreenY(ts.tgt) && ev.y <= rowScreenY(ts.tgt) + ROW_H) enterWifiPage();
@@ -864,6 +1407,7 @@
   function touchWifi(ev) {
     if (connecting) return; /* 遮罩期间不响应 */
     if (ev.type === 'down') {
+      touchScrollStart();
       /* down 时刻锁定命中目标; up 时校验布局未移位才执行 (防 banner 出没/扫描重排错位) */
       var st0 = wifiStatus();
       var top0 = wifiListTop(st0.connected);
@@ -892,18 +1436,21 @@
         if (scrollY < 0) scrollY = 0;
         var ms = maxScroll();
         if (scrollY > ms) scrollY = ms;
+        invalidate();
       }
     } else if (ev.type === 'up') {
       if (!touchState) return;
       var ts = touchState;
       touchState = null;
-      if (pendingAps) { aps = pendingAps; pendingAps = null; } /* 手势结束, 应用新扫描 */
+      touchScrollEnd();
+      if (pendingAps) { aps = pendingAps; pendingAps = null; invalidate(); } /* 手势结束, 应用新扫描 */
       if (ts.moved || !ts.tgt) return;
       if (wifiListTop() !== ts.listTop) return; /* 布局已移位, 本次 tap 作废 */
-      if (ts.tgt.kind === 'back') { toast = null; page = 'main'; return; }
+      if (ts.tgt.kind === 'back') { toast = null; page = 'main'; invalidateFull(); return; }
       if (ts.tgt.kind === 'refresh') { startScan(); return; }
       if (ts.tgt.kind === 'disconnect') {
         try { px.wifi.disconnect(); showToast('已断开', C.dim); } catch (e) {}
+        invalidate();
         return;
       }
       /* row: 按 ssid 在当前列表重定位 (扫描可能已替换列表) */
@@ -921,34 +1468,36 @@
 
   function touchPass(ev) {
     /* up 清理必须先于 connecting 守卫, 否则按压高亮/连删永久卡死 */
-    if (ev.type === 'up') { pressedKey = null; return; }
+    if (ev.type === 'up') { pressedKey = null; passKeysDirty = true; invalidate(); return; }
     if (connecting) return;
     if (ev.type === 'move') {
       if (pressedKey) {
         var hit = keyAt(ev.x, ev.y);
-        if (!hit || !keyMatches(pressedKey, hit.key)) pressedKey = null; /* 滑出键面取消 */
+        if (!hit || !keyMatches(pressedKey, hit.key)) { pressedKey = null; passKeysDirty = true; invalidate(); } /* 滑出键面取消 */
       }
       return;
     }
     /* down */
-    if (inRect(ev.x, ev.y, backRect())) { pressedKey = null; toast = null; page = 'wifi'; return; }
+    if (inRect(ev.x, ev.y, backRect())) { pressedKey = null; passKeysDirty = true; toast = null; page = 'wifi'; invalidateFull(); return; }
     var ir = inputRect(), er = eyeRect();
     /* 眼睛命中区 = 输入框右段整块 (框内其余区域本无功能) */
     var ex = er.x - Math.round(12 * S);
     if (inRect(ev.x, ev.y, { x: ex, y: ir.y, w: ir.x + ir.w - ex, h: ir.h })) {
       showPass = !showPass;
+      invalidate();
       return;
     }
     var it = keyAt(ev.x, ev.y);
     if (it) {
       pressedKey = { id: it.key.id, ch: it.key.ch, downAt: monoMs, lastRep: 0 };
+      passKeysDirty = true;
       pressKey(it.key);
     }
   }
 
   function onTouch(ev) {
     /* toast 可点消除, 且防触摸穿透到其下的列表/键盘 */
-    if (toast && ev.type === 'down' && inRect(ev.x, ev.y, toastRect())) { toast = null; return; }
+    if (toast && ev.type === 'down' && inRect(ev.x, ev.y, toastRect())) { toast = null; invalidateFull(); return; }
     if (page === 'main') touchMain(ev);
     else if (page === 'wifi') touchWifi(ev);
     else touchPass(ev);
@@ -957,8 +1506,9 @@
   /* ------------------------------------------------------------ 启动 */
 
   try {
-    px.screen.setFps(20);
-    px.screen.onFrame(function (dt) { draw(dt); });
+    /* 系统设置、Wi-Fi 列表和密码键盘共用此帧循环，目标与 NuttX 默认 UI 保持约 30 FPS。 */
+    px.screen.setFps(30);
+    px.screen.onFrame(function (dt) { return draw(dt); });
   } catch (e) {
     console.error('[settings] 屏幕不可用: ' + e);
   }
@@ -1002,6 +1552,7 @@
                  passSsid: passSsid, passLen: passInput.length, kbMode: kbMode,
                  connecting: !!connecting, passErr: passErr, scrollY: scrollY,
                  mainScrollY: mainScrollY, mainMaxScroll: mainMaxScroll(), mainRows: rows.length,
+                 frameCallbacks: frame, monoMs: monoMs, targetFps: scrollBoost ? 60 : 30,
                  pressed: pressedKey ? pressedKey.id : null, pendingAps: !!pendingAps,
                  toast: toast ? toast.text : null };
       },

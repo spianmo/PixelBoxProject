@@ -99,22 +99,32 @@ const char* button_type_str(hal_periph::ButtonEventType t) {
 
 /** 触摸驱动任务回调:分发 touch + 合成 gesture */
 void on_hal_touch(const hal_periph::TouchEvent& ev) {
+    // 手势状态只依赖本地数据,必须先更新,避免 JS 队列拥塞拖延 Up 判定。
+    const char* dir = nullptr;
+    int distance = 0;
+    const bool has_gesture = gesture_feed(ev, dir, distance);
+
     if (s_touch_reg.active()) {
         const char* type = touch_type_str(ev.type);
         uint16_t x = ev.x, y = ev.y;
-        s_touch_reg.invoke_all([type, x, y](JSContext* ctx, JSValue* argv) -> int {
+        auto build_touch = [type, x, y](JSContext* ctx, JSValue* argv) -> int {
             JSValue o = JS_NewObject(ctx);
             JS_SetPropertyStr(ctx, o, "type", JS_NewString(ctx, type));
             JS_SetPropertyStr(ctx, o, "x", JS_NewInt32(ctx, x));
             JS_SetPropertyStr(ctx, o, "y", JS_NewInt32(ctx, y));
             argv[0] = o;
             return 1;
-        });
+        };
+        // Move 是可替换的高频事件,队列满时丢弃旧坐标,不能阻塞触摸采样。
+        if (ev.type == hal_periph::TouchEventType::Move) {
+            s_touch_reg.try_invoke_all(build_touch);
+        } else {
+            // Down/Up 是边沿事件,保留可靠投递语义。
+            s_touch_reg.invoke_all(build_touch);
+        }
     }
 
-    const char* dir = nullptr;
-    int distance = 0;
-    if (gesture_feed(ev, dir, distance) && s_gesture_reg.active()) {
+    if (has_gesture && s_gesture_reg.active()) {
         s_gesture_reg.invoke_all([dir, distance](JSContext* ctx, JSValue* argv) -> int {
             JSValue o = JS_NewObject(ctx);
             JS_SetPropertyStr(ctx, o, "dir", JS_NewString(ctx, dir));

@@ -147,6 +147,14 @@ static void test_blit()
     gfx::blit(dst, src, 0, 0, o2);
     CHECK(count_color(dst, RED) == 32 && count_color(dst, GRN) == 32);
 
+    // 缩放后目标位于负坐标时，快速路径仍只写入裁剪后的可见区域。
+    gfx::clear(dst, 0);
+    gfx::blit(dst, src, -2, -3, o2);
+    CHECK(gfx::get_pixel(dst, 0, 0) == RED);
+    CHECK(gfx::get_pixel(dst, 3, 0) == GRN);
+    CHECK(gfx::get_pixel(dst, 5, 4) == GRN);
+    CHECK(gfx::get_pixel(dst, 6, 0) == 0);
+
     // colorKey: 跳过红色
     gfx::clear(dst, 0);
     gfx::BlitOpts ok;

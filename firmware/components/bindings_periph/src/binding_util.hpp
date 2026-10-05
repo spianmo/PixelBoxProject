@@ -72,6 +72,17 @@ public:
         for (auto& cb : snapshot) cb.invoke_with(builder);
     }
 
+    /** 任意线程:非阻塞地向全部订阅者投递一次调用;队列满时丢弃该事件 */
+    void try_invoke_all(const jsvm::Callback::ArgBuilder& builder) {
+        std::vector<jsvm::Callback> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            snapshot.reserve(entries_.size());
+            for (auto& e : entries_) snapshot.push_back(e.second);
+        }
+        for (auto& cb : snapshot) cb.try_invoke_with(builder);
+    }
+
 private:
     mutable std::mutex mtx_;
     std::vector<std::pair<uint64_t, jsvm::Callback>> entries_;

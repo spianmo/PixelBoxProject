@@ -59,18 +59,23 @@ void destroy_surface(Surface *s)
 
 namespace {
 
-// 使用 LVGL 软件渲染单元的同步 RGB565 入口，无全局显示对象、任务队列或每笔分配。
+// 纯色覆盖走原生 RGB565 顺序写，避免每个矩形构造 LVGL 混合描述符。
 // 参数已完成裁剪；字体、几何及批量 fillRects 共用同一个渲染入口。
 void render_fill(uint16_t *dst, int stride, int w, int h, uint16_t color)
 {
-    lv_draw_sw_blend_fill_dsc_t dsc{};
-    dsc.dest_buf = dst;
-    dsc.dest_w = w;
-    dsc.dest_h = h;
-    dsc.dest_stride = stride * sizeof(uint16_t);
-    dsc.color = lv_color_hex(to888(color));
-    dsc.opa = LV_OPA_COVER;
-    lv_draw_sw_blend_color_to_rgb565(&dsc);
+    if (!dst || w <= 0 || h <= 0) return;
+    // 四路展开减少 PSRAM 顺序写的循环控制开销，像素值保持原生字节序。
+    for (int y = 0; y < h; ++y) {
+        uint16_t *row = dst + static_cast<size_t>(y) * stride;
+        int x = 0;
+        for (; x + 4 <= w; x += 4) {
+            row[x] = color;
+            row[x + 1] = color;
+            row[x + 2] = color;
+            row[x + 3] = color;
+        }
+        for (; x < w; ++x) row[x] = color;
+    }
 }
 
 void render_image(uint16_t *dst, int stride, const uint16_t *src, int src_stride,
@@ -302,6 +307,21 @@ void blit(Surface &dst, const Surface &src, int dx, int dy, const BlitOpts &opts
     const uint32_t y_step = (static_cast<uint32_t>(sh) << 16) / static_cast<uint32_t>(dh);
     const uint16_t key = static_cast<uint16_t>(opts.color_key & 0xFFFF);
     const bool has_key = opts.color_key >= 0;
+
+    // 无透明/键控时，最近邻采样结果就是原始 RGB565 拷贝；绕过每个 128
+    // 像素块的 LVGL 描述符，动画缩放和整图重绘减少调用开销。
+    if (!opts.alpha && !has_key) {
+        for (int y = cy0; y < cy1; ++y) {
+            const int syy = sy + static_cast<int>((static_cast<uint32_t>(y) * y_step) >> 16);
+            const uint16_t *srow = src.row(syy);
+            // 以裁剪后的首个可见像素为基址，避免 dx<0 时构造行首之前的指针。
+            uint16_t *drow = dst.row(dy + y) + dx + cx0;
+            uint32_t fx = static_cast<uint32_t>(cx0) * x_step;
+            for (int x = cx0; x < cx1; ++x, fx += x_step)
+                drow[x - cx0] = srow[sx + static_cast<int>(fx >> 16)];
+        }
+        return;
+    }
 
     // 固定小行块限制 JS 线程栈用量；采样/透明判断只准备数据，像素合成由 LVGL 完成。
     constexpr int kChunk = 128;

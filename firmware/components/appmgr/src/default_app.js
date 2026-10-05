@@ -83,24 +83,43 @@
     /* 弹跳像素方块 */
     var box = { x: W / 2, y: H / 3, vx: 1.4 * S, vy: 1.0 * S, size: Math.round(32 * S) };
     var t = 0;
+    var firstFrame = true;
+    var staticTextDrawn = false;
+    var previousBox = null;
+    var subTextRect = null;
 
     px.screen.setFps(30);
     px.screen.onFrame(function (dt) {
       t += dt;
       var k = dt / 16.7; /* 帧速归一化 */
 
-      px.screen.clear(0x0a0a14);
+      /* 背景和固定文案只在首帧绘制。后续帧清理上一帧的动态几何区域，
+       * 把整屏 clear 从动画热路径移除；星点限制在标题上方，避免擦除文字。 */
+      if (firstFrame) {
+        px.screen.clear(0x0a0a14);
+        firstFrame = false;
+      }
+
+      if (previousBox) {
+        px.screen.fillRect(previousBox.x, previousBox.y, previousBox.w, previousBox.h, 0x0a0a14);
+      }
 
       /* 星光下落 + 闪烁 */
       for (var i = 0; i < stars.length; i++) {
         var s = stars[i];
+        var oldX = s.x | 0, oldY = s.y | 0;
         s.y += s.v * k;
         if (s.y >= H) {
           s.y = 0;
           s.x = Math.random() * W;
         }
-        var tw = (Math.sin(t / 300 + s.p) + 1) / 2;
-        px.screen.fillRect(s.x | 0, s.y | 0, dotSize, dotSize, col.lerp(0x1a2233, 0xaaccff, tw));
+        var nextX = s.x | 0, nextY = s.y | 0;
+        if (oldY < textTop && (oldX !== nextX || oldY !== nextY))
+          px.screen.fillRect(oldX, oldY, dotSize, dotSize, 0x0a0a14);
+        if (nextY < textTop) {
+          var tw = (Math.sin(t / 300 + s.p) + 1) / 2;
+          px.screen.fillRect(nextX, nextY, dotSize, dotSize, col.lerp(0x1a2233, 0xaaccff, tw));
+        }
       }
 
       /* 弹跳方块 (HSV 循环渐变) */
@@ -117,35 +136,36 @@
       var by = (box.y - half) | 0;
       px.screen.fillRect(bx, by, box.size, box.size, col.hsv(hue, 75, 100));
       px.screen.drawRect(bx - 2, by - 2, box.size + 4, box.size + 4, 0xffffff);
+      previousBox = { x: Math.max(0, bx - 2), y: Math.max(0, by - 2),
+        w: Math.min(W, bx + box.size + 2) - Math.max(0, bx - 2),
+        h: Math.min(textTop, by + box.size + 2) - Math.max(0, by - 2) };
 
       /* 文案 (drawText 可能不支持某些字体, 容错) */
       try {
         var pulse = (Math.sin(t / 500) + 1) / 2;
         /* smooth 仅用于大号拉丁字 (EPX 会侵蚀中文笔画, 中文行保持默认关) */
-        px.screen.drawText('PixelBox', (W / 2) | 0, titleY, {
-          color: 0xffffff,
-          font: 'pixel16',
-          scale: titleScale,
-          smooth: true,
-          align: 'center',
-        });
+        if (!subTextRect) {
+          var sm = px.screen.measureText('pixelbox push', { font: 'pixel12', scale: subScale, smooth: true });
+          subTextRect = { x: Math.max(0, ((W - sm.width) / 2) | 0), y: subY,
+            w: Math.min(W, ((W + sm.width) / 2) | 0) - Math.max(0, ((W - sm.width) / 2) | 0), h: subH };
+        } else {
+          px.screen.fillRect(subTextRect.x, subTextRect.y, subTextRect.w, subTextRect.h, 0x0a0a14);
+        }
+        /* 标题和提示是静态层，只在首次成功绘制后保留。若字库调用抛错，
+         * staticTextDrawn 保持 false，下一帧会重试而不会留下半幅静态层。 */
+        if (!staticTextDrawn) {
+          px.screen.drawText('PixelBox', (W / 2) | 0, titleY, {
+            color: 0xffffff, font: 'pixel16', scale: titleScale, smooth: true, align: 'center',
+          });
+          px.screen.drawText('推送你的应用', (W / 2) | 0, hintY, { color: 0x8899aa, font: 'pixel12', scale: hintScale, align: 'center' });
+          px.screen.drawText('开始创作', (W / 2) | 0, hintY2, { color: 0x8899aa, font: 'pixel12', scale: hintScale, align: 'center' });
+          staticTextDrawn = true;
+        }
         px.screen.drawText('pixelbox push', (W / 2) | 0, subY, {
           color: col.lerp(0x557799, 0x99eeff, pulse),
           font: 'pixel12',
           scale: subScale,
           smooth: true,
-          align: 'center',
-        });
-        px.screen.drawText('推送你的应用', (W / 2) | 0, hintY, {
-          color: 0x8899aa,
-          font: 'pixel12',
-          scale: hintScale,
-          align: 'center',
-        });
-        px.screen.drawText('开始创作', (W / 2) | 0, hintY2, {
-          color: 0x8899aa,
-          font: 'pixel12',
-          scale: hintScale,
           align: 'center',
         });
       } catch (e) {
