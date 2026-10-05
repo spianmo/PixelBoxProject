@@ -1,0 +1,112 @@
+{
+  "hal_commit": "e5cef265cca9d272c428d210453d574bcc25c5f4",
+  "libraries": [
+    {
+      "repository": "esp32-wifi-lib",
+      "commit": "dffb3f92194f571c18473387ab9fac62a1f64e67",
+      "files": [
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libcore.a",
+          "git_blob": "16b18f8a18ec13fc31b693932936a6ccb1c9e2db",
+          "size": 4820,
+          "sha256": "54c1c6268400a9732fb56ee6840a59b5679cb4d0645ec816d8ee0088ddb89ebb"
+        },
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libespnow.a",
+          "git_blob": "2279d607b71dbffa5f9eeeab2b2939ef084d8166",
+          "size": 55154,
+          "sha256": "c68ea77b21fd95a2e993f38abbaa8c564f0cd1751dba76dbdaa61803d048059d"
+        },
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libmesh.a",
+          "git_blob": "8ed3fae8c6486417d7e39d2fbec3d3c3bb86eb24",
+          "size": 972864,
+          "sha256": "97ec477beb2039a8b084acd05967160fbebcfa88b6970ec262e1f071f2e6bcf0"
+        },
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libnet80211.a",
+          "git_blob": "05aa31be1dcf2c74fe88f5246d0bddd1c230fa81",
+          "size": 1257464,
+          "sha256": "7eaf5419559a15b9f00a2f67ce0fefa40ffbbd10157307224d4b88c16c4683f3"
+        },
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libpp.a",
+          "git_blob": "ec6867b6e427b27471e9ccb465f7d38bc08320a4",
+          "size": 673356,
+          "sha256": "fa29acff90f4c85ee2f8fc077a491340cb70c481a899150d1445ffae0f7246af"
+        },
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libsmartconfig.a",
+          "git_blob": "09704485ff282c3a0ae94e10583a18a84491be3d",
+          "size": 186040,
+          "sha256": "0a04c23f67c7503a7459fe1142857236919b69423cc366f47e824c1356ecce07"
+        },
+        {
+          "path": "components/esp_wifi/lib/esp32s3/libwapi.a",
+          "git_blob": "319a638df5bbb68ee952624a0838c8f8d3fb1d98",
+          "size": 52534,
+          "sha256": "acc4403f0fdf9dbb44e634eee4297b200ea3bf3d6cd1737c1a9c63438840c4d6"
+        }
+      ]
+    },
+    {
+      "repository": "esp-phy-lib",
+      "commit": "06e7625de197bc12797dd701d6762229bca01826",
+      "url": "https://codeload.github.com/espressif/esp-phy-lib/tar.gz/06e7625de197bc12797dd701d6762229bca01826",
+      "archive_sha256": "1217705186b3d7435144fcd351e0af07e8e7ce341618658786430e516c30a56b",
+      "files": [
+        {
+          "path": "components/esp_phy/lib/esp32s3/libbtbb.a",
+          "size": 19818,
+          "sha256": "62749de05c432584f207f3c3b660617620eb35cca9bbe4716f90175fb09ac029"
+        },
+        {
+          "path": "components/esp_phy/lib/esp32s3/libbttestmode.a",
+          "size": 229260,
+          "sha256": "14495d9ed96eabe3862fa53163b1d2f993cbf35636ce02839eca177558cfef67"
+        },
+        {
+          "path": "components/esp_phy/lib/esp32s3/libphy.a",
+          "size": 246314,
+          "sha256": "95560823fa3e3cc08858327fabf7146a10914485ff2e5ff2046de852241f9581"
+        },
+        {
+          "path": "components/esp_phy/lib/esp32s3/librfate.a",
+          "size": 23238,
+          "sha256": "b451caa66762e21b1516865fee89105027085ecdb95484ad61e9b649b56ddc6f"
+        },
+        {
+          "path": "components/esp_phy/lib/esp32s3/librftest.a",
+          "size": 255326,
+          "sha256": "c54d142239363adef6d7675b2ce7f7592696ed69c92f89e1628d119bfc0becad"
+        }
+      ]
+    },
+    {
+      "repository": "esp-coex-lib",
+      "commit": "94ebf43111a5889a3a97fd470b7148cd6b692b7c",
+      "url": "https://codeload.github.com/espressif/esp-coex-lib/tar.gz/94ebf43111a5889a3a97fd470b7148cd6b692b7c",
+      "archive_sha256": "41171f7f2ac4100933fca30694db862b8740c5d55ff67821ee8d6a1754aef94f",
+      "files": [
+        {
+          "path": "components/esp_coex/lib/esp32s3/libcoexist.a",
+          "size": 99486,
+          "sha256": "687141768f79b19d18069306255ff14fdb785a03c5effa37a6d801adcf5ae580"
+        }
+      ]
+    },
+    {
+      "repository": "esp32c3-bt-lib",
+      "commit": "29d5555ca1febeb132f5a13556893f3419d2d640",
+      "url": "https://codeload.github.com/espressif/esp32c3-bt-lib/tar.gz/29d5555ca1febeb132f5a13556893f3419d2d640",
+      "archive_sha256": "5b39b53e3a4c7eaaec9ed856f4c8dd8762f53e790f1276d523bdd0108b35636d",
+      "files": [
+        {
+          "path": "components/bt/controller/lib_esp32c3_family/esp32s3/libbtdm_app.a",
+          "size": 590010,
+          "sha256": "4bc1646906e90da898096c09df05dd16fc03158feacbce2c1dbae2e39ce8e79c"
+        }
+      ]
+    }
+  ]
+}

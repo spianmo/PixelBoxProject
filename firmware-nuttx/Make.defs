@@ -1,0 +1,3 @@
+ifneq ($(CONFIG_INTERPRETERS_PIXELBOX),)
+CONFIGURED_APPS += $(APPDIR)/interpreters/pixelbox
+endif

@@ -1,0 +1,93 @@
+config INTERPRETERS_PIXELBOX
+	tristate "PixelBox QuickJS runtime"
+	default n
+	select DEV_URANDOM
+	help
+		PixelBox JavaScript FFI over NuttX POSIX APIs. QuickJS-ng v0.10.1;
+		no ESP-IDF, FreeRTOS or C++ runtime dependency.
+
+if INTERPRETERS_PIXELBOX
+
+config INTERPRETERS_PIXELBOX_PROGNAME
+	string "Program name"
+	default "pixelbox"
+
+config INTERPRETERS_PIXELBOX_PRIORITY
+	int "Task priority"
+	default 100
+
+config INTERPRETERS_PIXELBOX_STACKSIZE
+	int "Task stack size"
+	default 65536
+
+config INTERPRETERS_PIXELBOX_HEAP_SIZE
+	int "JavaScript heap limit"
+	default 4194304
+
+config INTERPRETERS_PIXELBOX_APP_ROOT
+	string "Application package root (virtual /app)"
+	default "/data/app"
+
+config INTERPRETERS_PIXELBOX_DATA_ROOT
+	string "Writable storage root (virtual /data)"
+	default "/data"
+
+config INTERPRETERS_PIXELBOX_CONSOLE_AFTER_APP
+	bool "Open NSH console after the boot application exits"
+	default y
+	depends on NSH_CONSOLE
+	help
+		Allows explicit filesystem provisioning and recovery over the serial
+		console. The console starts once per boot, never recursively from an
+		NSH pixelbox command. Disable NSH_ARCHINIT when BOARD_LATE_INITIALIZE
+		already initializes the board devices.
+
+config INTERPRETERS_PIXELBOX_PORTAL
+	bool "Enable the Wi-Fi provisioning portal"
+	default n
+	depends on ESPRESSIF_WIFI_STATION_SOFTAP && NETDEV_WIRELESS_IOCTL
+	depends on NETUTILS_DHCPD && NET_BINDTODEVICE
+	help
+		Build the service-owned APSTA provisioning portal. Boot only prepares
+		lightweight state; a software or button request is required to open
+		the AP. Requires the runner's APSTA and DHCPD patches. Allocates
+		40 KiB of worker stacks only after the application VM has exited,
+		then joins both workers before restoring the application VM.
+
+config INTERPRETERS_PIXELBOX_TIMED_SLEEP
+	bool "Enable explicit bounded timer deep sleep"
+	default n
+	depends on ARCH_CHIP_ESP32S3 && PM
+	help
+		Accept 1..86400000 ms from a managed VM; wait for cleanup before
+		entering RTC timer deep sleep. Requires PM_GOVERNOR_EXPLICIT_RELAX=-1
+		to prevent automatic idle sleep. Radio builds currently reject sleep
+		until their complete shutdown can be verified. Wake restarts the OS
+		and leaves the application stopped until an explicit restart.
+
+config INTERPRETERS_PIXELBOX_MULTINET7
+	bool "Enable MultiNet7 local wakeword"
+	default n
+	depends on ARCH_CHIP_ESP32S3 && ESP32S3_SPIRAM
+	depends on XTENSA_IMEM_USE_SEPARATE_HEAP && ARCH_SETJMP_H
+	help
+		Build the audited ESP-SR 2.5.3 MultiNet7 Chinese model and worker.
+		Use the esp32s3-multinet7 runner profile to prepare the model and
+		require XTENSA_CP_INITSET=0x0009. A recognition session reserves
+		4 MiB contiguous PSRAM and a 32 KiB internal worker stack.
+		The generated image must fit before the fixed 8 MiB data boundary.
+
+config INTERPRETERS_PIXELBOX_FRAMEBUFFER
+	bool "Use a NuttX framebuffer device"
+	default n
+	depends on VIDEO_FB
+	help
+		Requires a board-provided framebuffer at the path below. Supports
+		RGB565, RGB24 and RGB32. Does not install a display controller driver.
+
+config INTERPRETERS_PIXELBOX_FB_DEVICE
+	string "Framebuffer path"
+	default "/dev/fb0"
+	depends on INTERPRETERS_PIXELBOX_FRAMEBUFFER
+
+endif

@@ -1,0 +1,9 @@
+build/
+build-host/
+dist/
+generated/
+quickjs-ng/
+__pycache__/
+.nuttx-build.lock
+.cache/
+.ide/

@@ -1,0 +1,11 @@
+{
+  "type": "firmware",
+  "id": "pixelbox-nuttx",
+  "name": "PixelBox NuttX",
+  "version": "0.1.0",
+  "entry": "",
+  "chip": "esp32s3",
+  "firmwareBackend": "nuttx",
+  "nuttxProfile": "esp32s3-multinet7",
+  "nuttxBoard": "esp32s3-devkit:nsh"
+}

@@ -1,0 +1,45 @@
+{
+  "hal_commit": "e5cef265cca9d272c428d210453d574bcc25c5f4",
+  "licenses": [
+    {
+      "repository": "https://github.com/espressif/esp32-wifi-lib",
+      "commit": "dffb3f92194f571c18473387ab9fac62a1f64e67",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/espressif/esp32-wifi-lib/blob/dffb3f92194f571c18473387ab9fac62a1f64e67/LICENSE",
+      "local_path": "licenses/esp32-wifi-lib/LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "repository": "https://github.com/espressif/esp-phy-lib",
+      "commit": "06e7625de197bc12797dd701d6762229bca01826",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/espressif/esp-phy-lib/blob/06e7625de197bc12797dd701d6762229bca01826/LICENSE",
+      "local_path": "licenses/esp-phy-lib/LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "repository": "https://github.com/espressif/esp-coex-lib",
+      "commit": "94ebf43111a5889a3a97fd470b7148cd6b692b7c",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/espressif/esp-coex-lib/blob/94ebf43111a5889a3a97fd470b7148cd6b692b7c/LICENSE",
+      "local_path": "licenses/esp-coex-lib/LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "repository": "https://github.com/espressif/esp32c3-bt-lib",
+      "commit": "29d5555ca1febeb132f5a13556893f3419d2d640",
+      "upstream_path": "LICENSE",
+      "source_url": "https://github.com/espressif/esp32c3-bt-lib/blob/29d5555ca1febeb132f5a13556893f3419d2d640/LICENSE",
+      "local_path": "licenses/esp32c3-bt-lib/LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    }
+  ]
+}
