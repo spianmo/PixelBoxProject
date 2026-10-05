@@ -18,13 +18,13 @@
 
 ---
 
-## 1. 购板:微雪 ESP32-S3-Touch-AMOLED-1.8
+## 1. 购板:微雪 ESP32-S3-Touch-AMOLED-2.16
 
 Stage A 方案只需要这一块板子(喇叭/电池/外壳都可以后补,见 [hardware/devboard.md](./hardware/devboard.md))。
 
 | 项 | 内容 |
 |---|---|
-| 型号 | **Waveshare(微雪)ESP32-S3-Touch-AMOLED-1.8** |
+| 型号 | **Waveshare(微雪)ESP32-S3-Touch-AMOLED-2.16** |
 | 渠道 | 微雪官网商城(waveshare.net)、微雪淘宝/天猫官方店、AliExpress(海外) |
 | 参考价 | 约 **¥230 左右**(2026 年参考,不同套餐/汇率有浮动,**以店铺现价为准**) |
 | 注意 | 有的套餐含外壳/喇叭/电池,有的是裸板——**建议选带喇叭的套餐**,省一次焊接;下单前核对商品页配置清单 |
@@ -100,9 +100,9 @@ cd <仓库根目录>/firmware
 # 2) 设定目标芯片(只需一次,会生成 sdkconfig)
 idf.py set-target esp32s3
 
-# 3) (可选)检查配置:板型默认就是微雪 AMOLED 1.8,无需改动
+# 3) (可选)检查配置:板型默认就是微雪 AMOLED 2.16,无需改动
 idf.py menuconfig
-#    → PixelBox Board Selection → Waveshare ESP32-S3-Touch-AMOLED-1.8(默认)
+#    → PixelBox Board Selection → Waveshare ESP32-S3-Touch-AMOLED-2.16(默认)
 #    → 也可在此预置默认 Wi-Fi SSID/密码(以 firmware/README.md 为准)
 
 # 4) 编译(首次约 5-15 分钟)
@@ -241,7 +241,7 @@ pnpm run dev   # 启动 Electron 模拟器
 ```
 
 - 左侧打开你的应用文件夹(如上面的 `my-first-anim`),中间 Monaco 编辑器自带全量 `px.*` 补全。
-- 右侧是 368×448 的虚拟像素屏 + 虚拟外设面板:按键、摇一摇、电池电量、GPS、灯带都能手动模拟。
+- 右侧是 480×480 的虚拟 AMOLED 屏 + 虚拟外设面板:按键、摇一摇、电池电量、GPS、灯带都能手动模拟。
 - 麦克风/扬声器走电脑声卡,语音对话与真机**同协议**直连中继服务器——不买板子也能调语音应用。
 - 工具栏「推送到真机」与 CLI 的 `pixelbox push` 等价(devd 协议 + mDNS 发现)。
 
@@ -265,8 +265,8 @@ pnpm run dev   # 启动 Electron 模拟器
 
 | 现象 | 原因 | 解法 |
 |---|---|---|
-| 找不到串口设备 | 用了纯充电线 / 驱动缺失 | 换数据线;Windows 若识别为未知设备,微雪 wiki 下载对应 USB 转串口驱动 |
-| `Failed to connect to ESP32-S3: No serial data received` | 芯片没进下载模式 | **按住 BOOT 键不放 → 插线(或按一下 RESET)→ 松开 BOOT** 再烧 |
+| 找不到串口设备 | 线缆只充电、Hub 未枚举或 USB 路径异常 | 2.16 板载 USB-C 是 ESP32-S3 原生 USB-Serial-JTAG，不需要 CH34x/CP210x 驱动。换确认支持数据传输的 USB-C 线并直连电脑；macOS 查 `/dev/cu.usbmodem*`，Linux 查 `/dev/ttyACM*`，Windows 在设备管理器查 `USB Serial/JTAG` 的 COM 口 |
+| `Failed to connect to ESP32-S3: No serial data received` | 芯片没进下载模式或 PWR 未开机 | 先确认 **PWR 电源键已开机**，按住 **BOOT(GPIO0)不放 → 插线或重新上电 → 等约 2 秒松开 BOOT** 再烧；2.16 官方按键没有独立 RESET 键 |
 | 烧完无限重启(看 monitor 日志) | 分区/PSRAM 配置被改乱 | 恢复默认:删除 `sdkconfig` 后 `idf.py set-target esp32s3` 重新 build(sdkconfig.defaults 是对的) |
 | `monitor` 全是乱码 | 波特率不对 | 项目默认 115200;`idf.py monitor` 一般自动正确,乱码时检查终端/换 `idf.py -b 115200 monitor` |
 | Ctrl+C 退不出 monitor | 快捷键不同 | 退出是 **Ctrl+]**(Windows 下 Ctrl+] 或 Ctrl+T Ctrl+X) |

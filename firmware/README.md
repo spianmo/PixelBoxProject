@@ -1,5 +1,9 @@
 # PixelBox 固件 (ESP-IDF v5.5)
 
+这是 ESP-IDF 实现；不依赖 ESP-IDF 的独立版本位于
+[`firmware-nuttx/`](../firmware-nuttx/README.md)。两版共用 `sdk/types/pixelbox.d.ts`
+上层接口，espIDE 新建固件工程时可选择 ESP-IDF 或 NuttX。
+
 多目标固件工程(esp32s3 默认 / esp32c6 / esp32p4):QuickJS-ng JS 运行时
 + 应用热更新 + devd 开发服务。多目标能力矩阵见 docs/architecture.md §3.1,
 C6/P4 落地细节见 docs/hardware/multi-target.md,构建命令与实测见下文「多目标构建」。

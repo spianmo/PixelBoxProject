@@ -63,6 +63,23 @@ flowchart LR
 详见 [docs/architecture.md](docs/architecture.md)(协议与一致性规则)与
 [sdk/types/pixelbox.d.ts](sdk/types/pixelbox.d.ts)(API 唯一事实源)。
 
+## 固件实现选择
+
+固件保留两套独立工程，上层 JS/TypeScript 继续使用同一份 `px.*` FFI 契约：
+
+| 实现 | 工程 | 构建入口 | 当前硬件范围 |
+| --- | --- | --- | --- |
+| ESP-IDF | `firmware/` | `idf.py build` | 现有 ESP32-S3/C6/P4 板级支持 |
+| Apache NuttX | `firmware-nuttx/` | `python3 scripts/nuttx.py build --nuttx-path /path/to/nuttx` | ESP32-S3，16MB Flash + 8MB octal PSRAM；Simple Boot |
+
+espIDE 的「新建项目 → 固件工程」可选择实现，在「设置 → 工具 → 固件工具链」分别配置
+ESP-IDF 与 NuttX 路径。工程通过 `pixelbox.json.firmwareBackend` 保存选择；旧固件工程默认
+ESP-IDF。NuttX 工程生成时包含 QuickJS 和共享 FFI prelude，可以独立于本仓库构建。
+
+NuttX 版使用 POSIX 和 NuttX 设备接口，不加载 `export.sh`、`idf.py` 或 ESP-IDF bootloader。
+接口对齐不代表全部硬件能力均已移植：网络开发服务、音频和语音等能力的实现状态及
+`ENOTSUP` 行为见 [NuttX 固件说明](firmware-nuttx/README.md)。请按应用所需能力选择后端。
+
 ## 快速开始(三选一)
 
 > 本仓库为 pnpm workspace(sdk / simulator / server / examples),Node 侧统一用

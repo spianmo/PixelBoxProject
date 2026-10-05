@@ -192,6 +192,7 @@ storage,   data, littlefs, ,         0x3D0000
 | `app.push_chunk` | `{session, path, offset, dataB64}` (≤32KB/块) | `{received}` |
 | `app.push_end` | `{session}` | `{ok:true}` → 校验+切换+热重启 VM |
 | `app.restart` / `app.stop` | `{}` | `{ok:true}` |
+| `system.settings` | `{}` | `{ok:true}` → 停止当前应用并启动内置系统设置页 |
 | `js.eval` | `{code}` | `{result}`(字符串化) |
 | `logs.subscribe` / `logs.unsubscribe` | `{since?}` | `{ok:true, last_seq, boot}` |
 

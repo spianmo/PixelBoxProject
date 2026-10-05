@@ -14,14 +14,67 @@
 
 ## 1. 烧录失败(连不上 / 超时 / permission denied)
 
-**定位**:`ls /dev/cu.usbmodem* /dev/cu.wchusbserial*`(macOS);`esptool.py --port /dev/cu.usbmodemXXX chip_id`
+**定位**: Waveshare ESP32-S3-Touch-AMOLED-2.16 板载 USB-C 连接的是 ESP32-S3 原生 USB-Serial-JTAG，不是 CH34x/CP210x。macOS 执行
+`ls /dev/cu.usbmodem*`，Linux 执行 `ls /dev/ttyACM* /dev/ttyUSB*`，Windows 在设备管理器查看
+`USB Serial/JTAG` 对应的 COM 口；端口出现后再执行
+`esptool --chip esp32s3 --port PORT chip_id`。
 
 | 现象 | 原因 | 修复 |
 |---|---|---|
-| 完全没有串口设备 | 线缆只充电不带数据 | 换带数据的 USB-C 线(最常见原因,先换线再查别的) |
-| 有设备但 `Failed to connect` | 芯片没进下载模式 | **按住 BOOT 键再插线**(或按住 BOOT 点按 RESET),重试烧录 |
-| `wchusbserial` 不出现 | CH34x 驱动未装(外置串口芯片的板子) | 微雪 AMOLED-1.8 走 USB-Serial-JTAG(`usbmodem`),一般无需驱动;定制板若用 CH343 需装 WCH 驱动 |
+| 完全没有串口设备 | 芯片未上电或未真正复位、线缆只充电、Hub/扩展坞未枚举，或 USB D+/D- 硬件路径异常（2.16 为 D-=GPIO19、D+=GPIO20） | 换确认支持数据传输的 USB-C 线并直连电脑；接着电池时先按下方流程进入下载模式，不能仅按 BOOT 拔插 USB。确认真正重新上电后仍无 USB 设备，再检查供电、Type-C 插座和 D+/D- |
+| 有设备但 `Failed to connect` | 芯片没进下载模式或端口被其他程序占用 | 关闭占用端口的 monitor/IDE，按下方流程进入下载模式后重试。该板的 GPIO18 按键不直接连接 CHIP_PU/EN，不能当作 MCU 硬复位键 |
+| 误以为需要 CH34x/CP210x 驱动 | 2.16 的板载 USB-C 使用原生 USB-Serial-JTAG | 不要为 2.16 安装 USB-UART 驱动；只有外接 USB-UART 转接板才按其芯片安装驱动 |
 | 烧录中途断开 | USB 供电不足/hub 供电差 | 直连电脑端口,不经 hub |
+
+### 2.16 接着电池时进入下载模式
+
+**拔掉 USB 不等于断电。** BOOT 接 GPIO0，只在芯片复位时选择启动模式；PWR 接
+AXP2101 的 PWRON。原理图第三键虽注明“丝印用 RST”，实际接 GPIO18，而非
+CHIP_PU/EN。按丝印 BOOT/PWR 操作，不要混用原理图 Key1/Key2 与软件的按键编号。
+
+以下顺序于 2026-10-01 在接着电池、USB-C 直连 Mac 的 2.16 真机上恢复了下载通信：
+
+1. 保持 USB 连接，按住 **BOOT**，直到第 4 步结束才松开。
+2. 同时按住 **PWR 约 10 秒**，然后只松开 PWR。
+3. 再按住 **PWR 约 2 秒**，松开 PWR。
+4. 再等约 3 秒，松开 BOOT，刷新电脑端串口列表。
+
+这里的时长是此次成功的操作步骤，不代表已读回或修改 AXP2101 的按键阈值。
+实测出现 `USB JTAG/serial debug unit`（VID:PID=`303A:1001`）及
+`/dev/cu.usbmodem2101`；实际端口编号以本机为准。屏幕当时仍然全黑，不能仅凭屏幕或
+指示灯判断下载模式是否成功。用 esptool 4.x 做只读探测并保持下载模式：
+
+```bash
+python3 -m esptool --chip esp32s3 --port PORT --baud 115200 \
+  --before no_reset --after no_reset --no-stub chip_id
+```
+
+此次 `chip_id`、`flash_id`、`get_security_info` 均成功返回，识别到 ESP32-S3、
+8 MB PSRAM、16 MB Flash。退出下载模式后，现有 NuttX 启动到 `nsh>`，
+`echo ESP32S3_SERIAL_RECOVERY_OK` 与 `uname -a` 均有正确响应，确认串口双向通信恢复。
+现有固件报告屏幕尺寸 `0×0`，不能把黑屏继续解释为串口不可用；本次没有重写 Flash，
+这些检查不代表新镜像烧录或显示功能验证通过。
+
+若上述按键流程仍失败，只有同时断开 USB 和电池才能排除持续供电；仅在电池插头
+可安全接触时断开，完全断电后再按住 BOOT 接 USB，随后检查设备枚举。
+
+端口已经出现但烧录仍失败时，先确认芯片和端口：
+
+```bash
+esptool --chip esp32s3 --port PORT chip_id
+idf.py -p PORT flash monitor
+```
+
+NuttX 镜像不经过 `idf.py`，端口出现后使用工程自己的 runner：
+
+```bash
+python3 firmware-nuttx/scripts/nuttx.py flash \
+  --target esp32s3 --port /dev/cu.usbmodemXXX
+```
+
+烧录波特率(`-b`)与 monitor 波特率是两个设置；monitor 默认 115200。若板载 USB 仍无法枚举，
+可用外部 USB-UART 连接 UART0：TX=`GPIO43`、RX=`GPIO44`、GND 共地。该方式只能观察 UART0，
+不能证明板载原生 USB 路径正常。
 
 ## 2. 启动死循环(反复重启 / Guru Meditation)
 
@@ -40,27 +93,26 @@
 
 ## 4. 屏幕黑屏排查链(按顺序)
 
-微雪板的屏幕复位/触摸复位走 **TCA9554 IO 扩展器**,供电走 **AXP2101**,顺序排查:
+微雪 **ESP32-S3-Touch-AMOLED-2.16** 使用 CO5300 AMOLED 和 CST9220 触摸，屏幕、触摸复位分别连接 GPIO39、GPIO40；供电和 I2C 均走 GPIO15(SDA)/GPIO14(SCL)，顺序排查:
 
-1. **AXP2101 有没有认到**:日志找 `初始化完成 (addr=0x34 id=...)`(TAG `axp2101`)。没有 → I2C 总线问题(SDA=15/SCL=14,`menuconfig → PixelBox Board`)。
-2. **TCA9554 有没有认到**:日志找 `初始化完成 (addr=0x20)`(TAG `tca9554`)。它负责拉高 LCD_RST/TP_RST(Kconfig:`BOARD_WS18_EXIO_LCD_RST`/`BOARD_WS18_EXIO_TP_RST`,EXIO 编号待上板核对)。
-3. **供电轨**:当前 board_init 未主动配置 ALDO/BLDO(依赖上电默认,与微雪例程一致)。若上述都正常仍黑屏,对照微雪 wiki 原理图确认 AMOLED 供电轨挂在哪路 LDO,在 `firmware/components/boards/src/axp2101.c` 补开对应轨。
-4. **QSPI 引脚**:`menuconfig → PixelBox Board`(CS=4 SCLK=5 D0=6 D1=7 D2=11 D3=12,以微雪 wiki 为准)。
-5. **亮度**:屏幕点亮但全黑也可能是亮度 0,`js.eval` 执行 `px.screen.setBrightness(80); px.screen.fillRect(0,0,368,448,0xFF0000); px.screen.flush()`。
+1. **I2C 外设有没有认到**:日志找 `CO5300`、`CST9220`、`QMI8658` 的初始化输出。没有 → 检查 I2C 总线(SDA=15/SCL=14,`menuconfig → PixelBox Board`)和 PWR 电源。
+2. **屏幕复位线**:确认 GPIO39 在初始化时产生复位脉冲并拉高；触摸复位同理检查 GPIO40。2.16 没有 1.8 英寸版本使用的 TCA9554/AXP2101 复位链路。
+3. **QSPI 引脚**:CO5300 使用 CS=GPIO12、SCLK=GPIO38、D0=GPIO4、D1=GPIO5、D2=GPIO6、D3=GPIO7；引脚错误会导致初始化后仍黑屏。
+4. **分辨率与亮度**:面板为 480×480，`js.eval` 执行 `px.screen.setBrightness(80); px.screen.fillRect(0,0,480,480,0xFF0000); px.screen.flush()`。
 
 ## 5. 触摸无响应
 
-- 日志找 TAG `px.touch` 的初始化输出;FT3168 地址/INT 引脚在 `menuconfig → PixelBox Board`(`BOARD_WS18_TP_INT`)。
-- TP_RST 由 TCA9554 控制,先确认 §4 第 2 步通过。
+- 日志找 TAG `px.touch` 的初始化输出；CST9220 地址为 `0x5a`，INT 引脚为 GPIO11，复位为 GPIO40。
+- 确认 I2C 总线 GPIO15(SDA)/GPIO14(SCL) 已初始化，再检查 GPIO11 是否能产生触摸中断。
 - 快速验证:`pixelbox eval "px.input.onTouch(e=>console.log(JSON.stringify(e)))"` 然后点屏看日志。
 
 ## 6. 无声 / 麦克风无输入(重点:I2S 方向待核对项)
 
-微雪官方头文件中 I2S DOUT/DIN 两组宏方向矛盾,固件当前默认 **DOUT=10(播放)/ DIN=8(麦克风)**,这是**已知待上板核对项**:
+微雪 2.16 官方头文件中 I2S DOUT/DIN 两组宏方向矛盾,固件当前默认 **DOUT=8(播放)/ DIN=10(麦克风)**,这是**已知待上板核对项**:
 
 1. 先验证扬声器:`pixelbox eval "px.audio.setVolume(80); px.audio.player.tone(1000, 500)"` —— 应有 1kHz 蜂鸣。
-2. 没声 → `menuconfig → PixelBox Board`,把 `BOARD_WS18_I2S_DOUT`(默认 10)与 `BOARD_WS18_I2S_DIN`(默认 8)**对调**,重编烧录再试。
-3. tone 有声但麦克风无输入 → `pixelbox eval "px.audio.mic.start({onData:b=>console.log('pcm',b.byteLength)})"`,若无 `pcm ...` 日志且引脚已核对,检查功放使能脚 `BOARD_WS18_PA_ENABLE`(默认 46)是否与麦克风增益冲突、ES8311 是否在 I2C 上被认到(TAG `hal_audio`)。
+2. 没声 → `menuconfig → PixelBox Board`,把 `BOARD_WS216_I2S_DOUT`(默认 8)与 `BOARD_WS216_I2S_DIN`(默认 10)**对调**,重编烧录再试。
+3. tone 有声但麦克风无输入 → `pixelbox eval "px.audio.mic.start({onData:b=>console.log('pcm',b.byteLength)})"`,若无 `pcm ...` 日志且引脚已核对,检查功放使能脚 `BOARD_WS216_PA_ENABLE`(默认 46)是否与麦克风增益冲突、ES8311 是否在 I2C 上被认到(TAG `hal_audio`)。
 4. 外接喇叭:8Ω 1W,焊接极性与腔体见 `docs/hardware/devboard.md`。
 
 ## 7. WiFi 连不上
@@ -178,8 +230,8 @@ httpd 的 send 超时才失败,而 httpd 永远收不到 EOF,`close_fn` 不会�
 
 | 待核对项 | 位置 | 核对方法 |
 |---|---|---|
-| I2S DOUT/DIN 方向 | `menuconfig → PixelBox Board`(`BOARD_WS18_I2S_DOUT/DIN`,默认 10/8) | §6:tone 无声→对调重编;麦克风同理 |
-| TCA9554 复位线归属 | 同上(`BOARD_WS18_EXIO_TP_RST/EXIO_LCD_RST`) | 屏亮+触摸响应即正确;只有一样不工作→两根 EXIO 对调 |
-| QMI8658 I2C 地址 | `firmware/components/boards/src/board_waveshare_amoled_18.c:73`(默认 `0x6B`,注释标注可试 `0x6A`) | 日志 TAG `px.imu` 初始化失败→改 0x6A 重编;成功后 `pixelbox eval "px.sensors.imu.start({onData:d=>console.log(d.ax,d.ay,d.az)})"` 晃动板子看数值 |
+| I2S DOUT/DIN 方向 | `menuconfig → PixelBox Board`(`BOARD_WS216_I2S_DOUT/DIN`,默认 8/10) | §6:tone 无声→对调重编;麦克风同理 |
+| 屏幕/触摸复位 | 同上(`BOARD_WS216_LCD_RST=39`、`BOARD_WS216_TP_RST=40`) | 屏亮+触摸响应即正确;单项不工作时检查对应 GPIO 波形 |
+| QMI8658 I2C 地址 | `firmware/components/boards/src/board_waveshare_amoled_216.c`(默认 `0x6B`,可试 `0x6A`) | 日志 TAG `px.imu` 初始化失败→改 0x6A 重编;成功后 `pixelbox eval "px.sensors.imu.start({onData:d=>console.log(d.ax,d.ay,d.az)})"` 晃动板子看数值 |
 
 三项都核对后,建议把结论回填到 Kconfig 默认值/板型文件注释,并提交一次 git。

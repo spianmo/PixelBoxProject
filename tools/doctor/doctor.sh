@@ -4,9 +4,12 @@
 #
 # 用法:
 #   ./tools/doctor/doctor.sh              # 全量体检 (环境/设备/固件/网络)
-#   ./tools/doctor/doctor.sh --flash      # 体检通过后追加: idf.py flash
-#   ./tools/doctor/doctor.sh --monitor    # 体检通过后追加: idf.py monitor
+#   ./tools/doctor/doctor.sh --flash      # ESP-IDF 固件体检通过后追加: idf.py flash
+#   ./tools/doctor/doctor.sh --monitor    # ESP-IDF 烧录后看串口日志(Ctrl+] 退出)
 #   ./tools/doctor/doctor.sh --port /dev/cu.usbmodemXXX   # 指定串口
+#
+# NuttX 固件请使用:
+#   python3 firmware-nuttx/scripts/nuttx.py flash --target esp32s3 --port /dev/cu.usbmodemXXX
 #
 # 环境变量:
 #   PIXELBOX_SERVER_URL   语音中继服务器地址 (默认 http://127.0.0.1:8787)
@@ -177,9 +180,19 @@ section "2/4 USB 设备"
 #   cu.usbmodem*      ESP32-S3 原生 USB (USB-Serial-JTAG, 板载 USB-C 直连)
 #   cu.wchusbserial*  沁恒 CH340/CH343 外置串口芯片
 #   cu.SLAB*          Silicon Labs CP210x 外置串口芯片
-DEVICES=$(find /dev -maxdepth 1 \
-    \( -name 'cu.usbmodem*' -o -name 'cu.wchusbserial*' -o -name 'cu.SLAB*' \) \
-    2>/dev/null | sort)
+#
+# macOS 自带的 /usr/bin/find 不支持 GNU 的 -maxdepth；使用 Bash glob
+# 扫描同一目录，避免 find 报错后被重定向吞掉导致误报“未检测到设备”。
+DEVICES=''
+for candidate in \
+    /dev/cu.usbmodem* \
+    /dev/cu.usbserial* \
+    /dev/cu.wchusbserial* \
+    /dev/cu.SLAB*; do
+    [ -e "$candidate" ] || continue
+    DEVICES="${DEVICES}${DEVICES:+\n}${candidate}"
+done
+DEVICES=$(printf '%b\n' "$DEVICES" | sort -u)
 
 FIRST_PORT=''
 if [ -n "$DEVICES" ]; then
@@ -187,6 +200,7 @@ if [ -n "$DEVICES" ]; then
         [ -n "$dev" ] || continue
         case "$dev" in
             /dev/cu.usbmodem*)      kind='USB-Serial-JTAG (S3 原生 USB, 微雪板 USB-C 即此类)' ;;
+            /dev/cu.usbserial*)      kind='USB 串口适配器' ;;
             /dev/cu.wchusbserial*)  kind='CH340/CH343 外置串口芯片' ;;
             /dev/cu.SLAB*)          kind='CP210x 外置串口芯片' ;;
             *)                      kind='未知类型' ;;
@@ -210,7 +224,7 @@ EOF
             ok "芯片: $CHIP / flash: ${FSIZE:-未知} (期望 ESP32-S3 + 16MB)"
         else
             fail "esptool 探测失败/超时 (设备可能未进下载模式或被 monitor 等进程占用)"
-            fix "进下载模式: 按住 BOOT 键不放 → 插 USB 线 (或按一下 RESET) → 松开 BOOT, 再重试"
+            fix "进下载模式: 先确认 PWR 电源键已开机；按住 BOOT(GPIO0)不放 → 插 USB 线或重新上电 → 等 2 秒松开 BOOT, 再重试"
             fix "确认没有其他程序占用串口 (idf.py monitor / 串口调试器), 关闭后重试"
             fix "换一根确认可传数据的 USB-C 线 (纯充电线枚举不出串口或时断时续)"
         fi
@@ -219,10 +233,12 @@ EOF
     fi
 else
     PORT=''
-    warn "未检测到设备 (扫描 /dev/cu.usbmodem* /dev/cu.wchusbserial* /dev/cu.SLAB*)"
+    warn "未检测到设备 (扫描 /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.wchusbserial* /dev/cu.SLAB*)"
     fix "最常见: USB-C 线是纯充电线, 换一根带数据的线 (烧录必须数据线)"
-    fix "线插在板子的 USB-C 口上了吗? 微雪 AMOLED-1.8 的 USB-C 即 S3 原生 USB, 无需驱动"
+    fix "线插在板子的 USB-C 口上了吗? Waveshare ESP32-S3-Touch-AMOLED-2.16 的 USB-C 即 S3 原生 USB-Serial-JTAG, 无需 CH340/CP210x 驱动"
     fix "若用外置串口板 (CH340/CP210x): macOS 需安装对应厂商驱动后重新插拔"
+    fix "进入下载模式: 先确认 PWR 电源键已开机；按住 BOOT(GPIO0)不放 → 重新插入 USB 或重新上电 → 等 2 秒松开 BOOT, 再扫描 /dev/cu.usbmodem*"
+    fix "NuttX 烧录命令: python3 firmware-nuttx/scripts/nuttx.py flash --target esp32s3 --port /dev/cu.usbmodemXXX"
     fix "插拔后重跑本脚本; 仍无则换电脑 USB 口 (避开无供电的 HUB)"
 fi
 
