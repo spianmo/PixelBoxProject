@@ -4,6 +4,7 @@ import { CharacterTouch, nextCharacter, readCharacter } from './characters';
 import { layoutPoint } from './layout';
 import { BufferedPcmPlayback } from './playback';
 import { BufferedUplink } from './uplink';
+import { RenderBudget } from './render-budget';
 import { loadPairing, parsePairing, savePairing } from './pairing';
 import { applyMessage, disconnect, initialState, parseMessage, rmsLevel, SAMPLE_RATE, SERVICE_TYPE, WAKE_WORD } from './state';
 
@@ -11,6 +12,9 @@ const view = initialState();
 view.theme = px.storage.kv.get('ob.theme') === 'light' ? 'light' : 'dark';
 let character = readCharacter(px.storage.kv.get('ob.character'));
 const info = px.system.info();
+// 本地唤醒只负责把“你好小川”变成一次语音轮次；识别、对话和播报仍由手机桥接完成。
+// 桌面模拟器没有 ESP-SR，wakeword.start() 返回 ENOTSUP 后自动退回手机唤醒协议。
+const speech = px.speech;
 let socket: WebSocket | null = null;
 let phone: PxMdnsService | null = null;
 let discovering = false;
@@ -20,6 +24,10 @@ let fullscreen = false;
 const motion = new CatMotion();
 let micActive = false;
 let micGeneration = 0;
+let wakewordGeneration = 0;
+let wakewordStarting = false;
+let localWakewordActive = false;
+let phoneWakewordFallback = false;
 let recoveringMic = false;
 let accountEpoch = -1;
 let clock = 0;
@@ -37,8 +45,7 @@ let savedPairing = loadPairing();
 let reconnectPaused = false;
 let reconnectAt = 0;
 let reconnectDelay = 1000;
-let audioDrawAt = 0;
-let audioDrawCost = 0;
+const renderBudget = new RenderBudget();
 let playback: BufferedPcmPlayback | null = null;
 let playbackEnded = false;
 let playbackTurnId: number | null = null;
@@ -47,6 +54,14 @@ const AUDIO_RENDER_RESERVE_MS = 384;
 function send(message: Record<string, unknown>): void {
     if (socket?.readyState !== WebSocket.OPEN) return;
     uplink?.control(message);
+}
+
+function stopWakeword(): void {
+    wakewordGeneration++;
+    wakewordStarting = false;
+    localWakewordActive = false;
+    // stop() 同时取消尚未完成模型初始化的 Promise；桌面测试/旧运行时可能没有 speech。
+    try { speech?.wakeword?.stop(); } catch { /* 运行时退出时语音后端可能已释放。 */ }
 }
 
 function stopMic(): void {
@@ -58,22 +73,15 @@ function stopMic(): void {
     view.level = 0;
 }
 
-function stopPlayback(): void {
-    const oldPlayback = playback;
-    playback = null;
-    oldPlayback?.stop();
-    playbackEnded = false;
-    playbackTurnId = null;
-}
-
-function startMic(): void {
+function startPhoneMic(): void {
+    // 本地唤醒与公开 mic 共用底层输入；命中后先停模型订阅，再把音频交给手机。
+    stopWakeword();
     if (micActive || !running || !view.connected || !view.authenticated || view.muted || playback) return;
     if (!info.capabilities.mic) {
         view.state = 'error';
         view.errorText = '此设备没有麦克风';
         return;
     }
-    // 只有配对验证通过且手机账号有效时才采音；PCM 由手机执行唤醒词、STT、AI 和 TTS。
     send({ type: 'mic.start', sampleRate: SAMPLE_RATE, channels: 1, format: 'ima_adpcm', wakeWord: WAKE_WORD });
     if (!view.connected || !view.authenticated) return;
     const generation = ++micGeneration;
@@ -97,8 +105,76 @@ function startMic(): void {
     }
 }
 
+function stopPlayback(): void {
+    const oldPlayback = playback;
+    playback = null;
+    oldPlayback?.stop();
+    playbackEnded = false;
+    playbackTurnId = null;
+}
+
+async function armWakeword(): Promise<void> {
+    if (phoneWakewordFallback) {
+        startPhoneMic();
+        return;
+    }
+    if (wakewordStarting || localWakewordActive || micActive || playback
+        || !running || !view.connected || !view.authenticated || view.muted || !info.capabilities.mic) return;
+    const backend = speech?.wakeword;
+    if (!backend || typeof backend.start !== 'function') {
+        phoneWakewordFallback = true;
+        startPhoneMic();
+        return;
+    }
+    const generation = ++wakewordGeneration;
+    wakewordStarting = true;
+    try {
+        await backend.start({
+            phrase: WAKE_WORD,
+            pinyin: 'ni hao xiao chuan',
+            threshold: 0.30,
+            onWake: () => {
+                if (generation !== wakewordGeneration || !wakewordStarting || !running || !view.authenticated || view.muted) return;
+                stopWakeword();
+                view.state = 'wake';
+                lastActivityAt = px.system.now();
+                startPhoneMic();
+                send({ type: 'listen' });
+            },
+            onError: (message) => {
+                if (generation !== wakewordGeneration) return;
+                // 推理线程异常时保留手机桥接可用，避免一次模型错误让语音入口永久失效。
+                phoneWakewordFallback = true;
+                wakewordStarting = false;
+                localWakewordActive = false;
+                view.errorText = `本地唤醒不可用，已切换手机唤醒${message ? `：${message}` : ''}`.slice(0, 160);
+                startPhoneMic();
+            },
+        });
+        if (generation !== wakewordGeneration || !running || !view.authenticated || view.muted) {
+            try { backend.stop(); } catch { /* 后端退出时无需重复处理。 */ }
+            return;
+        }
+        wakewordStarting = true;
+        localWakewordActive = true;
+    } catch (error) {
+        if (generation !== wakewordGeneration) return;
+        wakewordStarting = false;
+        localWakewordActive = false;
+        if (/ENOTSUP|not available|不可用/i.test(String(error))) {
+            phoneWakewordFallback = true;
+            view.errorText = '桌面运行时不支持本地唤醒，已切换手机唤醒';
+            startPhoneMic();
+        } else {
+            view.state = 'error';
+            view.errorText = `本地唤醒启动失败：${String(error).slice(0, 120)}`;
+        }
+    }
+}
+
 function closeConnection(message = ''): void {
     recoveringMic = false;
+    stopWakeword();
     stopMic();
     stopPlayback();
     clearTimeout(connectTimer);
@@ -173,13 +249,15 @@ function onMessage(raw: string | ArrayBuffer): void {
         lastActivityAt = px.system.now();
         if (view.authenticated) {
             send({ type: 'account.ready', accountEpoch });
-            startMic();
+            // 账号确认后保持本地唤醒待机；桌面或旧固件不支持时由 armWakeword() 自动回退。
+            void armWakeword();
         }
     } else if (message.type === 'auth.revoked') {
         savePairing(null);
         savedPairing = null;
         closeConnection('手机已取消配对，请输入新配对码');
     } else if (message.type === 'auth.required') {
+        stopWakeword();
         stopMic();
         stopPlayback();
     } else if (message.type === 'wake') {
@@ -193,10 +271,11 @@ function onMessage(raw: string | ArrayBuffer): void {
         }
         if (message.state === 'idle' || message.state === 'error') recoveringMic = false;
         if (message.state !== 'idle') lastActivityAt = px.system.now();
-        if (message.state === 'idle') startMic();
+        if (message.state === 'idle') void armWakeword();
         if (message.state === 'muted') { view.muted = true; stopMic(); stopPlayback(); }
-        if (message.state === 'error') stopMic();
+        if (message.state === 'error') { stopWakeword(); stopMic(); }
     } else if (message.type === 'audio.start' && view.authenticated) {
+        stopWakeword();
         stopMic();
         stopPlayback();
         if (view.muted) { send({ type: 'cancel' }); return; }
@@ -319,6 +398,7 @@ function toggleMute(): void {
     // 配对前切换静音偏好不能覆盖配对/等待页面，也不能向未授权连接发命令。
     if (!view.authenticated) return;
     if (view.muted) {
+        stopWakeword();
         send({ type: 'mic.stop' });
         send({ type: 'cancel' });
         stopMic();
@@ -326,7 +406,7 @@ function toggleMute(): void {
         view.state = 'muted';
     } else {
         view.state = view.authenticated ? 'idle' : 'offline';
-        startMic();
+        void armWakeword();
     }
 }
 
@@ -336,7 +416,9 @@ function listen(): void {
     lastActivityAt = px.system.now();
     if (view.state === 'speaking' || view.state === 'thinking') send({ type: 'cancel' });
     stopPlayback();
-    startMic();
+    // 触摸 / BOOT 是显式聆听，直接切换到手机上行采音，不等待唤醒词。
+    stopWakeword();
+    startPhoneMic();
     send({ type: 'listen' });
 }
 
@@ -402,6 +484,7 @@ if (px.sensors.imu.available()) {
     } });
 }
 
+// 姿态缓存分帧建立，首次变形也必须给录音与网络留下执行时间。
 prepareCat();
 px.screen.setFps(30);
 px.screen.onFrame((dt) => {
@@ -413,15 +496,22 @@ px.screen.onFrame((dt) => {
     // 三维绘制与 WebSocket 回调共用 JS 线程，真机单帧可超过 300ms。
     // 音频余量不足时让出整帧给收包，避免绘制持续拖慢 PCM 供给；网络收尾后正常绘制。
     if (playback && !playbackEnded && playback.buffered() < AUDIO_RENDER_RESERVE_MS) return;
-    // 音频期间至少留出与上次绘制相等的空闲时间，给网络回调及原生屏幕提交让路。
-    // 只看播放余量会连续绘制，屏幕提交的耗时也会推迟下一次收包。
-    if ((micActive || (playback && !playbackEnded))
-        && (uplink?.pendingAudio() || px.system.now() - audioDrawAt < Math.max(64, audioDrawCost))) return;
+    // 内建 voice 使用共享麦克风，不经过本应用的 micActive；同样必须让出实时预算。
+    // audio.end 后仍可能有扬声器尾音，播放对象真正结束前继续保留空闲窗口。
+    const voiceState = px.voice?.state();
+    const realtime = micActive || px.audio.mic.active || !!playback || (!!voiceState && voiceState !== 'idle');
+    if (!renderBudget.ready(px.system.now(), realtime, uplink?.pendingAudio())) return;
     const drawStarted = px.system.now();
+    const pose = motion.sample(view.state, clock, tiltX, tiltY, view.level);
+    // 宿主模拟器没有原生投影，允许一次性预热以保留测试/预览帧；真机按小批量让出执行权。
+    const prepBudget = typeof px.util?.projectPointRuns === 'function' ? 32 : 1_000_000;
+    if (!prepareCat(pose, prepBudget)) {
+        renderBudget.complete(drawStarted, px.system.now());
+        return;
+    }
     drawScene(px.screen, view, { clock, tiltX, tiltY, battery, settings, fullscreen, shake, character,
-        pose: motion.sample(view.state, clock, tiltX, tiltY, view.level) });
-    audioDrawAt = px.system.now();
-    audioDrawCost = audioDrawAt - drawStarted;
+        pose });
+    renderBudget.complete(drawStarted, px.system.now());
 });
 
 const discoverTimer = setInterval(() => { void discover(); }, 1000);

@@ -128,6 +128,10 @@ export function rmsLevel(pcm: ArrayBuffer): number {
     if (pcm.byteLength === 0 || pcm.byteLength % 2 !== 0) return 0;
     const samples = new Int16Array(pcm);
     let sum = 0;
-    for (let i = 0; i < samples.length; i++) sum += (samples[i] / 32768) ** 2;
-    return Math.min(100, Math.round(Math.sqrt(sum / samples.length) * 400));
+    // 先累计整数平方，最后一次归一化，避免每个样本都做软件浮点除法和幂运算。
+    for (let i = 0; i < samples.length; i++) {
+        const sample = samples[i];
+        sum += sample * sample;
+    }
+    return Math.min(100, Math.round(Math.sqrt(sum / samples.length) * (400 / 32768)));
 }

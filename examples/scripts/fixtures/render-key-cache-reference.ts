@@ -1,3 +1,5 @@
+// 固定参考：2026-10-03 场景/字幕键缓存优化前；通过 onLoad 以原 render.ts 路径解析依赖。
+// 原始文件 SHA-256: e4935f7a3cdf7061f2af5138a04f39f0511a491404ca56e89def9d9d62f8800f
 import { catProjectionBounds, clamp, imuGlitch, packedCat, poseFor, rasterizeCat, rasterizeFace, type AssistantState, type Pose } from './model';
 import type { ViewState } from './state';
 import { layoutScreen, lineHeight, textHeight, type Screen } from './layout';
@@ -14,8 +16,6 @@ interface SceneFrame {
     key: string; background: number; redraw: boolean; cat?: Bounds;
     grid?: { top: number; bottom: number; color: number };
     captionKey?: string; captionHeight?: number; bodyBottom?: number;
-    captionCache?: { key: string; isKitty: boolean; progress: string; status: string; fallback: string;
-        errorText: string; assistantText: string; userText: string };
 }
 const frames = new WeakMap<Screen, SceneFrame>();
 const glyphWidths = new WeakMap<Screen, Map<string, number>>();
@@ -39,27 +39,10 @@ export function beginScene(screen: Screen, key: string, background: number): boo
     return frame.redraw;
 }
 
-type SceneKeyCache = Pick<ViewState, 'theme' | 'state' | 'connected' | 'authenticated' | 'muted' |
-    'displayName' | 'enterpriseId' | 'phoneName' | 'pairingCode' | 'pairingPending'> &
-    Pick<RenderInput, 'fullscreen' | 'settings' | 'battery'> & { key: string };
-let lastSceneKey: SceneKeyCache | undefined;
 export function sceneKey(view: ViewState, input: RenderInput): string {
-    // 按原顺序读取全部标量一次；即使命中缓存，也不能短路跳过输入属性的 getter。
-    const theme = view.theme, fullscreen = input.fullscreen, settings = input.settings, battery = input.battery;
-    const state = view.state, connected = view.connected, authenticated = view.authenticated, muted = view.muted;
-    const displayName = view.displayName, enterpriseId = view.enterpriseId, phoneName = view.phoneName;
-    const pairingCode = view.pairingCode, pairingPending = view.pairingPending;
-    const cached = lastSceneKey;
-    if (cached && cached.theme === theme && cached.fullscreen === fullscreen && cached.settings === settings &&
-        cached.battery === battery && cached.state === state && cached.connected === connected &&
-        cached.authenticated === authenticated && cached.muted === muted && cached.displayName === displayName &&
-        cached.enterpriseId === enterpriseId && cached.phoneName === phoneName && cached.pairingCode === pairingCode &&
-        cached.pairingPending === pairingPending) return cached.key;
-    const key = JSON.stringify([theme, fullscreen, settings, battery, state, connected, authenticated, muted,
-        displayName, enterpriseId, phoneName, pairingCode, pairingPending]);
-    lastSceneKey = { key, theme, fullscreen, settings, battery, state, connected, authenticated, muted,
-        displayName, enterpriseId, phoneName, pairingCode, pairingPending };
-    return key;
+    return JSON.stringify([view.theme, input.fullscreen, input.settings, input.battery, view.state,
+        view.connected, view.authenticated, view.muted, view.displayName, view.enterpriseId,
+        view.phoneName, view.pairingCode, view.pairingPending]);
 }
 
 function restoreBackground(screen: Screen, frame: SceneFrame, box: Bounds, covered?: PhysicalBounds): void {
@@ -163,11 +146,7 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     const step = runs.step;
     const clipTop = region?.top ?? 0, clipBottom = region?.bottom ?? screen.height;
     const edge = step + Math.round(step * glitch), halfEdge = Math.ceil(edge / 2);
-    // 复用原有typed数组，避免每帧先分配12元素临时Array再复制。
-    catLayers[0] = edge; catLayers[1] = -edge; catLayers[2] = 0x2050ef;
-    catLayers[3] = -edge; catLayers[4] = edge; catLayers[5] = 0xe31c35;
-    catLayers[6] = halfEdge; catLayers[7] = 0; catLayers[8] = 0x17f5f5;
-    catLayers[9] = -halfEdge; catLayers[10] = 1; catLayers[11] = 0xf9fb54;
+    catLayers.set([edge, -edge, 0x2050ef, -edge, edge, 0xe31c35, halfEdge, 0, 0x17f5f5, -halfEdge, 1, 0xf9fb54]);
     const options: RunLayerOptions = { count: runs.count, step, layers: catLayers, padding: 1,
         left: cx - 13 * scale, right: cx + 13 * scale, clipTop, clipBottom, color: 0xffffff };
     if (region) options.margin = 12;
@@ -175,11 +154,8 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     if (frame?.cat && !frame.redraw && screen.fillRunLayersRestored) {
         // 一次原生调用完成旧背景和网格恢复、主体覆盖分析及彩边绘制，避免重复进入JS密集循环。
         const box = frame.cat, grid = frame.grid;
-        catRestore[0] = box.left; catRestore[1] = box.top;
-        catRestore[2] = box.right; catRestore[3] = box.bottom;
-        catRestore[4] = frame.background;
-        catRestore[5] = grid?.top ?? 0; catRestore[6] = grid?.bottom ?? 0;
-        catRestore[7] = grid?.color ?? 0; catRestore[8] = grid ? 1 : 0;
+        catRestore.set([box.left, box.top, box.right, box.bottom, frame.background,
+            grid?.top ?? 0, grid?.bottom ?? 0, grid?.color ?? 0, grid ? 1 : 0]);
         painted = screen.fillRunLayersRestored(runs.runs, options, catRestore);
     } else {
         if (frame?.cat && !frame.redraw)
@@ -205,26 +181,20 @@ export function drawCat(screen: Screen, view: ViewState, input: RenderInput, cy:
     // 眼睛和嘴位于前表面，随同一视图矩阵旋转，不贴死在屏幕坐标。
     if (Math.cos(pose.yaw) > 0.15) {
         const face = rasterizeFace(view.state, input.clock, view.level, pose, scale, cx, cy, step);
-        const upperOffset = glitch > 0.15 ? Math.max(1, Math.round(step * glitch)) : 0, faceSize = step + 1;
         for (let i = 0; i < face.count; i++) {
             const x = face.xy[i * 2] * step, y = face.xy[i * 2 + 1] * step;
-            if (glitch > 0.15 && face.upper[i]) paint(x - upperOffset, y, step, step, 0xf9fb54);
-            paint(x, y, faceSize, faceSize, 0x0d1210);
+            if (glitch > 0.15 && face.upper[i]) paint(x - Math.max(1, Math.round(step * glitch)), y, step, step, 0xf9fb54);
+            paint(x, y, step + 1, step + 1, 0x0d1210);
         }
     }
     // 强度越大，扫描条越多、越长、跳动越快；最多 12 个额外矩形，限制每帧工作量。
-    // 保留clock读取时点；没有扫描条时省去无用取整，有条时复用循环不变量。
-    const scanClock = input.clock, strips = Math.floor(glitch * 6);
-    if (strips > 0) {
-        const scan = Math.floor(scanClock / (120 - glitch * 80));
-        const stripHeight = Math.max(1, Math.round(step * glitch * 0.7));
-        const stripWidth = (3 + glitch * 4) * scale, brightWidth = (1 + glitch * 2) * scale;
-        for (let i = 0; i < strips; i++) {
-            const y = cy + ((i * 5 + scan) % 17 - 8) * scale;
-            const x = cx + (i % 2 ? 6 : -11) * scale;
-            paint(x, y, stripWidth, stripHeight, i % 2 ? 0x17f5f5 : 0xf9fb54);
-            paint(x + scale, y, brightWidth, stripHeight, 0xffffff);
-        }
+    const scan = Math.floor(input.clock / (120 - glitch * 80));
+    const stripHeight = Math.max(1, Math.round(step * glitch * 0.7));
+    for (let i = 0; i < Math.floor(glitch * 6); i++) {
+        const y = cy + ((i * 5 + scan) % 17 - 8) * scale;
+        const x = cx + (i % 2 ? 6 : -11) * scale;
+        paint(x, y, (3 + glitch * 4) * scale, stripHeight, i % 2 ? 0x17f5f5 : 0xf9fb54);
+        paint(x + scale, y, (1 + glitch * 2) * scale, stripHeight, 0xffffff);
     }
     if (frame) frame.cat = painted;
     return painted.pixels;
@@ -259,14 +229,12 @@ export function companionHeader(screen: Screen, brand: string, view: ViewState, 
 }
 
 function waveform(screen: Screen, view: ViewState, input: RenderInput, y: number, color: number): void {
-    // 与原includes相同只读取state一次，避免每帧创建临时状态数组。
-    const activeState = view.state;
-    const active = activeState === 'wake' || activeState === 'listening' || activeState === 'thinking' || activeState === 'speaking';
+    const active = ['wake', 'listening', 'thinking', 'speaking'].includes(view.state);
     const amplitude = active ? 3 + Math.min(10, view.level / 10) : view.state === 'sleep' || view.muted ? 1 : 2;
-    const phase = input.clock / (view.state === 'thinking' ? 270 : 130), left = screen.width / 2 - 79;
     for (let i = 0; i < 27; i++) {
+        const phase = input.clock / (view.state === 'thinking' ? 270 : 130);
         const h = Math.round(2 + Math.abs(Math.sin(i * 0.73 + phase)) * amplitude);
-        screen.fillRect(left + i * 6, y - h / 2, 3, h, color);
+        screen.fillRect(screen.width / 2 - 79 + i * 6, y - h / 2, 3, h, color);
     }
 }
 
@@ -280,16 +248,7 @@ export function companionBody(screen: Screen, view: ViewState, input: RenderInpu
     const text = reply || view.userText || fallback;
     const fullscreenStatus = input.fullscreen ? progress || status : '';
     const isKitty = Boolean(input.character && input.character !== 'cat');
-    // 字幕缓存属于当前场景；保留已绘制 captionKey，文本变化仍走原来的重排/刷新流程。
-    const errorText = view.errorText, assistantText = view.assistantText, userText = view.userText;
-    const cachedCaption = frame?.captionCache;
-    const sameCaption = cachedCaption && cachedCaption.isKitty === isKitty && cachedCaption.progress === progress &&
-        cachedCaption.status === status && cachedCaption.fallback === fallback && cachedCaption.errorText === errorText &&
-        cachedCaption.assistantText === assistantText && cachedCaption.userText === userText;
-    const captionKey = sameCaption ? cachedCaption.key
-        : JSON.stringify([isKitty, progress, status, fallback, errorText, assistantText, userText]);
-    if (frame && !sameCaption) frame.captionCache = { key: captionKey, isKitty, progress, status, fallback,
-        errorText, assistantText, userText };
+    const captionKey = JSON.stringify([isKitty, progress, status, fallback, view.errorText, view.assistantText, view.userText]);
     // Kitty 只为实际字幕预留空间，移除换装提示后将空白区域让给角色；小猫保持原有大小。
     // 字幕不变时复用排版高度，避免每个 IMU 帧重复遍历长回复。
     const captionHeight = frame?.captionKey === captionKey && frame.captionHeight !== undefined ? frame.captionHeight

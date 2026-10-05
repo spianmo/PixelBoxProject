@@ -14,6 +14,7 @@ export interface FormState {
     symbols: boolean;
     busy: boolean;
     speechReady: boolean;
+    passwordVisible?: boolean;
 }
 
 export const FIELD_LABELS: Record<Field, string> = {
@@ -25,9 +26,18 @@ const SYMBOL_ROWS = ['!@#$%^&*()', '-_=+[]{}<>', '/:;,.?\\|', '`~\'"'];
 const LABELS: Record<string, string> = { wake: '我在', listening: '正在聆听', thinking: '思考中',
     speaking: '小川正在回答', muted: '麦克风已关闭', error: '等待恢复' };
 
-function palette(view: ViewState) {
-    return view.theme === 'dark' ? { bg: 0x080b0b, fg: 0xeef2ee, quiet: 0x99aaa0, line: 0x2e3932, accent: 0xc4f27c, input: 0x171e1a }
-        : { bg: 0xeff1f1, fg: 0x121714, quiet: 0x59645e, line: 0xc7d1ca, accent: 0x477f18, input: 0xffffff };
+const DARK_PALETTE = { bg: 0x080b0b, fg: 0xeef2ee, quiet: 0x99aaa0, line: 0x2e3932, accent: 0xc4f27c, input: 0x171e1a };
+const LIGHT_PALETTE = { bg: 0xeff1f1, fg: 0x121714, quiet: 0x59645e, line: 0xc7d1ca, accent: 0x477f18, input: 0xffffff };
+function palette(view: ViewState) { return view.theme === 'dark' ? DARK_PALETTE : LIGHT_PALETTE; }
+const wakeCaptions = new WeakMap<Screen, { phrase: string; width: number; text: string }>();
+function wakeCaption(screen: Screen, phrase: string): string {
+    let cached = wakeCaptions.get(screen);
+    if (!cached || cached.phrase !== phrase || cached.width !== screen.width) {
+        // 静态唤醒词只在内容或布局宽度变化时排版，IMU 帧复用结果。
+        cached = { phrase, width: screen.width, text: short(screen, phrase, screen.width - 44) };
+        wakeCaptions.set(screen, cached);
+    }
+    return cached.text;
 }
 
 function text(screen: Screen, value: string, x: number, y: number, color: number): void {
@@ -64,7 +74,11 @@ export function keyboardKeyAt(form: FormState, x: number, y: number, width: numb
         if (x < width * 3 / 4) return 'space';
         return 'done';
     }
-    if (y >= 115 && y < 159 && x > width - 60) return 'delete';
+    if (y >= 115 && y < 159) {
+        if (x < 80) return 'clear';
+        if (x > width - 60) return 'delete';
+        if (form.field === 'password' && x >= width - 135 && x < width - 60) return 'visibility';
+    }
     if (y < 176 || y >= 368 || x < 8 || x >= width - 8) return null;
     const row = Math.floor((y - 176) / 48);
     const letters = keyboardRows(form)[row];
@@ -89,11 +103,23 @@ export function drawHarness(target: Screen, view: ViewState, input: RenderInput,
     try { renderHarness(screen, view, input, form, wakePhrase); } finally { screen.finish(); }
 }
 
+type HarnessSceneCache = { base: string; page: Page; phrase: string; key: string };
+let lastHarnessScene: HarnessSceneCache | undefined;
+function harnessSceneKey(view: ViewState, input: RenderInput, form: FormState, phrase: string): string {
+    const base = sceneKey(view, input);
+    if (form.page !== 'assistant') return base + JSON.stringify([form, view.errorText, view.thinkingText]);
+    // 与原分支相同再次读取page，保持getter的读取顺序与次数。
+    const page = form.page, previous = lastHarnessScene;
+    if (previous && previous.base === base && previous.page === page && previous.phrase === phrase) return previous.key;
+    const key = base + JSON.stringify([page, phrase]);
+    lastHarnessScene = { base, page, phrase, key };
+    return key;
+}
+
 function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form: FormState, wakePhrase: string): void {
     const p = palette(view);
     const W = screen.width;
-    const redraw = beginScene(screen, sceneKey(view, input) + JSON.stringify(form.page === 'assistant'
-        ? [form.page, wakePhrase] : [form, view.errorText, view.thinkingText]), p.bg);
+    const redraw = beginScene(screen, harnessSceneKey(view, input, form, wakePhrase), p.bg);
     if (form.page === 'assistant') {
         if (redraw) companionHeader(screen, 'ObeingHarness', view, input);
         if (redraw && !input.fullscreen) {
@@ -101,7 +127,7 @@ function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form
             icon(screen, 'theme', W - 78, 43, p.fg);
             icon(screen, 'settings', W - 38, 43, p.fg);
         }
-        companionBody(screen, view, input, view.state === 'idle' || view.state === 'sleep' ? short(screen, wakePhrase, screen.width - 44) : LABELS[view.state] || '小川');
+        companionBody(screen, view, input, view.state === 'idle' || view.state === 'sleep' ? wakeCaption(screen, wakePhrase) : LABELS[view.state] || '小川');
         return;
     }
     if (!redraw) return;
@@ -112,9 +138,15 @@ function renderHarness(screen: Screen, view: ViewState, input: RenderInput, form
     if (form.page === 'editor') {
         center(screen, FIELD_LABELS[form.field], 52, p.fg);
         const value = form.values[form.field];
-        const visible = form.field === 'password' || form.field === 'key' ? '*'.repeat(value.length) : value;
+        const visible = (form.field === 'password' && !form.passwordVisible) || form.field === 'key' ? '*'.repeat(value.length) : value;
         screen.fillRect(18, 94, W - 36, 63, p.input);
-        wrapText(screen, visible, W - 94, 2).forEach((line, i) => text(screen, line, 27, 101 + i * lineHeight(screen, 19), p.fg));
+        text(screen, '清空', 27, 117, p.quiet);
+        wrapText(screen, visible, W - (form.field === 'password' ? 225 : 150), 2)
+            .forEach((line, i) => text(screen, line, 90, 101 + i * lineHeight(screen, 19), p.fg));
+        if (form.field === 'password') {
+            screen.fillRect(W - 135, 107, 66, 37, p.line);
+            text(screen, form.passwordVisible ? '隐藏' : '显示', W - 124, 117, p.fg);
+        }
         icon(screen, 'delete', W - 45, 119, p.quiet);
         const rows = keyboardRows(form);
         const cell = (W - 16) / 10;

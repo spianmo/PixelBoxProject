@@ -49,7 +49,7 @@ Kitty 按实际字幕之外的可用区域等比放大，完整保留身体和�
 进入登录、设置或键盘页面会暂停语音；网络恢复和切换静音也不会在这些页面自动开麦。
 返回助手页面恢复唤醒，BOOT 单击则直接返回助手并开始本轮录音。
 
-企业服务默认是 `https://v4.teamhelper.cn`，设置页允许修改 HTTPS 域名、OEM 和企业域。
+企业服务默认是 `https://app.teamhelper.cn`，设置页允许修改 HTTPS 域名、OEM 和企业域。
 修改企业服务会退出当前账号，防止向另一服务发送旧凭据。
 
 Azure 默认配置定义在 `src/project-config.ts`，仓库中的 `key` 必须保持为空。用户在 PixelBox 上
@@ -79,7 +79,10 @@ HTTPS /basestation/api/workbench/user/ucenter/login
 请求携带 `User-Client`、设备元数据、`oem`、`Authorization` 和 `X-Tenant-Id`。
 禁止自动重定向，避免企业口令或 token 跨源。使用 `lossless-json` 保留 64 位企业和用户 ID，
 发往 AI 的 ID 为字符串。access token 到期前 60 秒合并刷新请求，退出或切换账号使所有旧响应失效。
-服务以 HTML 或空正文返回 HTTP 401/403 时仍按鉴权失效处理，清除过期账号。
+服务以 HTML 或空正文返回 HTTP 401/403 时仍保留状态码。首次登录按基站或 OAuth
+请求阶段显示错误；只有刷新凭据被拒绝时才提示登录过期并清除会话。登录页显示状态码，
+并在同源业务错误信封的中文 `msg` 通过长度和内容校验时显示简短原因；HTML、空正文、
+疑似回显凭据的内容仍使用通用提示，不显示原始响应或凭据。
 
 `conversation.ts` 直接连接 `wss://<企业服务>/mexusclaw-socket`，使用现有 MexusClaw v1
 `hello`、`welcome.payload.sessionId`、`user.turn`、`assistant.delta`、`assistant.done`
@@ -124,6 +127,7 @@ AI 握手最多 15 秒，单轮 AI 最多 60 秒。连续问答和普通取消�
 IMU 以 50 Hz 采样直接驱动位移与偏转，目标刷新率为 30 FPS；目标值不等于真机实测帧率。
 固件同时缩短帧到期时的网络事件批次预算，并优化 PSRAM 填色、旋转采集和脏区行带传输。
 当前验证及真机验收边界见 [显示性能报告](../../docs/jsvm-performance.md)。
+NuttX 在微雪 2.16 真机上的独立帧率、测试命令和验证范围见 [example07 NuttX 实测记录](../../docs/performance/example07-nuttx-fps-20261003.md)。
 
 ## 桌面模拟器
 

@@ -13,7 +13,7 @@ const authModule = await source('auth.ts');
 const { EnterpriseAuth, validateOrigin, isSameServiceOrigin } = authModule;
 const { LocalAuthStore } = await source('persistence.ts');
 const { MexusConversation, hello } = await source('conversation.ts');
-const { HarnessController, userMessage } = await source('controller.ts');
+const { HarnessController, defaultServer, userMessage } = await source('controller.ts');
 const { StreamingSpeech } = await source('speech-stream.ts');
 const { projectSpeechConfig } = await source('project-config.ts');
 const { drawHarness, keyboardKeyAt } = await source('render.ts');
@@ -62,6 +62,12 @@ function fixtureAuth(overrides = {}, store, now = () => 10000) {
 }
 async function loggedIn() { const fixture = fixtureAuth(); await fixture.auth.login('ABC123', 'USR123', 'fixture-password'); return fixture; }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+await test('默认企业服务指向当前生产域名', () => {
+    assert.deepEqual(defaultServer('test-pixelbox'), {
+        origin: 'https://app.teamhelper.cn', domain: '', oem: '', deviceId: 'test-pixelbox',
+    });
+});
 
 await test('会话与原样密码持久化按服务和账号隔离，损坏记录不建立身份', async () => {
     const data = new Map(), kv = { get: key => data.get(key), set: (key, value) => data.set(key, value) };
@@ -155,6 +161,83 @@ await test('错误登录和HTTP重定向绝不建立工作账号', async () => {
     const { auth } = fixtureAuth({ '/basestation/api/workbench/user/ucenter/login': () => response({}, 302, 302) });
     await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'));
     assert.equal(auth.current(), null);
+});
+await test('首次登录鉴权失败不误报会话过期，OAuth失败标明授权阶段', async () => {
+    const loginPath = '/basestation/api/workbench/user/ucenter/login';
+    for (const code of [401, 403, 20401]) {
+        const denied = code === 20401 ? response(null, 200, code)
+            : { ...response(null, code), text: async () => '<html>access denied</html>' };
+        const { auth, requests } = fixtureAuth({ [loginPath]: () => denied });
+        await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), (error) => {
+            assert.equal(error.code, code);
+            assert.match(error.message, new RegExp(`基站登录被拒绝 ${code}`));
+            assert.doesNotMatch(error.message, /过期/);
+            return true;
+        });
+        assert.equal(requests.length, 1);
+        assert.equal(auth.current(), null);
+    }
+    const { auth, requests } = fixtureAuth({ '/api/meeting/oauth/appid': () => response(null, 200, 20401) });
+    await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), /获取授权应用被拒绝 20401/);
+    assert.equal(requests.length, 2);
+    assert.equal(auth.current(), null);
+});
+await test('同源业务拒绝显示简短中文原因并保留鉴权阶段与状态码', async () => {
+    const path = '/basestation/api/workbench/user/ucenter/login';
+    for (const [status, code, message] of [[401, 401, '账号或密码错误'], [401, 401, '该企业内无此用户ID'], [403, 403, '账号已停用'], [200, 20401, '用户不存在']]) {
+        const body = JSON.stringify({ code, msg: message, data: null });
+        const { auth, requests } = fixtureAuth({ [path]: () => ({ ...response(null, status, code), text: async () => body }) });
+        await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), (error) => {
+            assert.equal(error.code, code);
+            assert.equal(error.message, `基站登录被拒绝 ${code}：${message}`);
+            return true;
+        });
+        assert.equal(requests.length, 1);
+        assert.equal(auth.current(), null);
+    }
+    const { auth } = fixtureAuth({ '/api/meeting/oauth/appid': () => ({ ...response(null, 200, 20401),
+        text: async () => JSON.stringify({ code: 20401, msg: '账号无此权限', data: null }) }) });
+    await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), /获取授权应用被拒绝 20401：账号无此权限/);
+});
+await test('已知英文账密错误安全映射为中文且保留登录阶段', async () => {
+    const path = '/basestation/api/workbench/user/ucenter/login';
+    for (const key of ['msg', 'message']) {
+        const body = JSON.stringify({ code: 401, [key]: 'invalid userCode or password', success: false, data: null });
+        const { auth, requests } = fixtureAuth({ [path]: () => ({ ...response(null, 200, 401), text: async () => body }) });
+        await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), (error) => {
+            assert.equal(error.code, 401);
+            assert.equal(error.message, '基站登录被拒绝 401：账号或密码错误');
+            return true;
+        });
+        assert.equal(requests.length, 1);
+    }
+});
+await test('不完整或疑似回显凭据的错误正文不显示，HTTP状态不被解析失败覆盖', async () => {
+    const path = '/basestation/api/workbench/user/ucenter/login';
+    const bodies = [
+        JSON.stringify({ code: 401, msg: '账号 USERID 错误', data: null }),
+        JSON.stringify({ code: 401, msg: '该企业内无此用户ID ADMIN1', data: null }),
+        JSON.stringify({ code: 401, msg: '验证码 123456 错误', data: null }),
+        JSON.stringify({ code: 401, msg: '账号错误' }),
+        JSON.stringify({ code: 200, msg: '账号错误', data: null }),
+        JSON.stringify({ code: 401, msg: '账号错误'.repeat(20), data: null }),
+        '<html>access denied</html>',
+        '',
+    ];
+    for (const body of bodies) {
+        const { auth } = fixtureAuth({ [path]: () => ({ ...response(null, 401), text: async () => body }) });
+        await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), (error) => {
+            assert.equal(error.code, 401);
+            assert.equal(error.message, '基站登录被拒绝 401，请核对账号密码或服务设置');
+            return true;
+        });
+    }
+    const { auth } = fixtureAuth({ [path]: () => ({ ...response(null, 403), text: async () => { throw new Error('body unavailable'); } }) });
+    await assert.rejects(auth.login('ABC123', 'USR123', 'fixture-password'), (error) => {
+        assert.equal(error.code, 403);
+        assert.match(error.message, /基站登录被拒绝 403/);
+        return true;
+    });
 });
 await test('同源比较兼容ESP-IDF显式443和域名大小写，拒绝跨站及畸形地址', () => {
     assert.equal(validateOrigin('HTTPS://V4.TEST.INVALID:00443/'), config.origin);
@@ -717,7 +800,7 @@ await test('暂停页面阻止网络恢复和静音切换启动唤醒，返回�
     assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2);
     r.controller.dispose();
 });
-await test('真实main登录前等待NTP，取消不发送密码，再次提交复用已保存密码', async () => {
+await test('真实main登录前等待NTP，取消不发送密码，401不保存输入', async () => {
     let touch;
     let exit;
     let releaseTime;
@@ -749,9 +832,59 @@ await test('真实main登录前等待NTP，取消不发送密码，再次提交�
     tap(180, 335); await tick();
     assert.equal(requestBodies.length, 1);
     assert.equal(requestBodies[0].password, 'a'.repeat(16));
-    const credentials = JSON.parse(stored.find(([key]) => key === 'h.credentials')[1]);
-    assert.equal(credentials.password, 'a'.repeat(16));
+    assert.equal(stored.some(([key]) => key === 'h.credentials'), false, '拒绝登录时不可覆盖本地密码');
     assert.equal(stored.some(([key]) => key === 'h.key'), false);
+    exit();
+});
+await test('密码编辑从空值重输，返回恢复旧值，清空移除当前输入', async () => {
+    const data = new Map([['h.tenant', 'ABC123'], ['h.account', 'USR123'], ['h.origin', config.origin]]);
+    const kv = { get: key => data.get(key), set: (key, value) => data.set(key, value) };
+    const saved = new LocalAuthStore(kv, { ...config, deviceId: 'test-box' });
+    saved.remember('ABC123', 'USR123', 'previous-secret');
+    const requests = [];
+    let acceptLogin = false;
+    let touch;
+    let exit;
+    const px = {
+        system: { info: () => ({ deviceId: 'test-box' }), now: () => 100, battery: () => ({ level: 86 }), ntpSync: async () => {} },
+        storage: { kv },
+        speech: { available: () => true, configure() {}, cancel() {}, wakeword: { stop() {}, start: async () => {} } },
+        wifi: { status: () => ({ connected: true }), on: () => () => {} },
+        input: { onTouch(callback) { touch = callback; return () => {}; }, onButton: () => () => {} },
+        sensors: { imu: { available: () => false } },
+        screen: { width: 368, height: 448, setFps() {}, onFrame() {} },
+        app: { onExit(callback) { exit = callback; } },
+    };
+    runInNewContext(mainBundle.outputFiles[0].text, { px, TextEncoder, Date, console: { log() {} }, WebSocket: class {},
+        fetch: async (url, init) => {
+            if (url.endsWith('/ucenter/login')) {
+                requests.push(JSON.parse(init.body).password);
+                return acceptLogin ? response(token()) : response({}, 401);
+            }
+            if (url.endsWith('/oauth/appid')) return response({ appid: 'fixture-app' });
+            if (url.endsWith('/authorize')) return response({ code: 'fixture-code' });
+            if (url.endsWith('/token')) return response(token());
+            if (url.endsWith('/user/info')) return response({ userId: '9223372036854775001', tenantId: '9223372036854775002' });
+            throw new Error('unexpected fixture path');
+        },
+        setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {} });
+    const tap = (x, y) => touch({ type: 'down', x, y });
+    const digit = (index) => tap(8 + (index + 0.5) * 35.2, 192);
+
+    tap(80, 251); digit(1); tap(25, 52); tap(180, 335); await tick();
+    assert.deepEqual(requests, ['previous-secret'], '返回编辑页应保留之前的密码');
+
+    tap(80, 251); digit(1); tap(320, 407); tap(180, 335); await tick();
+    assert.deepEqual(requests, ['previous-secret', '2'], '重新编辑不应追加旧密码');
+
+    tap(80, 251); digit(0); digit(2); tap(40, 135);
+    for (const index of [1, 3, 5, 7, 0, 9]) digit(index);
+    tap(320, 407); tap(180, 335); await tick();
+    assert.equal(requests[2], '246810');
+    assert.equal(saved.password('ABC123', 'USR123'), 'previous-secret', '401后保留上次成功保存的输入');
+    acceptLogin = true;
+    tap(180, 335); await tick();
+    assert.equal(saved.password('ABC123', 'USR123'), '246810', '整条登录链成功后才保存新输入');
     exit();
 });
 await test('真实main设置与键盘页gotIp和BOOT双击不开麦，返回和显式录音有独立入口', async () => {
@@ -916,5 +1049,24 @@ await test('登录/语音/服务器/键盘/助手浅暗在368、320和480像素�
         r.controller.dispose();
     }
     assert.equal(keyboardKeyAt({ symbols: false, upper: true }, 25, 192, 368), '1');
+    assert.equal(keyboardKeyAt({ symbols: false, upper: true }, 40, 135, 368), 'clear');
+    assert.equal(keyboardKeyAt({ symbols: false, upper: true }, 330, 135, 368), 'delete');
+    assert.equal(keyboardKeyAt({ field: 'password', symbols: false, upper: true }, 270, 135, 368), 'visibility');
+});
+await test('密码只在编辑页临时显示，其他输入仍保持原有遮蔽', () => {
+    const form = { page: 'editor', returnPage: 'login', field: 'password', upper: true, symbols: false,
+        busy: false, speechReady: false, passwordVisible: false,
+        values: { tenant: '', account: '', password: 'test123', region: '', key: 'secret-key', origin: '', oem: '', domain: '', question: '' } };
+    const view = { theme: 'dark', state: 'idle', authenticated: false, errorText: '', thinkingText: '' };
+    const rendered = [];
+    const screen = { width: 368, height: 448, clear() {}, fillRect() {},
+        measureText(value) { return { width: value.length * 6, height: 12 }; },
+        drawText(value) { rendered.push(value); } };
+    const draw = () => { rendered.length = 0; drawHarness(screen, view, { clock: 0, tiltX: 0, tiltY: 0, battery: 86, settings: false }, form); return rendered.join('|'); };
+    assert.ok(!draw().includes('test123'));
+    form.passwordVisible = true;
+    assert.ok(draw().includes('test123'));
+    form.field = 'key';
+    assert.ok(!draw().includes('secret-key'));
 });
 console.log(`\nObeingHarness: ${passed} tests passed`);

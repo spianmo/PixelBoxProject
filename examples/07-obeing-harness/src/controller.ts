@@ -268,5 +268,5 @@ export function userMessage(error: unknown, fallback: string): string {
 }
 
 export function defaultServer(deviceId: string): ServerConfig {
-    return { origin: 'https://v4.teamhelper.cn', domain: '', oem: '', deviceId };
+    return { origin: 'https://app.teamhelper.cn', domain: '', oem: '', deviceId };
 }

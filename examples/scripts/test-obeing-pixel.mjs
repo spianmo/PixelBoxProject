@@ -19,6 +19,7 @@ const render = await moduleAt('render.ts');
 const characters = await moduleAt('characters.ts');
 const kitty = await moduleAt('kitty.ts');
 const { KITTY_PATTERNS, KITTY_PALETTE } = await moduleAt('kitty-patterns.ts');
+const { RenderBudget } = await moduleAt('render-budget.ts');
 const { encodeImaAdpcm } = await moduleAt('../../../simulator/src/renderer/src/device-sim/sandbox/runtime/ima-adpcm.ts');
 const harnessBundle = await build({ entryPoints: [join(examples, '07-obeing-harness/src/render.ts')], bundle: true, format: 'esm', target: 'es2020', write: false, logLevel: 'silent' });
 const harnessRender = await import(`data:text/javascript;base64,${Buffer.from(harnessBundle.outputFiles[0].text).toString('base64')}`);
@@ -50,6 +51,40 @@ await test('猫为有厚度的三维体素，外壳少于实体并保留双耳',
     const ears = volume[6].find(row => row.some(Boolean));
     assert.ok(ears[3] && ears[17]);
     assert.equal(ears[10], 0);
+});
+await test('慢帧后普通动画让出等长窗口，语音两倍窗口且积压优先', () => {
+    const budget = new RenderBudget();
+    assert.ok(budget.ready(0, true));
+    budget.complete(100, 400);
+    assert.equal(budget.ready(699, false), false);
+    assert.ok(budget.ready(700, false));
+    assert.equal(budget.ready(999, true), false);
+    assert.ok(budget.ready(1000, true));
+    assert.equal(budget.ready(10000, true, true), false);
+    budget.complete(10000, 10005);
+    assert.equal(budget.ready(10068, true), false);
+    assert.ok(budget.ready(10069, true));
+    assert.ok(budget.ready(10010, false), '快设备仍按真实5ms绘制成本运行');
+});
+await test('首次局部形态过渡只向原生混合传入两个实际姿态且像素等价', () => {
+    const previous = globalThis.px;
+    const weights = new Float32Array(model.CAT_SHAPES.length);
+    weights[0] = .6; weights[7] = .4;
+    const pose = { yaw: .3, pitch: -.2, squash: 1, lift: 3, shape: 'listen', weights };
+    const snapshot = raster => Array.from(raster.runs.subarray(0, raster.count * 3));
+    let calls = 0;
+    try {
+        globalThis.px = {};
+        const expected = snapshot(model.rasterizeCat(pose, 11, 224, 220));
+        globalThis.px = { util: { blendPoints(sets, active, output) {
+            calls++;
+            assert.equal(sets.length, 2); assert.equal(active.length, 2);
+            output.fill(0);
+            for (let i = 0; i < sets.length; i++) for (let j = 0; j < output.length; j++) output[j] += sets[i][j] * active[i];
+        } } };
+        assert.deepEqual(snapshot(model.rasterizeCat(pose, 11, 224, 220)), expected);
+        assert.equal(calls, 1);
+    } finally { if (previous === undefined) delete globalThis.px; else globalThis.px = previous; }
 });
 await test('默认小猫轮廓、全部形变和表情与中午原版0935617一致', () => {
     // 快照独立提取自2026-09-09中午前的0935617，防止重新引入后加的半身和微笑。
@@ -322,7 +357,7 @@ await test('页面、配对、账号和输入框变化使静态缓存失效，�
 });
 
 const testPair = { phoneId: '00000000-0000-4000-8000-000000000001', pairKey: 'a'.repeat(64), inputFormat: 'ima_adpcm' };
-function runtime(width = 368, height = 448, storage = new Map(), phones = null) {
+function runtime(width = 368, height = 448, storage = new Map(), phones = null, speechMode = 'none') {
     let touch;
     let button;
     let exit;
@@ -330,6 +365,8 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
     const screenText = [];
     let screenWrites = 0;
     let now = 1000;
+    let drawCost = 0;
+    let voiceState = 'idle';
     let micCallback;
     const micCallbacks = [];
     let micStarts = 0;
@@ -349,6 +386,9 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
     const sent = [];
     let sendBusy = false;
     let micFrameMs = 0;
+    let wakeOptions;
+    let wakeStarts = 0;
+    let wakeStops = 0;
     class Socket {
         static OPEN = 1;
         readyState = 1;
@@ -360,6 +400,18 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
         system: { info: () => ({ deviceId: 'test-device', capabilities: { mic: true } }), battery: () => ({ level: 86 }), now: () => now },
         storage: { kv: { get: (key) => storage.get(key), set: (key, value) => storage.set(key, value), remove: (key) => storage.delete(key) } },
         wifi: { status: () => ({ connected: true }) },
+        voice: { state: () => voiceState },
+        ...(speechMode === 'none' ? {} : { speech: {
+            wakeword: {
+                start(options) {
+                    wakeStarts++;
+                    wakeOptions = options;
+                    if (speechMode === 'unsupported') throw new Error('ENOTSUP: ESP-SR 本地唤醒仅在 PixelBox 固件可用');
+                    return Promise.resolve();
+                },
+                stop() { wakeStops++; },
+            },
+        } }),
         net: { mdns: { discover: async () => phones || [{ name: 'Obeing Pixel Phone', ip: '192.168.1.20', port: 18888, txt: { phoneId: testPair.phoneId } }] } },
         audio: {
             encodeImaAdpcm,
@@ -378,9 +430,9 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
         sensors: { imu: { available: () => false } },
         screen: {
             width, height, setFps() {}, onFrame(cb) { frame = cb; },
-            clear() { screenWrites++; screenText.length = 0; }, fillRect() { screenWrites++; },
+            clear() { now += drawCost; screenWrites++; screenText.length = 0; }, fillRect() { now += drawCost; screenWrites++; },
             measureText: (text, style) => ({ width: text.length * 12 * (style?.scale || 1), height: 12 * (style?.scale || 1) }),
-            drawText(text) { screenWrites++; screenText.push(text); },
+            drawText(text) { now += drawCost; screenWrites++; screenText.push(text); },
         },
         input: { onTouch(cb) { touch = cb; }, onButton(cb) { button = cb; } },
         app: { onExit(cb) { exit = cb; } },
@@ -388,6 +440,9 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
     runInNewContext(main.outputFiles[0].text, { px, console: { log() {} }, WebSocket: Socket, ArrayBuffer, Int16Array, setTimeout(cb, delay) { const id = ++timerId; timers.set(id, { cb, at: now + delay }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(cb) { intervals.push(cb); return intervals.length; }, clearInterval() {} });
     return {
         sent, sockets, audioChunks, storage,
+        get now() { return now; },
+        setDrawCost(value) { drawCost = value; },
+        voice(value) { voiceState = value; },
         get micFrameMs() { return micFrameMs; },
         busy(value) { sendBusy = value; },
         discover() { intervals[0](); },
@@ -395,12 +450,15 @@ function runtime(width = 368, height = 448, storage = new Map(), phones = null) 
         get audioUnderrunMs() { return audioUnderrunMs; },
         get screenWrites() { return screenWrites; },
         get micStarts() { return micStarts; }, get micStops() { return micStops; }, get audioFeeds() { return audioFeeds; },
+        get wakeStarts() { return wakeStarts; }, get wakeStops() { return wakeStops; },
         touch(x, y) { touch({ type: 'down', x, y }); touch({ type: 'up', x, y }); },
         touchEvent(type, x = width / 2, y = height / 2) { touch({ type, x, y }); },
         button(type) { button({ id: 'boot', type }); },
         open() { sockets.at(-1).onopen(); },
         message(message) { sockets.at(-1).onmessage({ data: message instanceof ArrayBuffer ? message : JSON.stringify(message.type === 'hello.ok' ? { ...testPair, ...message } : message) }); },
         pcm(pcm = new Int16Array([100, -100]).buffer) { micCallback(pcm); },
+        wake() { wakeOptions?.onWake(); },
+        wakeError(message = '模型错误') { wakeOptions?.onError?.(message); },
         oldPcm(index) { micCallbacks[index](new Int16Array([100, -100]).buffer); },
         audioEnded() { ended(); },
         heartbeat() { intervals[1](); },
@@ -425,6 +483,37 @@ async function pairedRuntime() {
     r.open();
     return r;
 }
+
+async function localWakeRuntime(mode = 'local') {
+    const r = runtime(368, 448, new Map(), null, mode);
+    await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 6; i++) r.touch(70, 250);
+    r.touch(286, 400);
+    r.open();
+    return r;
+}
+await test('真实入口未配对时也为内建voice采音留预算，结束后恢复普通动画', async () => {
+    const r = runtime();
+    r.setDrawCost(1);
+    r.voice('listening');
+    const started = r.now + 64;
+    r.frameText();
+    const cost = r.now - started;
+    assert.ok(cost > 64, '注入真实绘图调用成本来模拟慢设备');
+    assert.equal(r.micStarts, 0, 'voice并不设置应用自己的采音标志');
+    const written = r.screenWrites;
+    r.frameText();
+    assert.equal(r.screenWrites, written, '内建voice采音期间不连续重绘');
+    r.advance(cost * 2);
+    r.frameText();
+    assert.ok(r.screenWrites > written, '预留执行窗口后动画仍继续');
+    r.voice('idle'); r.setDrawCost(0); r.advance(cost * 2);
+    r.frameText();
+    const resumed = r.screenWrites;
+    r.frameText();
+    assert.ok(r.screenWrites > resumed, '恢复后快帧不被固定低帧率限制');
+    r.exit();
+});
 await test('480真机坐标完成配对、打开连接页并断开', async () => {
     const r = runtime(480, 480);
     await new Promise((resolve) => setImmediate(resolve));
@@ -451,6 +540,36 @@ await test('真实入口仅在配对且手机同步有效账号后开启麦克�
     assert.ok(r.sent.at(-1) instanceof ArrayBuffer);
     r.exit();
     assert.equal(r.micStops, 1);
+});
+await test('本地 MultiNet7 待机不公开采音，命中唤醒词后才进入手机上行', async () => {
+    const r = await localWakeRuntime();
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(r.wakeStarts, 1);
+    assert.equal(r.micStarts, 0, '本地模型待机期间不能打开公开麦克风');
+    assert.deepEqual(r.sent.filter((message) => message.type === 'account.ready'), [{ type: 'account.ready', accountEpoch: 1 }]);
+    r.wake();
+    assert.ok(r.wakeStops >= 1, '命中后必须先停止本地模型');
+    assert.equal(r.micStarts, 1);
+    assert.deepEqual(r.sent.slice(-2).map((message) => message.type), ['mic.start', 'listen']);
+    r.message({ type: 'audio.start', turnId: 1, sampleRate: 16000, channels: 1, format: 'pcm_s16le' });
+    r.message({ type: 'audio.end', turnId: 1 });
+    r.audioEnded();
+    r.message({ type: 'state', state: 'idle' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(r.wakeStarts, 2, '轮次结束回到 idle 后重新 arm 本地唤醒');
+    assert.equal(r.micStarts, 1, '重新 arm 后不能与本地模型并行打开公开麦克风');
+    r.exit();
+});
+await test('桌面或旧固件不支持 ESP-SR 时回退手机唤醒协议', async () => {
+    const r = await localWakeRuntime('unsupported');
+    r.message({ type: 'hello.ok', authenticated: true, accountEpoch: 1 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(r.wakeStarts, 1);
+    assert.equal(r.wakeStops, 1);
+    assert.equal(r.micStarts, 1, 'ENOTSUP 后自动沿用手机唤醒采音');
+    assert.equal(r.sent.some((message) => message.type === 'mic.start'), true);
+    r.exit();
 });
 await test('真实入口配对后等待手机登录，注销停音清字幕，重登不用重新配对', async () => {
     const r = await pairedRuntime();

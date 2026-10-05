@@ -18,6 +18,7 @@ const saved = (key: string, fallback: string) => {
 };
 const form: FormState = {
     page: 'login', returnPage: 'login', field: 'tenant', upper: true, symbols: false, busy: false, speechReady: false,
+    passwordVisible: false,
     values: { tenant: saved('h.tenant', ''), account: saved('h.account', ''), password: '',
         region: bundledSpeech?.region ?? saved('h.region', ''), key: bundledSpeech?.key ?? '',
         origin: saved('h.origin', defaults.origin), oem: saved('h.oem', ''), domain: saved('h.domain', ''), question: '' },
@@ -38,9 +39,28 @@ let targetX = 0;
 let targetY = 0;
 let shake = 0;
 let battery = px.system.battery().level;
-// TLS 证书校验依赖正确系统时间；NTP 自身已有 15 秒有界超时。
-let clockSync: Promise<void> = px.system.ntpSync('pool.ntp.org').catch(() => { /* 登录前检查同步结果 */ });
+// TLS 证书校验依赖正确系统时间；NuttX NTP另有15秒原生截止时间。
+const clockSyncTimeout = 16000;
+function startClockSync(): Promise<void> {
+    let sync: Promise<void>;
+    try { sync = px.system.ntpSync('pool.ntp.org'); }
+    catch { return Promise.resolve(); }
+    return new Promise<void>((resolve) => {
+        let settled = false;
+        let timer = 0;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+        };
+        timer = setTimeout(finish, clockSyncTimeout);
+        sync.then(finish, finish);
+    });
+}
+let clockSync: Promise<void> = startClockSync();
 let loginEpoch = 0;
+let passwordBeforeEdit: string | null = null;
 
 function createController(): HarnessController {
     let origin = form.values.origin;
@@ -73,6 +93,12 @@ function showPage(page: Page, resumeWake = true): void {
 
 function edit(field: Field, from: Page): void {
     if (form.busy) return;
+    // 隐藏的旧密码不可辨认，重新编辑时从空值开始；返回可恢复原值。
+    if (field === 'password') {
+        passwordBeforeEdit = form.values.password;
+        form.values.password = '';
+        form.passwordVisible = false;
+    }
     form.field = field;
     form.returnPage = from;
     showPage('editor');
@@ -81,10 +107,14 @@ function edit(field: Field, from: Page): void {
 }
 
 function editKey(key: string): void {
+    if (key === 'visibility') { form.passwordVisible = !form.passwordVisible; return; }
     if (key === 'shift') { form.upper = !form.upper; return; }
     if (key === 'symbols') { form.symbols = !form.symbols; return; }
     if (key === 'delete') { form.values[form.field] = form.values[form.field].slice(0, -1); return; }
+    if (key === 'clear') { form.values[form.field] = ''; return; }
     if (key === 'done') {
+        passwordBeforeEdit = null;
+        form.passwordVisible = false;
         showPage(form.returnPage, form.field !== 'question');
         if (form.field === 'question') {
             const value = form.values.question;
@@ -106,23 +136,28 @@ async function submitLogin(): Promise<void> {
     form.busy = true;
     const active = controller;
     const password = form.values.password;
-    try { authStore.remember(form.values.tenant, form.values.account, password); }
-    catch { form.busy = false; active.view.errorText = '密码保存失败，请重试'; return; }
-    await clockSync;
-    if (!running || controller !== active || epoch !== loginEpoch) return;
-    if (Date.now() < 1704067200000) {
-        form.busy = false;
-        active.view.errorText = '设备时间未同步，请检查 Wi-Fi 后重试';
-        clockSync = px.system.ntpSync('pool.ntp.org').catch(() => {});
-        return;
-    }
-    await active.login(form.values.tenant, form.values.account, password);
-    if (!running || controller !== active || epoch !== loginEpoch) return;
-    form.busy = false;
-    if (active.view.authenticated) {
-        px.storage.kv.set('h.tenant', form.values.tenant.toUpperCase());
-        px.storage.kv.set('h.account', form.values.account.toUpperCase());
-        showPage(active.hasSpeech() ? 'assistant' : 'speech');
+    const current = () => running && controller === active && epoch === loginEpoch;
+    try {
+        await clockSync;
+        if (!current()) return;
+        if (Date.now() < 1704067200000) {
+            active.view.errorText = '设备时间未同步，请检查 Wi-Fi 后重试';
+            clockSync = startClockSync();
+            return;
+        }
+        await active.login(form.values.tenant, form.values.account, password);
+        if (!current()) return;
+        if (active.view.authenticated) {
+            try { authStore.remember(form.values.tenant, form.values.account, password); }
+            catch { active.view.errorText = '登录成功，但密码保存失败'; }
+            px.storage.kv.set('h.tenant', form.values.tenant.toUpperCase());
+            px.storage.kv.set('h.account', form.values.account.toUpperCase());
+            showPage(active.hasSpeech() ? 'assistant' : 'speech');
+        }
+    } catch (error) {
+        if (current()) active.view.errorText = userMessage(error, '企业登录失败');
+    } finally {
+        if (current()) form.busy = false;
     }
 }
 
@@ -131,27 +166,32 @@ async function restoreLogin(): Promise<void> {
     const epoch = ++loginEpoch;
     const active = controller;
     form.busy = true;
-    await clockSync;
-    if (!running || controller !== active || epoch !== loginEpoch) return;
-    if (Date.now() < 1704067200000) {
-        form.busy = false;
-        active.view.errorText = '设备时间未同步，正在重试';
-        clockSync = px.system.ntpSync('pool.ntp.org').catch(() => {});
-        return;
+    const current = () => running && controller === active && epoch === loginEpoch;
+    try {
+        await clockSync;
+        if (!current()) return;
+        if (Date.now() < 1704067200000) {
+            active.view.errorText = '设备时间未同步，正在重试';
+            clockSync = startClockSync();
+            return;
+        }
+        await active.restore();
+        if (!current()) return;
+        // Expired/revoked sessions can reauthenticate with the remembered password.
+        // Explicit logout clears the saved session, so it never enters this path.
+        if (!active.view.authenticated && !active.auth.current() && form.values.password && px.wifi.status().connected) {
+            await active.login(form.values.tenant, form.values.account, form.values.password);
+        }
+        if (!current()) return;
+        if (active.view.authenticated) {
+            restorePending = false;
+            showPage(active.hasSpeech() ? 'assistant' : 'speech');
+        } else restorePending = Boolean(active.auth.current());
+    } catch (error) {
+        if (current()) active.view.errorText = userMessage(error, '登录恢复失败，请重试');
+    } finally {
+        if (current()) form.busy = false;
     }
-    await active.restore();
-    if (!running || controller !== active || epoch !== loginEpoch) return;
-    // Expired/revoked sessions can reauthenticate with the remembered password.
-    // Explicit logout clears the saved session, so it never enters this path.
-    if (!active.view.authenticated && !active.auth.current() && form.values.password && px.wifi.status().connected) {
-        await active.login(form.values.tenant, form.values.account, form.values.password);
-    }
-    if (!running || controller !== active || epoch !== loginEpoch) return;
-    form.busy = false;
-    if (active.view.authenticated) {
-        restorePending = false;
-        showPage(active.hasSpeech() ? 'assistant' : 'speech');
-    } else restorePending = Boolean(active.auth.current());
 }
 
 function saveForm(): void {
@@ -206,7 +246,13 @@ const unsubTouch = px.input.onTouch((touch) => {
     if (event.y >= 36 && event.y < 79) {
         if (event.x > event.width - 67) { theme(); return; }
         if (event.x < 62) {
-            if (form.page === 'editor') { showPage(form.returnPage); return; }
+            if (form.page === 'editor') {
+                if (passwordBeforeEdit !== null) form.values.password = passwordBeforeEdit;
+                passwordBeforeEdit = null;
+                form.passwordVisible = false;
+                showPage(form.returnPage);
+                return;
+            }
             if (form.busy) { loginEpoch++; restorePending = false; controller.logout(); form.busy = false; }
             showPage(controller.view.authenticated ? 'assistant' : 'login');
             return;
@@ -249,7 +295,7 @@ const unsubButton = px.input.onButton((event) => {
 });
 const unsubOffline = px.wifi.on('disconnected', () => controller.networkChanged(false));
 const unsubOnline = px.wifi.on('gotIp', () => {
-    if (Date.now() < 1704067200000) clockSync = px.system.ntpSync('pool.ntp.org').catch(() => {});
+    if (Date.now() < 1704067200000) clockSync = startClockSync();
     controller.networkChanged(true);
     void restoreLogin();
 });
@@ -270,8 +316,15 @@ px.screen.onFrame((dt) => {
     if (controller.view.state === 'idle' && px.system.now() - lastActivity > 45000) controller.view.state = 'sleep';
     if (!controller.view.authenticated && form.page === 'assistant') showPage('login');
     form.speechReady = controller.hasSpeech();
+    // 登录、设置和键盘页不绘制角色，跳过每帧姿态采样与形态点预热，缩短触摸事件等待时间。
+    const pose = form.page === 'assistant'
+        ? motion.sample(controller.view.state, clock, tiltX, tiltY, controller.view.level)
+        : undefined;
+    // 真机 QuickJS 每帧只预热少量形态点，避免首次变形阻塞录音和网络；模拟器一次完成便于预览。
+    const prepBudget = typeof px.util?.projectPointRuns === 'function' ? 32 : 1_000_000;
+    if (pose && character === 'cat' && !prepareCat(pose, prepBudget)) return;
     drawHarness(px.screen, controller.view, { clock, tiltX, tiltY, battery, settings: false, fullscreen, shake, character,
-        pose: motion.sample(controller.view.state, clock, tiltX, tiltY, controller.view.level) }, form, controller.wakeConfig.phrase);
+        pose }, form, controller.wakeConfig.phrase);
 });
 const batteryTimer = setInterval(() => { battery = px.system.battery().level; void restoreLogin(); }, 10000);
 px.app.onExit(() => {

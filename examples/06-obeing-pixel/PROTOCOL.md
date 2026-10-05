@@ -1,5 +1,7 @@
 # Obeing Pixel Bridge v1
 
+NuttX + MultiNet7 在设备本地检测默认唤醒词；桌面模拟器、旧固件或本地模型不可用时才由手机回退检测。
+
 手机是 WebSocket 服务端，PixelBox 是客户端。发现类型 `_obeing-pixel._tcp`，NSD 可带末尾点，连接路径 `/pixelbox`，服务端使用动态空闲端口。设备发现时 `timeoutMs=3000`，每秒检查发现条件（已有发现请求未结束时不重复发起），连接握手最多 15 秒；配对码有效期 120 秒，正确输入后直接完成配对。设备每 10 秒发送 `ping`，45 秒无任何下行消息则断开并停止麦克风。
 
 手机也以 45 秒未收到有效应用消息或 PCM 判定离线，使用单调时钟。禁用 Java-WebSocket 的独立 15 秒 PONG 检测，避免设备发送积压时底层 PONG 争用音频锁，或仍有应用数据却被误判失联；应用 `ping/pong` 继续用于静音、未登录和无音频时保活。
@@ -37,7 +39,7 @@
 | type / 帧 | 语义 |
 | --- | --- |
 | `account.ready` | `accountEpoch` 确认已停止旧音频并应用新账号；必须先于新账号 `mic.start`/文本/PCM |
-| `mic.start` | 开始持续采音，`sampleRate=16000,channels=1,format=ima_adpcm,wakeWord=你好小川` |
+| `mic.start` | 本地唤醒成功后开始持续采音并向手机上行，`sampleRate=16000,channels=1,format=ima_adpcm,wakeWord=你好小川`；手机端不再承担默认唤醒词检测 |
 | 二进制 | 独立 IMA ADPCM 块，16 kHz 单声道，128 ms / 2048 样本 / 1030 字节帧 |
 | `mic.stop` | 用户关闭麦克风，手机取消当前语音流程 |
 | `listen` | 触摸 / 按键直接开始一轮输入，不等待唤醒词 |
@@ -57,7 +59,7 @@ IMA ADPCM 每个二进制块的前 6 字节依次为：样本数 `uint16_le`、�
 | --- | --- |
 | `account.state` | 手机账号快照，`authenticated,accountEpoch,userDisplayName,enterpriseId,account`；清旧音频/字幕，保留安全配对，未配对或旧代数时忽略 |
 | `state` | `state`: idle / listening / thinking / speaking / muted / error，`text` 为公开状态 |
-| `wake` | `word` 必须严格等于 `你好小川` |
+| `wake` | 设备本地 MultiNet7 检测到唤醒词后发送，`word` 必须严格等于 `你好小川` |
 | `user.text` | `text` 为当前轮识别文本，`final` 标记是否完成 |
 | `assistant.delta` | `text` 为累计全文，设备按替换语义处理 |
 | `assistant.text` | `text` 为完整回复 |

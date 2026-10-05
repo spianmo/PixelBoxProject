@@ -263,6 +263,50 @@ interface PxCanvas extends PxDrawTarget {
   dispose(): void;
 }
 
+interface PxRunLayerOptions {
+  /** 使用前 count 个 [gridX,gridY,cellCount]；默认全部，最多 8192。 */
+  count?: number;
+  /** 逻辑栅格大小，整数 1..2048，默认 1。 */
+  step?: number;
+  /** 从逻辑坐标到画布坐标的缩放，范围 1/2048..2048，默认 1。 */
+  scale?: number;
+  /** 最多 16 个 [dx,dy,color] 彩层，按顺序绘制，再绘制主体。 */
+  layers?: Int32Array;
+  /** 主体/彩层的右侧和底部扩张，默认 1。 */
+  padding?: number;
+  /** 平移计算的横向初始包围盒，省略时只使用投影行边界。 */
+  left?: number;
+  right?: number;
+  clipTop?: number;
+  clipBottom?: number;
+  /** 传入时按左/上优先级校正区域内平移，默认不平移。 */
+  margin?: number;
+  /** 主体 RGB 颜色，默认 0xffffff。 */
+  color?: Color;
+}
+interface PxRunLayerResult {
+  /** 逻辑坐标的实际裁剪绘制范围；空批次为 Infinity/负 Infinity。 */
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  dx: number;
+  dy: number;
+  /** 原始投影行的 cellCount 总和，不包含填补的针孔。 */
+  pixels: number;
+}
+interface PxRectLayerOptions {
+  /** 使用前 count 个 [x,y,width,height,color]；默认全部，最多 8192。 */
+  count?: number;
+  /** 缓存几何到逻辑坐标的倍率，范围 (0,2048]，默认 1。 */
+  step?: number;
+  /** 从逻辑坐标到画布坐标的缩放，范围 1/2048..2048，默认 1。 */
+  scale?: number;
+  x?: number;
+  y?: number;
+  /** 最多 16 个 [dx,dy,color] 彩层，之后绘制各矩形自身颜色。 */
+  layers?: Int32Array;
+}
 interface PxDrawTarget {
   clear(color?: Color): void;
   setPixel(x: number, y: number, color: Color): void;
@@ -272,6 +316,16 @@ interface PxDrawTarget {
   fillRect(x: number, y: number, w: number, h: number, color: Color): void;
   /** Ordered batch of [x,y,w,h,color] Int32 records; count defaults to all, maximum 8192. */
   fillRects(rects: Int32Array, count?: number): void;
+  /** 有序、正宽且不重叠的投影行；合并单格针孔并减去每层最大同栅格行遮挡。 */
+  fillRunLayers(runs: Int32Array, options?: PxRunLayerOptions): PxRunLayerResult;
+  /** 可选原生融合路径：先恢复旧逻辑范围的背景/网格，再绘制投影行。
+   * restore 为9项 Float64Array：[left,top,right,bottom,background,gridTop,gridBottom,gridColor,gridEnabled]。
+   * 边界/网格坐标须有限且绝对值不超过1e6，颜色为uint32整数，gridEnabled为0或1。
+   * 无网格时最后四项填0；缩放沿用options.scale。不支持时该方法不存在。
+   */
+  fillRunLayersRestored?(runs: Int32Array, options: PxRunLayerOptions, restore: Float64Array): PxRunLayerResult;
+  /** 对缓存矩形批量缩放、平移、分层，按 Math.round 分别取整端点。 */
+  fillRectLayers(rects: Int32Array, options?: PxRectLayerOptions): void;
   drawCircle(x: number, y: number, r: number, color: Color): void;
   fillCircle(x: number, y: number, r: number, color: Color): void;
   drawText(text: string, x: number, y: number, style?: PxTextStyle): void;
@@ -321,6 +375,20 @@ interface PxScreen extends PxDrawTarget {
   onFrame(cb: (dt: number) => void): Unsubscribe;
   /** 目标帧率 1-60,默认 30 */
   setFps(fps: number): void;
+  /** 原生帧调度/提交统计；frames 是 flush 调用数，updates 是成功的有效更新数。 */
+  frameStats(): {
+    frames: number;
+    updates: number;
+    errors: number;
+    convertedPixels: number;
+    changedPixels: number;
+    transactions: number;
+    transmittedPixels: number;
+    elapsedMs: number;
+    conversionMs: number;
+    updateMs: number;
+    lastArea: { x: number; y: number; width: number; height: number };
+  };
   createCanvas(w: number, h: number): PxCanvas;
   /**
    * 创建帧动画:frames 为图片路径/二进制/画布数组,或雪碧图 { sheet, frameW, frameH }
@@ -376,12 +444,16 @@ interface PxPlayHandle {
 }
 
 interface PxAudio {
+  /** 扬声器硬件是否可用。 */
+  available(): boolean;
   /** 将 1–4096 个 PCM16LE 样本编码为独立 IMA ADPCM 块（6 字节头 + 4bit/样本）。 */
   encodeImaAdpcm(pcm: BinaryLike): ArrayBuffer;
   /** 扬声器音量 0-100 */
   setVolume(percent: number): void;
   getVolume(): number;
   mic: {
+    /** 麦克风硬件是否可用。 */
+    available(): boolean;
     start(opts: PxMicOptions): void;
     stop(): void;
     readonly active: boolean;
@@ -699,6 +771,10 @@ interface PxUtil {
    * Returns run count; output packs [gridX, gridY, cellCount] and must fit 3 integers
    * per input point. Max bounding grid area is 65536 cells. Same validation as projectPoints. */
   projectPointRuns(points: Float32Array, options: PxProjectionOptions, output: Int32Array): number;
+  /** 返回双重取整后的 [minGridX, minGridY, maxGridX, maxGridY]，output 至少4项。
+   * 可选 indices 只投影指定点，最多8192个有效索引；返回参与投影的点数。
+   * 空点集写入4个0。其余校验与 projectPoints 一致，不创建占用栅格。 */
+  projectPointBounds(points: Float32Array, options: PxProjectionOptions, output: Int32Array, indices?: Uint32Array): number;
   b64encode(data: BinaryLike): string;
   b64decode(b64: string): ArrayBuffer;
   hexEncode(data: BinaryLike): string;

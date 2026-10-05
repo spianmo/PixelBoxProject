@@ -36,12 +36,12 @@ for (const state of ['idle', 'sleep', 'thinking', 'speaking', 'wake']) {
             const pose = model.poseFor(state, 1700 + cases * 17, tilt, -tilt, 68);
             const old = legacyRaster(pose, scale, width / 2, 170);
             const next = model.rasterizeCat(pose, scale, width / 2, 170);
-            const runs = Array.from({ length: next.count }, (_, i) => ({ x: next.x[i], y: next.y[i], width: next.width[i] }));
+            const runs = Array.from({ length: next.count }, (_, i) => ({ x: next.runs[i * 3] * next.step, y: next.runs[i * 3 + 1] * next.step, width: next.runs[i * 3 + 2] * next.step }));
             assert.deepEqual(runs, old.runs);
-            assert.equal(next.pixels, old.pixels);
+            assert.equal(runs.reduce((sum, run) => sum + run.width / next.step, 0), old.pixels);
             globalThis.px = { util: simulatorProjection };
             const accelerated = model.rasterizeCat(pose, scale, width / 2, 170);
-            assert.deepEqual(Array.from({ length: accelerated.count }, (_, i) => ({ x: accelerated.x[i], y: accelerated.y[i], width: accelerated.width[i] })), old.runs);
+            assert.deepEqual(Array.from({ length: accelerated.count }, (_, i) => ({ x: accelerated.runs[i * 3] * accelerated.step, y: accelerated.runs[i * 3 + 1] * accelerated.step, width: accelerated.runs[i * 3 + 2] * accelerated.step })), old.runs);
             delete globalThis.px;
             cases++;
         }

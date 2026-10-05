@@ -73,6 +73,40 @@ export function parseSession(data: unknown, tenantCode: string, userCode: string
     return session;
 }
 
+function failureDetail(envelope: Record<string, unknown>): string {
+    // 只显示结构完整的业务错误；已知英文错误先映射，避免回显账号或凭据。
+    const code = Number(envelope.code);
+    const message = string(envelope.msg);
+    if (Object.prototype.hasOwnProperty.call(envelope, 'data') && Number.isInteger(code) && code >= 300
+        && (message === 'invalid userCode or password' || string(envelope.message) === 'invalid userCode or password'))
+        return '账号或密码错误';
+    if (!Object.prototype.hasOwnProperty.call(envelope, 'data') || !Number.isInteger(code) || code < 300
+        || message.length < 2 || message.length > 36 || !/[\u3400-\u9fff]{2}/.test(message)
+        || (message !== '该企业内无此用户ID' && !/^[\u3400-\u9fff，。！？：；、（） 0-9]+$/.test(message))
+        || /\d{3,}/.test(message)
+        || /密码[为是]|验证码[为是]|密钥|令牌/.test(message)) return '';
+    return message;
+}
+
+function requestFailure(path: string, code: number, detail = ''): string {
+    // 首次登录尚无会话；只有刷新凭据被拒绝才属于登录过期。
+    const denied = [401, 403, 20401].includes(code);
+    if (path === '/basestation/api/workbench/user/ucenter/login')
+        return `基站登录${denied ? '被拒绝' : '失败'} ${code}${detail ? `：${detail}` : denied ? '，请核对账号密码或服务设置' : '，请稍后重试'}`;
+    if (path === '/api/meeting/user/refreshToken')
+        return denied ? `登录已过期 ${code}${detail ? `：${detail}` : '，请重新登录'}`
+            : `登录状态刷新失败 ${code}${detail ? `：${detail}` : '，请稍后重试'}`;
+    const stage = path === '/api/meeting/oauth/appid' ? '获取授权应用'
+        : path === '/api/meeting/authorize' ? '获取授权码'
+        : path === '/api/meeting/token' ? '换取工作凭据' : '读取用户身份';
+    return `${stage}${denied ? '被拒绝' : '失败'} ${code}${detail ? `：${detail}` : denied ? '，请检查账号权限或服务设置' : '，请稍后重试'}`;
+}
+
+function parseEnvelope(raw: string): Record<string, unknown> {
+    // V4 的 64 位企业/用户 ID 不能先转为 JS Number 再补字符串。
+    return record(parse(raw, undefined, { parseNumber: (value) => isSafeNumber(value) ? Number(value) : value }));
+}
+
 export class EnterpriseAuth {
     private session: Session | null = null;
     private epoch = 0;
@@ -111,18 +145,26 @@ export class EnterpriseAuth {
             throw new AuthError(0, '服务连接失败，请检查 Wi-Fi 和服务地址');
         }
         if (response.url && !isSameServiceOrigin(response.url, this.config.origin)) throw new AuthError(0, '服务返回了其他地址');
-        // 反向代理可能用 HTML/空正文返回鉴权失败，HTTP 身份状态不能被 JSON 解析错误覆盖。
-        if (response.status === 401 || response.status === 403) throw new AuthError(response.status, '登录已过期，请重新登录');
+        // 反向代理可能用 HTML/空正文返回鉴权失败，HTTP 状态始终优先于正文读取及解析错误。
+        if (response.status === 401 || response.status === 403) {
+            let detail = '';
+            try {
+                const raw = await response.text();
+                if (raw.length <= 65536) detail = failureDetail(parseEnvelope(raw));
+            } catch { /* 保留 HTTP 身份状态及通用提示。 */ }
+            throw new AuthError(response.status, requestFailure(path, response.status, detail));
+        }
         const raw = await response.text();
         if (raw.length > 65536) throw new AuthError(0, '服务响应过大');
         let envelope: Record<string, unknown>;
         try {
-            // V4 的 64 位企业/用户 ID 不能先转为 JS Number 再补字符串。
-            envelope = record(parse(raw, undefined, { parseNumber: (value) => isSafeNumber(value) ? Number(value) : value }));
+            envelope = parseEnvelope(raw);
         } catch { throw new AuthError(0, '服务响应格式错误'); }
         const code = Number(envelope.code ?? response.status);
-        if (!response.ok || envelope.success === false || code < 200 || code >= 300)
-            throw new AuthError(code, code === 401 || code === 20401 ? '登录已过期，请重新登录' : '企业认证失败，请检查账号和密码');
+        if (!response.ok || envelope.success === false || !Number.isFinite(code) || code < 200 || code >= 300) {
+            const failureCode = Number.isFinite(code) ? code : response.status;
+            throw new AuthError(failureCode, requestFailure(path, failureCode, failureDetail(envelope)));
+        }
         return envelope.data;
     }
 

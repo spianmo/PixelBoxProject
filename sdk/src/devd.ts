@@ -5,7 +5,7 @@
  *   - 请求/响应关联(id 递增 + 超时)
  *   - 主动事件分发(log / app.state)
  *   - 应用推送: hello → app.push_begin(files 含 sha256)→ app.push_chunk(32KB/块 base64)→ app.push_end
- *   - js.eval / logs.subscribe / logs.unsubscribe / app.restart / app.stop
+ *   - js.eval / logs.subscribe / logs.unsubscribe / app.restart / app.stop / system.settings
  */
 import WebSocket from 'ws';
 import { createHash } from 'node:crypto';
@@ -216,6 +216,11 @@ export class DevdClient {
   /** app.stop:停止当前应用 */
   async stopApp(): Promise<void> {
     await this.request('app.stop', {}, 15000);
+  }
+
+  /** system.settings:停止当前应用并启动内置系统设置页 */
+  async openSettings(): Promise<void> {
+    await this.request('system.settings', {}, 15000);
   }
 
   /**
