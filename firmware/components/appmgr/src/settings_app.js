@@ -635,9 +635,12 @@
   var rowRegionViews = Object.create(null);
   var rowCacheEnabled = typeof px.screen.createCanvas === 'function';
   var rowCacheLimit = Math.ceil(H / Math.min(ROW_H, wifiRowH())) + 2;
+  var stopFrame = null;
+  var stopTouch = null;
 
-  function releaseRowCache() {
-    finishRowFrame();
+  function releaseRowCache(flush) {
+    if (flush !== false) finishRowFrame();
+    else rowComposition = null;
     for (var i = 0; i < rowCache.length; i++) {
       try { rowCache[i].canvas.dispose(); } catch (e) {}
     }
@@ -648,6 +651,14 @@
     rowRectPool = [];
     rowComposition = null;
   }
+
+  px.app.onExit(function () {
+    /* 先取消定时绘制和输入订阅，解除它们对整页闭包的持有。 */
+    if (stopFrame) { stopFrame(); stopFrame = null; }
+    if (stopTouch) { stopTouch(); stopTouch = null; }
+    delete globalThis.__pxset;
+    releaseRowCache(false);
+  });
 
   function typedView(bufferName, views, values) {
     var length = values.length;
@@ -1508,13 +1519,13 @@
   try {
     /* 系统设置、Wi-Fi 列表和密码键盘共用此帧循环，目标与 NuttX 默认 UI 保持约 30 FPS。 */
     px.screen.setFps(30);
-    px.screen.onFrame(function (dt) { return draw(dt); });
+    stopFrame = px.screen.onFrame(function (dt) { return draw(dt); });
   } catch (e) {
     console.error('[settings] 屏幕不可用: ' + e);
   }
 
   try {
-    px.input.onTouch(onTouch);
+    stopTouch = px.input.onTouch(onTouch);
   } catch (e) {
     /* 无触摸 */
   }

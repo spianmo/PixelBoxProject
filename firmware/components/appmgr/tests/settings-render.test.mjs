@@ -10,7 +10,8 @@ assert.notEqual(referenceSource, source);
 
 function createDevice(code, width, height, cacheEnabled = true) {
   const pixels = new Uint32Array(width * height);
-  let drawCalls = [], frameCallback, touchCallback, scanResolve, connectReject, connectResolve, rendered;
+  let drawCalls = [], frameCallback, touchCallback, exitCallback, scanResolve, connectReject, connectResolve, rendered;
+  let frameUnsubscribed = 0, touchUnsubscribed = 0;
   let status = { connected: true, ssid: 'Finger', ip: '192.168.31.100', mac: '00:11:22:33:44:55' };
   let memory = 88000, battery = 82, fps = 30, liveCanvases = 0, peakCanvases = 0, failAllocation = false;
   const setPixel = (x, y, c) => {
@@ -42,7 +43,7 @@ function createDevice(code, width, height, cacheEnabled = true) {
   };
   const screen = {
     width, height, _pixels: pixels, dispose() { this._pixels = null; }, getBrightness: () => 80, setBrightness() {}, setFps: value => { fps = value; },
-    onFrame: fn => { frameCallback = fn; }, measureText: metrics,
+    onFrame: fn => { frameCallback = fn; return () => { frameCallback = null; frameUnsubscribed++; }; }, measureText: metrics,
     clear(c) { drawCalls.push(['clear']); pixels.fill(c); },
     fillRect(x, y, w, h, c) { drawCalls.push(['fillRect', x, y, w, h]); fill(x, y, w, h, c); },
     fillRects(rects) {
@@ -118,8 +119,9 @@ function createDevice(code, width, height, cacheEnabled = true) {
   };
   const context = vm.createContext({
     px: {
+      app: { onExit: fn => { exitCallback = fn; } },
       screen, audio: { getVolume: () => 70, setVolume() {} },
-      input: { onTouch: fn => { touchCallback = fn; } },
+      input: { onTouch: fn => { touchCallback = fn; return () => { touchCallback = null; touchUnsubscribed++; }; } },
       system: { battery: () => ({ level: battery }), memory: () => ({ heapFree: memory, psramFree: 8000000 }), info: () => ({ model: 'ESP32-S3', firmwareVersion: 'NuttX' }) },
       wifi: {
         status: () => ({ ...status }),
@@ -134,10 +136,12 @@ function createDevice(code, width, height, cacheEnabled = true) {
   return {
     pixels, screen, api: context.__pxset,
     get liveCanvases() { return liveCanvases; }, get peakCanvases() { return peakCanvases; },
+    get frameUnsubscribed() { return frameUnsubscribed; }, get touchUnsubscribed() { return touchUnsubscribed; },
     failAllocation() { failAllocation = true; },
     get calls() { return drawCalls; }, get rendered() { return rendered; }, get fps() { return fps; },
     step(dt = 1000 / 60) { drawCalls = []; rendered = frameCallback(dt); },
     touch: ev => touchCallback(ev), scan: list => scanResolve(structuredClone(list)),
+    exit: () => exitCallback(),
     reject: () => connectReject(new Error('test failure')),
     resolve: () => { status = { ...status, connected: true, ssid: 'Network-00', ip: '192.168.31.101' }; connectResolve(status); },
     changeStatus: value => { status = { ...status, ...value }; },
@@ -226,4 +230,15 @@ for (const [width, height] of [[368, 448], [410, 502], [480, 480]]) {
   drag(width / 2, height * .85, height * .5);
   assert.equal(device.liveCanvases, 0, '分配失败释放已有缓存并回退');
 }
+const exiting = createDevice(source, 480, 480);
+exiting.step();
+assert.ok(exiting.liveCanvases > 0, '设置页应持有行画布');
+exiting.exit();
+assert.equal(exiting.liveCanvases, 0, '退出设置页应立即释放行画布');
+assert.equal(exiting.frameUnsubscribed, 1, '退出设置页应停止帧回调');
+assert.equal(exiting.touchUnsubscribed, 1, '退出设置页应停止触摸回调');
+exiting.exit();
+assert.equal(exiting.liveCanvases, 0, '退出钩子重复执行也不应重复释放');
+assert.equal(exiting.frameUnsubscribed, 1, '重复退出不应再次退订帧回调');
+assert.equal(exiting.touchUnsubscribed, 1, '重复退出不应再次退订触摸回调');
 console.log(`settings retained rendering: ${frames} frames pixel-equivalent at 3 display sizes`);

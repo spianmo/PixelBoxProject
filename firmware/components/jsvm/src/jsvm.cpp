@@ -350,6 +350,7 @@ void teardown_vm(bool notify_stopped)
     if (!s_rt) {
         return;
     }
+    const int64_t started_us = esp_timer_get_time();
     ESP_LOGI(TAG, "停止 JS VM (generation %u)...", (unsigned)s_generation.load());
     /* 立即递增 generation: VM 停机期间 (stop/crash 后不 boot) 事件循环仍在
      * 消费队列, 旧 VM 在途任务的 gen 守卫必须即刻失效 —— 只在 boot 递增的话,
@@ -372,6 +373,7 @@ void teardown_vm(bool notify_stopped)
             }
         }
     }
+    const int64_t exit_us = esp_timer_get_time();
 
     /* 2. 释放定时器等标准全局资源 */
     internal::reset_std_state(s_ctx);
@@ -384,6 +386,7 @@ void teardown_vm(bool notify_stopped)
         }
         s_live_ctrls.clear();
     }
+    const int64_t refs_us = esp_timer_get_time();
 
     s_vm_running = false;
     JSContext *ctx = s_ctx;
@@ -391,7 +394,9 @@ void teardown_vm(bool notify_stopped)
     s_ctx = nullptr;
     s_rt = nullptr;
     JS_FreeContext(ctx);
+    const int64_t context_us = esp_timer_get_time();
     JS_FreeRuntime(rt);
+    const int64_t runtime_us = esp_timer_get_time();
     s_oom_count = 0;
     s_oom_first_us = 0;
 
@@ -399,10 +404,17 @@ void teardown_vm(bool notify_stopped)
         notify_state(VmState::Stopped);
     }
     ESP_LOGI(TAG, "JS VM 已停止 (分配器残留 %u 字节)", (unsigned)s_mem_used.load());
+    ESP_LOGI(TAG, "VM 退出耗时: onExit=%lld ms refs=%lld ms context=%lld ms runtime=%lld ms total=%lld ms",
+             (long long)((exit_us - started_us) / 1000),
+             (long long)((refs_us - exit_us) / 1000),
+             (long long)((context_us - refs_us) / 1000),
+             (long long)((runtime_us - context_us) / 1000),
+             (long long)((runtime_us - started_us) / 1000));
 }
 
 bool boot_vm()
 {
+    const int64_t started_us = esp_timer_get_time();
     ESP_LOGI(TAG, "启动 JS VM (generation %u), 内部堆 %u B / PSRAM %u B 空闲",
              (unsigned)(s_generation.load() + 1),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -443,6 +455,7 @@ bool boot_vm()
 
     /* 标准全局 + px 根对象 + 模块 init/prelude */
     internal::install_std_globals(s_ctx);
+    const int64_t globals_us = esp_timer_get_time();
 
     JSValue global = JS_GetGlobalObject(s_ctx);
     JSValue px = JS_NewObject(s_ctx);
@@ -475,6 +488,7 @@ bool boot_vm()
     }
     JS_FreeValue(s_ctx, px);
     JS_FreeValue(s_ctx, global);
+    const int64_t modules_us = esp_timer_get_time();
 
     s_vm_running = true;
     notify_state(VmState::Running);
@@ -499,6 +513,12 @@ bool boot_vm()
         ESP_LOGW(TAG, "无入口脚本, VM 空转等待推送");
     }
     pump_jobs();
+    const int64_t ready_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "VM 启动耗时: globals=%lld ms modules=%lld ms entry=%lld ms total=%lld ms",
+             (long long)((globals_us - started_us) / 1000),
+             (long long)((modules_us - globals_us) / 1000),
+             (long long)((ready_us - modules_us) / 1000),
+             (long long)((ready_us - started_us) / 1000));
     return true;
 }
 
