@@ -512,6 +512,43 @@ function runtime(wakeConfig) {
     controller.setPaused(false);
     return { controller, speech, speechCalls, wake: () => wake(), wakeError: (message) => wakeError(message), recognized: (text) => transcriptResolve(text), played: () => playbackResolve() };
 }
+await test('认证完成后不等待离线唤醒初始化，登录状态及时结束', async () => {
+    const r = runtime();
+    let finishWake;
+    r.speech.wakeword.start = () => new Promise((resolve) => { finishWake = resolve; });
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    assert.equal(r.controller.view.authenticated, true);
+    assert.equal(r.controller.view.state, 'idle');
+    assert.equal(r.controller.isBusy(), false);
+    assert.equal(typeof finishWake, 'function');
+    finishWake();
+    await tick();
+    r.controller.dispose();
+});
+await test('手动录音等待异步停止唤醒释放工作区，取消后不启动旧识别', async () => {
+    const r = runtime();
+    const asks = [];
+    r.controller.conversation.ask = async (text) => { asks.push(text); return ''; };
+    r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+    await r.controller.login('ABC123', 'USR123', 'fixture');
+    let releaseStop;
+    r.speech.wakeword.stop = () => {
+        r.speechCalls.push(['wake.stop']);
+        return new Promise(resolve => { releaseStop = resolve; });
+    };
+    const listening = r.controller.listen();
+    await tick();
+    assert.equal(r.controller.view.state, 'listening');
+    assert.equal(r.speechCalls.filter(([name]) => name === 'recognize').length, 0);
+    assert.equal(typeof releaseStop, 'function');
+    r.controller.cancel();
+    releaseStop(); await tick();
+    assert.equal(r.speechCalls.filter(([name]) => name === 'recognize').length, 0);
+    await listening;
+    assert.deepEqual(asks, []);
+    r.controller.dispose();
+});
 await test('首句在AI完成前开播，增量字幕持续更新，尾句按顺序播完才待机', async () => {
     const r = runtime();
     let events, finishAnswer;
@@ -708,7 +745,7 @@ await test('云端思考期间唤醒会取消旧请求，迟到回答不能进�
     assert.equal(r.speechCalls.some(([name, text]) => name === 'speak' && text === '已经过期的回答'), false);
     r.controller.dispose();
 });
-await test('录音和等待识别期间可重复唤醒，旧识别结果不能发起回答', async () => {
+await test('手动重复录音时旧识别结果不能发起回答，录音期间不重启唤醒', async () => {
     const r = runtime();
     const recordings = [];
     const asks = [];
@@ -719,10 +756,10 @@ await test('录音和等待识别期间可重复唤醒，旧识别结果不能�
     r.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
     await r.controller.login('ABC123', 'USR123', 'fixture');
     r.wake();
-    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 2, '录音开始即恢复唤醒');
+    assert.equal(r.speechCalls.filter(([name]) => name === 'wake.start').length, 1, '录音期间不能与MultiNet7并发');
     const beforeInterrupt = cancelCount;
-    r.wake();
-    r.wake();
+    void r.controller.listen();
+    void r.controller.listen();
     assert.equal(recordings.length, 3);
     recordings[2].options.onPartial('新轮即时字幕');
     assert.equal(r.controller.view.userText, '新轮即时字幕');
@@ -932,7 +969,7 @@ await test('真实main设置与键盘页gotIp和BOOT双击不开麦，返回和�
     tap(25, 52); await tick();
     assert.equal(wakeStarts, 3);
     tap(335, 48); boot('click'); await tick();
-    assert.equal(wakeStarts, 4, '显式录音期间也恢复离线唤醒以便打断');
+    assert.equal(wakeStarts, 3, '显式录音期间不重启离线唤醒，避免与ASR争抢内存');
     assert.equal(recordings, 1);
     exit();
 });

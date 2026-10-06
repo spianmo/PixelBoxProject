@@ -8,7 +8,7 @@ export interface SpeechConfig { region: string; key: string; language?: string; 
 export interface SpeechPort {
     available(): boolean;
     configure(config: SpeechConfig): void;
-    wakeword: { start(options: WakewordConfig & { onWake(): void; onError?(message: string): void }): Promise<void>; stop(): void };
+    wakeword: { start(options: WakewordConfig & { onWake(): void; onError?(message: string): void }): Promise<void>; stop(): void | Promise<void> };
     recognize(options: { maxMs: number; silenceMs: number; timeoutMs: number; onLevel(level: number): void; onPartial(text: string): void }): Promise<string>;
     speak(text: string): Promise<void>;
     cancel(): void;
@@ -24,6 +24,7 @@ export class HarnessController {
     private wakeStarted = false;
     private paused = true;
     private speechStream: StreamingSpeech | null = null;
+    private wakewordStopping: Promise<void> | null = null;
 
     constructor(readonly auth: EnterpriseAuth, readonly conversation: MexusConversation,
         private readonly speech: SpeechPort, private readonly online: () => boolean,
@@ -57,7 +58,8 @@ export class HarnessController {
             this.view.errorText = '';
             this.view.thinkingText = '';
             this.busy = false;
-            await this.standby();
+            // 模型启动可能耗时较长；登录状态只等待认证，不等待离线唤醒就绪。
+            void this.standby();
         } catch (error) {
             if (!this.active(generation)) return;
             this.busy = false;
@@ -100,11 +102,13 @@ export class HarnessController {
         this.view.state = 'listening';
         void this.conversation.prepare().catch(() => {});
         try {
+            // NuttX 需要等 MultiNet7 worker 归还模型工作区，才能分配 ASR 的 PCM 缓冲。
+            const stopping = this.wakewordStopping;
+            if (stopping) await stopping;
+            if (!this.active(generation)) return;
             const recognition = this.speech.recognize({ maxMs: 15000, silenceMs: 800, timeoutMs: 20000,
                 onPartial: (text) => { if (this.active(generation)) this.view.userText = text; },
                 onLevel: (level) => { if (this.active(generation)) this.view.level = Math.max(0, Math.min(100, level)); } });
-            // 先采音再恢复离线唤醒；录音、上传及等待识别结果时也允许重开本轮。
-            void this.armWakeword();
             const transcript = await recognition;
             if (!this.active(generation)) return;
             const text = transcript.trim();
@@ -205,6 +209,25 @@ export class HarnessController {
         }
     }
 
+    private stopWakeword(): void {
+        // MultiNet7 退出期间重复取消必须复用同一次回收，不能覆盖仍在等待的 Promise。
+        if (this.wakewordStopping) return;
+        const stopped = this.speech.wakeword.stop();
+        // ESP-IDF 同步停用，不能为它额外引入一个 microtask；NuttX 则等待 worker 释放模型工作区。
+        if (!stopped || typeof stopped.then !== 'function') {
+            this.wakewordStopping = null;
+            return;
+        }
+        const pending = Promise.resolve(stopped);
+        // cancel() 是同步接口；它会在多个页面路径中调用，超时由 listen() 处理。
+        pending.catch(() => {});
+        this.wakewordStopping = pending;
+        void pending.then(
+            () => { if (this.wakewordStopping === pending) this.wakewordStopping = null; },
+            () => { if (this.wakewordStopping === pending) this.wakewordStopping = null; },
+        );
+    }
+
     cancel(closeConnection = false): void {
         this.generation++;
         this.wakeGeneration++;
@@ -213,7 +236,7 @@ export class HarnessController {
         this.speechStream?.stop();
         this.speechStream = null;
         this.conversation.cancel(closeConnection);
-        this.speech.wakeword.stop();
+        this.stopWakeword();
         this.speech.cancel();
         this.view.level = 0;
     }

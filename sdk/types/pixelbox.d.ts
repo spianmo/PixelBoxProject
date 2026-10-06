@@ -526,8 +526,8 @@ interface PxSpeech {
       onWake: () => void;
       onError?: (message: string) => void;
     }): Promise<void>;
-    /** 仅停止唤醒采音并使旧唤醒回调失效；不取消识别/播报，模型保留到worker退出。 */
-    stop(): void;
+    /** 仅停止唤醒采音并使旧唤醒回调失效；NuttX 的 Promise 在 MultiNet7 worker 退出且模型工作区已释放时完成，ESP-IDF 可同步返回。 */
+    stop(): void | Promise<void>;
   };
   /** 硬件立即采音并通过WSS流式发送；onPartial为累计临时字幕，Promise返回最终文字。maxMs默认15000/1000..30000；silenceMs默认800/300..3000；timeoutMs默认20000/5000..60000，限制输入结束后的等待；建连最多min(timeoutMs,15000)。总截止为max(采音截止,建连截止)+timeoutMs。桌面模拟器使用短音频REST，仅返回最终文字。 */
   recognize(opts?: { maxMs?: number; silenceMs?: number; timeoutMs?: number; onLevel?: (level: number) => void; onPartial?: (text: string) => void }): Promise<string>;

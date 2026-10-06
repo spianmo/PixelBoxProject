@@ -1,6 +1,10 @@
 /* 独立 Azure 语音 API；密钥仅在当前 VM 内存中，不写文件、不拼入 URL。 */
 (() => {
-  let config = null, operation = null, wakeOperation = null, closed = false;
+  /* ESP32-S3 单核上 create() 曾耗时 259 秒；包含模型加载和首次构建余量。 */
+  const WAKEWORD_INIT_TIMEOUT_MS = 360000;
+  /* 停止后等待 native worker 归还 MultiNet7 模型和工作区；不能阻塞 VM 主线程。 */
+  const WAKEWORD_STOP_TIMEOUT_MS = 5000;
+  let config = null, operation = null, wakeOperation = null, wakewordIdleWait = null, closed = false;
   const available = () => !closed && micHub.available() && audioInternal.available() && typeof wsConnectWithHeaders === 'function';
   const required = () => {
     if (!available()) throw new Error('ENOTSUP: speech hardware is not ready');
@@ -12,7 +16,39 @@
     return Math.max(min,Math.min(max,Math.trunc(value)));
   };
   const cancel = () => { if (operation) operation.cancel(); };
-  const stopWake = () => { if (wakeOperation) wakeOperation.cancel(); };
+  const wakewordBusy = () => typeof native.wakewordBusy === 'function' && native.wakewordBusy();
+  const waitWakewordIdle = () => {
+    if (!wakewordBusy()) return Promise.resolve();
+    if (wakewordIdleWait) return wakewordIdleWait;
+    let settle = null;
+    const wait = new Promise((resolve,reject) => { settle = error => error ? reject(error) : resolve(); });
+    wakewordIdleWait = wait;
+    const deadline = speechNow() + WAKEWORD_STOP_TIMEOUT_MS;
+    let timer = 0;
+    const finish = error => {
+      if (!settle) return;
+      const done = settle; settle = null;
+      if (timer) clearInterval(timer);
+      if (wakewordIdleWait === wait) wakewordIdleWait = null;
+      done(error);
+    };
+    const tick = () => {
+      try {
+        if (!wakewordBusy()) finish();
+        else if (speechNow() >= deadline) finish(new Error('ETIMEDOUT: MultiNet7 停止超时'));
+      } catch (error) { finish(error); }
+    };
+    timer = setInterval(tick,10); tick();
+    return wait;
+  };
+  const stopWake = () => {
+    if (wakeOperation) wakeOperation.cancel();
+    return waitWakewordIdle();
+  };
+  /* 配置变更、全局取消和退出均不能留下未观察的停止超时拒绝。 */
+  const stopWakeQuietly = () => {
+    const stopped = stopWake(); stopped.catch(() => {}); return stopped;
+  };
   const launch = run => {
     cancel();
     return new Promise((resolve,reject) => {
@@ -142,7 +178,7 @@
           typeof next.language !== 'string' || !/^[A-Za-z0-9-]{1,80}$/.test(next.language) ||
           typeof next.voice !== 'string' || !/^[A-Za-z0-9-]{1,80}$/.test(next.voice)) throw new TypeError('Azure 区域、密钥或语言格式无效');
       if (!available()) throw new Error('ENOTSUP: speech hardware is not ready');
-      cancel(); stopWake(); config = next;
+      cancel(); stopWakeQuietly(); config = next;
     },
     recognize(options = {}) {
       required();
@@ -176,10 +212,10 @@
         if (closed) return Promise.reject(new Error('ECANCELED'));
         if (!micHub.available() || typeof native.wakewordAvailable !== 'function' || !native.wakewordAvailable())
           return Promise.reject(new Error('ENOTSUP: MultiNet7 wakeword backend is not available'));
-        stopWake();
+        stopWakeQuietly();
         const callbacks = {onWake:options.onWake,onError:options.onError};
         return new Promise((resolve,reject) => {
-          const job = {id:0,ready:false,done:false}, deadline = speechNow() + 15000;
+          const job = {id:0,ready:false,done:false}, deadline = speechNow() + WAKEWORD_INIT_TIMEOUT_MS;
           let timer = 0, unsubscribe = null;
           const finish = (error,woken = false,notify = true) => {
             if (job.done) return;
@@ -219,7 +255,7 @@
       },
       stop: stopWake
     },
-    cancel() { cancel(); stopWake(); }
+    cancel() { cancel(); stopWakeQuietly(); }
   };
-  exitHandlers.add(() => { closed = true; cancel(); stopWake(); config = null; });
+  exitHandlers.add(() => { closed = true; cancel(); stopWakeQuietly(); config = null; });
 })();
