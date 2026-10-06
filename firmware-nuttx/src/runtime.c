@@ -1110,8 +1110,21 @@ static int run_locked(const struct px_options *options)
   px_mic_stop();
   px_audio_shutdown();
   cleanup_began = cleanup_progress(runtime, "peripheral-stop", cleanup_began);
+
+  /*
+   * 三个外设 worker 是并行停止的，等待也必须共享同一个总预算。
+   * 之前分别传 2000ms，任一 worker 卡住都会把切页延迟叠加到约 6 秒，
+   * 用户看到的就是“按键没有反应”。按统一截止时间计算剩余时间，
+   * 既保留 worker 未退出时的错误状态，也把一次 VM 切换的最长等待限制在 2 秒。
+   */
+  const double quiesce_deadline = monotonic_ms() + 2000.0;
+  double remaining = 0;
+  int mic_idle = 0;
+  int audio_idle = 0;
 #ifdef PX_MULTINET7
-  int wakeword_idle = px_wakeword_quiesce(2000);
+  int wakeword_idle = 0;
+  remaining = quiesce_deadline - monotonic_ms();
+  wakeword_idle = px_wakeword_quiesce(remaining > 0 ? (unsigned)remaining : 0);
   if (wakeword_idle) {
     fprintf(stderr, "[pixelbox] wakeword cleanup incomplete: %d\n", wakeword_idle);
     result = -1;
@@ -1119,9 +1132,11 @@ static int run_locked(const struct px_options *options)
   cleanup_began = cleanup_progress(runtime, "wakeword-quiesce", cleanup_began);
 #endif
   /* 清理超时不伪装成功；仍占用DMA的worker继续接受自己的硬件看门狗监督。 */
-  int mic_idle = px_mic_quiesce(2000);
+  remaining = quiesce_deadline - monotonic_ms();
+  mic_idle = px_mic_quiesce(remaining > 0 ? (unsigned)remaining : 0);
   cleanup_began = cleanup_progress(runtime, "mic-quiesce", cleanup_began);
-  int audio_idle = px_audio_quiesce(2000);
+  remaining = quiesce_deadline - monotonic_ms();
+  audio_idle = px_audio_quiesce(remaining > 0 ? (unsigned)remaining : 0);
   cleanup_began = cleanup_progress(runtime, "audio-quiesce", cleanup_began);
   if (mic_idle || audio_idle) {
     fprintf(stderr, "[pixelbox] peripheral cleanup incomplete: mic=%d audio=%d\n", mic_idle, audio_idle);
