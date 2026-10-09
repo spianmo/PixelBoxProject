@@ -1641,6 +1641,7 @@ export default function App(): React.JSX.Element {
     setPushPercent(0)
     try {
       await window.api.devdPush({ root, host: dev.ip || dev.host, port: dev.port })
+      openBottomTab('logs')
       showToast(t('push.done'), 'success')
     } catch (err) {
       showToast(t('push.failed', { message: err instanceof Error ? err.message : String(err) }), 'error')

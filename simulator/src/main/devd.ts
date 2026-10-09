@@ -59,7 +59,11 @@ async function discover(timeoutMs: number): Promise<DevdDevice[]> {
 class DevdClient {
   private ws: WebSocket
   private nextId = 1
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+  private pending = new Map<number, {
+    resolve: (v: unknown) => void
+    reject: (e: Error) => void
+    onResponse?: () => void
+  }>()
   /** 主动事件回调({event, data} 帧;日志订阅用) */
   onEvent: ((event: string, data: Record<string, unknown>) => void) | null = null
   /** 连接关闭回调(含异常断开;重连由订阅管理器负责) */
@@ -85,7 +89,10 @@ class DevdClient {
         if (!p) return
         this.pending.delete(msg.id)
         if (msg.error) p.reject(new Error(`devd 错误 ${msg.error.code}: ${msg.error.message}`))
-        else p.resolve(msg.result)
+        else {
+          p.onResponse?.()
+          p.resolve(msg.result)
+        }
       } catch {
         // 非 JSON 帧,忽略
       }
@@ -133,7 +140,7 @@ class DevdClient {
     this.ws.on('close', () => clearInterval(timer))
   }
 
-  call<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
+  call<T = unknown>(method: string, params: Record<string, unknown>, onResponse?: () => void): Promise<T> {
     const id = this.nextId++
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -148,7 +155,8 @@ class DevdClient {
         reject: (e) => {
           clearTimeout(timer)
           reject(e)
-        }
+        },
+        onResponse
       })
       this.ws.send(JSON.stringify({ id, method, params }))
     })
@@ -181,8 +189,8 @@ interface LogSubscription {
   /** 设备开机标识(订阅响应 boot 字段;变化 ⇒ 设备已重启) */
   bootId: number | undefined
   /**
-   * 全量重放窗口静默:重放决策到 logs.subscribe{since:0} 响应之间到达的实时帧丢弃
-   * (这些行都在环形缓冲里,即将随回放到达;不丢会在清屏后重复出现)
+   * 全量重放窗口静默:订阅响应之前的实时帧由固件环形缓冲重新回放。
+   * 响应帧处理时同步解除静默,避免同一 WebSocket 批次中的回放事件被丢弃。
    */
   muted: boolean
   /** 已提示过断线,重试期间不再刷屏 */
@@ -230,7 +238,7 @@ async function replayFromScratch(sub: LogSubscription): Promise<void> {
   try {
     sub.lastSeq = 0
     resetDeviceLog(sub.key)
-    await client.call('logs.subscribe', { since: 0 })
+    await client.call('logs.subscribe', { since: 0 }, () => { sub.muted = false })
   } catch {
     client.close() // 重订阅失败按断线处理,close 触发重连
   } finally {

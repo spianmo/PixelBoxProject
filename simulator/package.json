@@ -17,6 +17,8 @@
     "check:images": "node scripts/image-preview-check.cjs",
     "check:models": "node scripts/model-preview-check.cjs",
     "check:push": "node scripts/devd-push-check.mjs",
+    "check:push-ui": "node scripts/devd-push-ui-check.mjs",
+    "check:devd-logs": "node scripts/devd-logs-check.mjs",
     "check:imu": "node scripts/imu-pose-check.mjs",
     "check:speech": "node scripts/speech-check.mjs",
     "check:imu:browser": "node scripts/imu-browser-check.mjs",
