@@ -549,6 +549,41 @@ await test('手动录音等待异步停止唤醒释放工作区，取消后不�
     assert.deepEqual(asks, []);
     r.controller.dispose();
 });
+await test('识别溢出、回答请求和播报失败分别显示阶段并安全记录错误码', async () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...values) => warnings.push(values.join(' '));
+    try {
+        const recognition = runtime();
+        recognition.speech.recognize = async () => { throw new Error('microphone capture failed: EOVERFLOW https://test.invalid?key=fixture-secret'); };
+        recognition.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+        await recognition.controller.login('ABC123', 'USR123', 'fixture');
+        await recognition.controller.listen();
+        assert.equal(recognition.controller.view.errorText, '语音识别失败，请重试');
+        recognition.controller.dispose();
+
+        const conversation = runtime();
+        conversation.controller.conversation.ask = async () => { throw new Error('https://test.invalid?token=fixture-secret response=private'); };
+        conversation.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+        await conversation.controller.login('ABC123', 'USR123', 'fixture');
+        await conversation.controller.sendText('测试');
+        assert.equal(conversation.controller.view.errorText, '回答请求失败，请重试');
+        conversation.controller.dispose();
+
+        const playback = runtime();
+        playback.speech.speak = async () => { throw new Error('TTS failed: EIO https://test.invalid?key=fixture-secret'); };
+        playback.controller.configureSpeech({ region: 'eastasia', key: 'fixture-key-1234567890' });
+        await playback.controller.login('ABC123', 'USR123', 'fixture');
+        await playback.controller.sendText('测试');
+        assert.equal(playback.controller.view.errorText, '语音播报失败，请重试');
+        playback.controller.dispose();
+    } finally { console.warn = originalWarn; }
+    assert.deepEqual(warnings, [
+        '[harness.turn] stage=recognition code=EOVERFLOW',
+        '[harness.turn] stage=conversation code=unknown',
+        '[harness.turn] stage=playback code=EIO',
+    ]);
+});
 await test('首句在AI完成前开播，增量字幕持续更新，尾句按顺序播完才待机', async () => {
     const r = runtime();
     let events, finishAnswer;

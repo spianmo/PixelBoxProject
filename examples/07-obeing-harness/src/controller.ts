@@ -115,7 +115,7 @@ export class HarnessController {
             if (!text) throw new Error('没有听到内容，请再说一次');
             this.view.userText = text;
             await this.respond(text, generation);
-        } catch (error) { await this.turnFailed(error, generation); }
+        } catch (error) { await this.turnFailed(error, generation, 'recognition'); }
     }
 
     async sendText(text: string): Promise<void> {
@@ -125,8 +125,7 @@ export class HarnessController {
         this.clearTurn();
         this.busy = true;
         this.view.userText = text.trim();
-        try { await this.respond(text.trim(), generation); }
-        catch (error) { await this.turnFailed(error, generation); }
+        await this.respond(text.trim(), generation);
     }
 
     private async respond(text: string, generation: number): Promise<void> {
@@ -140,6 +139,7 @@ export class HarnessController {
             await this.speech.speak(part);
         }) : null;
         this.speechStream = stream;
+        let stage: TurnStage = 'conversation';
         try {
             const answer = await this.conversation.ask(text, {
                 answer: (value) => {
@@ -153,10 +153,12 @@ export class HarnessController {
             this.view.assistantText = answer.slice(-2400);
             this.view.level = 0;
             // 首段在增量回调中启动；AI 完成后仅补齐尾句，并等待扬声器实际播完。
+            stage = 'playback';
             await stream?.finish(answer);
         } catch (error) {
             if (this.active(generation)) this.speech.cancel();
-            throw error;
+            await this.turnFailed(error, generation, stage);
+            return;
         } finally {
             stream?.stop();
             if (this.speechStream === stream) this.speechStream = null;
@@ -166,11 +168,15 @@ export class HarnessController {
         await this.standby();
     }
 
-    private async turnFailed(error: unknown, generation: number): Promise<void> {
+    private async turnFailed(error: unknown, generation: number, stage: TurnStage): Promise<void> {
         if (!this.active(generation)) return;
+        // 仅记录固定阶段和已知错误码，不记录服务响应、URL、用户内容或密钥。
+        console.warn(`[harness.turn] stage=${stage} code=${safeErrorCode(error)}`);
         this.busy = false;
         this.view.level = 0;
-        this.view.errorText = userMessage(error, '本轮未完成，请重试');
+        const fallback = stage === 'recognition' ? '语音识别失败，请重试'
+            : stage === 'conversation' ? '回答请求失败，请重试' : '语音播报失败，请重试';
+        this.view.errorText = userMessage(error, fallback);
         if (!this.auth.current()) {
             this.logout();
             this.view.errorText = '登录已过期，请重新登录';
@@ -278,6 +284,14 @@ export class HarnessController {
     hasSpeech(): boolean { return this.speechConfigured; }
     private active(generation: number): boolean { return !this.disposed && generation === this.generation; }
     private clearTurn(): void { this.view.userText = ''; this.view.assistantText = ''; this.view.thinkingText = ''; this.view.errorText = ''; }
+}
+
+type TurnStage = 'recognition' | 'conversation' | 'playback';
+
+function safeErrorCode(error: unknown): string {
+    if (!(error instanceof Error)) return 'unknown';
+    const code = 'code' in error && typeof error.code === 'string' ? error.code : error.message;
+    return /\b(EOVERFLOW|ETIMEDOUT|ENOTSUP|ENOMEM|EIO|ECONNRESET)\b/.exec(code)?.[1] || 'unknown';
 }
 
 export function userMessage(error: unknown, fallback: string): string {
