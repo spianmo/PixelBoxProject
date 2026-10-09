@@ -223,7 +223,12 @@ function loadPerlerRuntime(savedMusic, savedMedia = null, savedMode = null, opti
         get bufferedAmount() { return bufferedAmount; },
         get closeCount() { return closeCount; },
         sent,
-        send(data) { sent.push(data); },
+        send(data) {
+          const bytes = Buffer.from(typeof data === 'string' ? new TextEncoder().encode(data) : data);
+          if (bytes.byteLength > 4096) throw new Error('模拟 NuttX 单次发送内存不足');
+          sent.push(bytes);
+          bufferedAmount += bytes.byteLength;
+        },
         close() { closeCount++; this.connected = false; },
         onData(callback) { onData = callback; },
         onClose() {},
@@ -379,26 +384,33 @@ test('持久化键不超过 ESP-IDF NVS 的 15 字节限制', () => {
 
 test('NuttX 的大脚本响应在发送队列排空后才关闭连接', () => {
   const runtime = loadPerlerRuntime(null, null, null, { fakeTimers: true });
-  const socket = runtime.acceptHttp(1024);
+  const socket = runtime.acceptHttp();
   assert.deepEqual(runtime.pendingTimeouts(), [5000]);
   socket.receive('GET /app.js HTTP/1.1\r\nHost: pixelbox\r\n\r\n');
 
-  const response = socket.sent.join('');
-  const headerEnd = response.indexOf('\r\n\r\n');
-  assert.ok(headerEnd > 0);
-  const declaredLength = Number(response.slice(0, headerEnd).match(/Content-Length: (\d+)/)?.[1]);
-  const body = response.slice(headerEnd + 4);
-  assert.ok(Buffer.byteLength(body, 'utf8') > 30000);
-  assert.equal(declaredLength, Buffer.byteLength(body, 'utf8'));
+  assert.equal(socket.sent.length, 1);
   assert.deepEqual(runtime.pendingTimeouts(), [10]);
-
   runtime.runTimeouts();
   assert.equal(socket.closeCount, 0);
-  assert.deepEqual(runtime.pendingTimeouts(), [10]);
-  socket.setQueued(0);
-  runtime.runTimeouts();
+  assert.equal(socket.sent.length, 1);
+
+  for (let i = 0; i < 20 && !socket.closeCount; i++) {
+    socket.setQueued(0);
+    runtime.runTimeouts();
+    if (socket.closeCount) break;
+    assert.equal(socket.bufferedAmount, socket.sent.at(-1).byteLength);
+  }
   assert.equal(socket.closeCount, 1);
   assert.deepEqual(runtime.pendingTimeouts(), []);
+
+  const response = Buffer.concat(socket.sent);
+  const headerEnd = response.indexOf('\r\n\r\n');
+  assert.ok(headerEnd > 0);
+  const declaredLength = Number(response.subarray(0, headerEnd).toString().match(/Content-Length: (\d+)/)?.[1]);
+  const body = response.subarray(headerEnd + 4);
+  assert.ok(body.byteLength > 30000);
+  assert.equal(declaredLength, body.byteLength);
+  assert.deepEqual(body, Buffer.from(readFileSync(join(examplesRoot, '05-electronic-perler', 'assets', 'app.js'))));
 });
 
 test('音乐协议接受 HTTP(S) MP3 地址并清理首尾空白', () => {

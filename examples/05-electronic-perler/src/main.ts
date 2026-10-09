@@ -18,6 +18,7 @@ import {
 
 const HTTP_PORT = 8080;
 const MEDIA_CHUNK_BYTES = 8 * 1024;
+const HTTP_RESPONSE_CHUNK_BYTES = 4 * 1024;
 const MAX_HTTP_BYTES = MEDIA_CHUNK_BYTES + 4 * 1024;
 const SCREEN_BG = 0x000000;
 const TEXT_MAIN = 0xFFFFFF;
@@ -115,10 +116,6 @@ function loadSavedMusic(): PersistedMusic | null {
     px.storage.kv.remove(MUSIC_STORAGE_KEY);
     return null;
   }
-}
-
-function byteLength(text: string): number {
-  return encoder.encode(text).byteLength;
 }
 
 function errorMessage(error: unknown): string {
@@ -291,10 +288,11 @@ function sendResponse(
   body: string,
   extraHeaders: Record<string, string> = {},
 ): void {
+  const bodyBytes = encoder.encode(body);
   const headers = [
     `HTTP/1.1 ${status} ${statusText}`,
     `Content-Type: ${contentType}`,
-    `Content-Length: ${byteLength(body)}`,
+    `Content-Length: ${bodyBytes.byteLength}`,
     'Cache-Control: no-store',
     'Connection: close',
     ...Object.keys(extraHeaders).map((name) => `${name}: ${extraHeaders[name]}`),
@@ -302,19 +300,39 @@ function sendResponse(
     '',
   ].join('\r\n');
   sock.send(headers);
-  if (body.length > 0) sock.send(body);
 
-  // NuttX 的 send() 仅写入软件队列，关闭前必须等队列排空。
+  // NuttX 的 send() 为每条消息分配连续内存；分块并等待软件队列排空。
   if (sock.bufferedAmount !== undefined) {
     const deadline = Date.now() + 30000;
-    const drain = (): void => {
+    let offset = 0;
+    const sendNext = (): void => {
       if (!sock.connected) return;
-      if (sock.bufferedAmount === 0 || Date.now() >= deadline) sock.close();
-      else setTimeout(drain, 10);
+      if (Date.now() >= deadline) {
+        console.warn('HTTP 响应发送超时');
+        sock.close();
+        return;
+      }
+      if (sock.bufferedAmount === 0) {
+        if (offset === bodyBytes.byteLength) {
+          sock.close();
+          return;
+        }
+        const end = Math.min(offset + HTTP_RESPONSE_CHUNK_BYTES, bodyBytes.byteLength);
+        try {
+          sock.send(bodyBytes.subarray(offset, end));
+        } catch (error) {
+          console.warn(`HTTP 响应发送失败: ${errorMessage(error)}`);
+          sock.close();
+          return;
+        }
+        offset = end;
+      }
+      setTimeout(sendNext, 10);
     };
-    setTimeout(drain, 10);
+    setTimeout(sendNext, 10);
   } else {
-    const closeDelayMs = Math.min(1500, 150 + Math.ceil(byteLength(body) / 1024) * 30);
+    if (bodyBytes.byteLength > 0) sock.send(bodyBytes);
+    const closeDelayMs = Math.min(1500, 150 + Math.ceil(bodyBytes.byteLength / 1024) * 30);
     setTimeout(() => sock.close(), closeDelayMs);
   }
 }
