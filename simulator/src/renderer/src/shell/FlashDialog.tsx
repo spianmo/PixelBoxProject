@@ -37,7 +37,7 @@ interface Props {
   busy: boolean
   /** 默认波特率(设置页持久化值) */
   defaultBaud: number
-  onFlash: (port: string, baud: number) => void
+  onFlash: (port: string, baud: number, formatStorage: boolean) => void
   onClose: () => void
 }
 
@@ -46,6 +46,8 @@ export function FlashDialog(props: Props): React.JSX.Element {
   const [ports, setPorts] = useState<SerialPortInfo[] | null>(null) // null = 首扫未完成
   const [selected, setSelected] = useState<string>('')
   const [baud, setBaud] = useState(props.defaultBaud)
+  // 每次打开都默认保留数据，不持久化上一次的格式化选择。
+  const [formatStorage, setFormatStorage] = useState(false)
 
   // 打开期间轮询串口(2s);设备拔插即时反映
   useEffect(() => {
@@ -150,6 +152,24 @@ export function FlashDialog(props: Props): React.JSX.Element {
               ))}
             </select>
           </FormRow>
+          {props.firmwareBackend === 'nuttx' && (
+            <div className="pl-[92px]">
+              <label className="flex items-center gap-2 text-[13px] text-jb-text">
+                <input
+                  type="checkbox"
+                  checked={formatStorage}
+                  disabled={props.busy}
+                  onChange={(e) => setFormatStorage(e.target.checked)}
+                  className="accent-accent"
+                  aria-describedby="flash-format-warning"
+                />
+                {t('fw.flashDialog.formatStorage')}
+              </label>
+              <p id="flash-format-warning" className="mt-1 text-[11px] leading-4 text-yellow-300/90">
+                {t('fw.flashDialog.formatStorageWarning')}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* 按钮行 */}
@@ -163,7 +183,7 @@ export function FlashDialog(props: Props): React.JSX.Element {
           <button
             // 防重入:任务进行中 / 无端口 时禁用
             disabled={props.busy || selected.length === 0}
-            onClick={() => props.onFlash(selected, baud)}
+            onClick={() => props.onFlash(selected, baud, props.firmwareBackend === 'nuttx' && formatStorage)}
             className="rounded bg-accent-dim px-3 py-1 text-[13px] text-white hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t('fw.flashDialog.start')}

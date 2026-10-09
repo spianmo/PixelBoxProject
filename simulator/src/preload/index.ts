@@ -271,6 +271,7 @@ const api = {
     target: string
     port?: string
     baud?: number
+    formatStorage?: boolean
     cwd?: string
     firmwareBackend?: FirmwareBackend
   }): Promise<void> => ipcRenderer.invoke('toolchain:start', opts),

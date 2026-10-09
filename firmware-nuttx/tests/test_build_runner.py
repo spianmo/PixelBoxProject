@@ -1129,6 +1129,70 @@ class BuildRunnerTests(unittest.TestCase):
         tool.chmod(0o755)
         return tool, record
 
+    def storage_config(self):
+        return self.valid_config() + (
+            'CONFIG_ESP32S3_SPIFLASH_MTD_BLKSIZE=256\nCONFIG_FS_LITTLEFS=y\n'
+            'CONFIG_FS_LITTLEFS_VERSION="v2.5.1"\n'
+            'CONFIG_FS_LITTLEFS_READ_SIZE_FACTOR=4\n'
+            'CONFIG_FS_LITTLEFS_PROGRAM_SIZE_FACTOR=4\n'
+            'CONFIG_FS_LITTLEFS_BLOCK_SIZE_FACTOR=1\n'
+            'CONFIG_FS_LITTLEFS_CACHE_SIZE_FACTOR=4\n'
+            'CONFIG_FS_LITTLEFS_LOOKAHEAD_SIZE=0\n'
+            'CONFIG_FS_LITTLEFS_BLOCK_CYCLE=200\n'
+            'CONFIG_FS_LITTLEFS_NAME_MAX=32\n'
+            'CONFIG_FS_LITTLEFS_FILE_MAX=2147483647\n'
+            'CONFIG_FS_LITTLEFS_ATTR_MAX=1022\n')
+
+    def test_format_flash_uses_real_littlefs_image_only_at_storage_offset(self):
+        tree = self.make_tree()
+        (tree / ".config").write_text(self.storage_config())
+        # 直接使用仓库锁定的上游库，真实执行 format、导出、重新挂载。
+        runner._safe_unpack_littlefs(runner.ROOT / "third_party/littlefs-v2.5.1.tar.gz",
+                                     tree / "fs/littlefs/littlefs")
+        runner.collect(self.root, tree, "esp32s3", False)
+        binary = tree.parent / "nuttx.bin"
+        tool, record = self.fake_esptool()
+        runner.flash(tree, binary, tool, "/dev/cu.fixture", 115200, dict(os.environ),
+                     format_storage=True)
+        call = json.loads(record.read_text())
+        self.assertEqual(call["size"], 0x800000)
+        self.assertEqual(call["argv"][-4], "0x0")
+        self.assertEqual(call["argv"][-2], "0x800000")
+        self.assertNotEqual(call["sha256"], hashlib.sha256(b"\xff" * 0x800000).hexdigest())
+        self.assertFalse(Path(call["argv"][-1]).exists())
+
+    def test_format_generation_failure_never_opens_device(self):
+        tree = self.make_tree()
+        runner.collect(self.root, tree, "esp32s3", False)
+        tool, record = self.fake_esptool()
+        # 缺少文件系统参数也必须在串口操作前拒绝，不能退化成擦除或普通烧录。
+        with self.assertRaisesRegex(ValueError, "LittleFS"):
+            runner.flash(tree, tree.parent / "nuttx.bin", tool, "/dev/cu.fixture", 115200,
+                         dict(os.environ), format_storage=True)
+        self.assertFalse(record.exists())
+        self.assertEqual(list(tree.parent.glob(".pixelbox-flash-*")), [])
+
+    def test_format_rejects_incompatible_geometry_before_compiling(self):
+        tree = self.make_tree()
+        config = tree / ".config"
+        cases = [("CACHE_SIZE_FACTOR=4", "CACHE_SIZE_FACTOR=3"),
+                 ("LOOKAHEAD_SIZE=0", "LOOKAHEAD_SIZE=7"),
+                 ("BLOCK_CYCLE=200", "BLOCK_CYCLE=0"),
+                 ("BLOCK_SIZE_FACTOR=1", "BLOCK_SIZE_FACTOR=3"),
+                 ('VERSION="v2.5.1"', 'VERSION="v2.9.0"')]
+        for before, after in cases:
+            config.write_text(self.storage_config().replace(before, after))
+            with self.subTest(after=after), self.assertRaises(ValueError), \
+                    mock.patch.object(runner.subprocess, "run") as process:
+                runner.create_storage_image(tree, config, self.root / "littlefs.bin", dict(os.environ))
+            process.assert_not_called()
+
+    def test_format_option_only_allowed_for_flash(self):
+        for task in ("build", "merge", "configure", "clean"):
+            with self.subTest(task=task), mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                self.assertEqual(runner.main([task, "--format-storage"]), 1)
+                self.assertIn("仅允许用于 flash", stderr.getvalue())
+
     def test_flash_uses_verified_snapshot_at_zero_without_make_or_header_rewrite(self):
         tree = self.make_tree()
         runner.collect(self.root, tree, "esp32s3", False)

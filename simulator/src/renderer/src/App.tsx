@@ -1496,7 +1496,7 @@ export default function App(): React.JSX.Element {
    * 启动固件任务：后端来自项目清单，目标来自标题栏；主进程再次校验两者。
    */
   const startFirmwareTask = useCallback(
-    async (kind: FirmwareTaskKind, port?: string, baud?: number): Promise<void> => {
+    async (kind: FirmwareTaskKind, port?: string, baud?: number, formatStorage = false): Promise<void> => {
       // §5 门控:固件任务仅固件工程可用(渲染端唯一闸口;main 端 cwd 校验兜底)
       if (projectKindRef.current !== 'firmware') {
         showToast(t('fw.errors.notFirmwareProject'), 'warn')
@@ -1519,6 +1519,7 @@ export default function App(): React.JSX.Element {
           target,
           port,
           baud,
+          formatStorage,
           cwd: workspaceRootRef.current ?? undefined
         })
       } catch (err) {
@@ -2301,9 +2302,9 @@ export default function App(): React.JSX.Element {
           firmwareBackend={firmwareBackend}
           busy={fwTask !== null}
           defaultBaud={defaultBaud}
-          onFlash={(port, baud) => {
+          onFlash={(port, baud, formatStorage) => {
             setFlashOpen(false)
-            void startFirmwareTask('flash', port, baud)
+            void startFirmwareTask('flash', port, baud, formatStorage)
           }}
           onClose={() => setFlashOpen(false)}
         />

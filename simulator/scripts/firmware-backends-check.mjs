@@ -199,6 +199,17 @@ else:
     assert(packed.artifacts.some((item) => item.path.endsWith('/dist/esp32s3-multinet7-nuttx.bin') && item.sizeBytes > 0))
     assert.equal((await task({ ...opts, kind: 'flash', port: '/dev/ttyUSB0', baud: 115200 })).success, true)
     assert.deepEqual(JSON.parse(await readFile(join(nuttx.root, 'argv.json'), 'utf8')).slice(-4), ['--port', '/dev/ttyUSB0', '--baud', '115200'])
+    assert.equal((await task({ ...opts, kind: 'flash', port: '/dev/ttyUSB0', formatStorage: true })).success, true)
+    assert.equal(JSON.parse(await readFile(join(nuttx.root, 'argv.json'), 'utf8')).at(-1), '--format-storage')
+    assert.equal((await task({ ...opts, kind: 'flash', port: '/dev/ttyUSB0', formatStorage: false })).success, true)
+    assert(!JSON.parse(await readFile(join(nuttx.root, 'argv.json'), 'utf8')).includes('--format-storage'))
+    for (const kind of ['build', 'merge', 'clean']) {
+      await assert.rejects(invoke('toolchain:start', { ...opts, kind, formatStorage: true }), /badFormatStorage/)
+    }
+    for (const formatStorage of ['true', 1, null]) {
+      await assert.rejects(invoke('toolchain:start', { ...opts, kind: 'flash', port: '/dev/ttyUSB0', formatStorage }), /badFormatStorage/)
+    }
+    await assert.rejects(invoke('toolchain:start', { kind: 'flash', target: 'esp32s3', cwd: idf.root, port: '/dev/ttyUSB0', formatStorage: true }), /badFormatStorage/)
 
     await writeFile(join(nuttx.root, 'task-mode'), 'fail')
     const failed = await task({ ...opts, kind: 'build' })

@@ -30,8 +30,9 @@ export async function detectNuttxToolchain(firmwareDir: string, overridePath: st
 }
 
 /** 使用 argv 传参，项目路径与串口不进入 shell 拼接。 */
-export function nuttxTaskArgs(kind: FirmwareTaskKind, nuttxPath: string, target: string, port?: string, baud?: number): string[] {
+export function nuttxTaskArgs(kind: FirmwareTaskKind, nuttxPath: string, target: string, port?: string, baud?: number, formatStorage = false): string[] {
   const args = ['scripts/nuttx.py', kind, '--nuttx-path', nuttxPath, '--target', target]
   if (kind === 'flash') args.push('--port', port ?? '', '--baud', String(baud))
+  if (kind === 'flash' && formatStorage) args.push('--format-storage')
   return args
 }

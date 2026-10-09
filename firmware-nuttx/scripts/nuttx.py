@@ -1152,8 +1152,71 @@ def collect(root: Path, tree: Path, target: str, package: bool) -> None:
         print(f"[nuttx] Simple Boot 单镜像: {image} (offset 0x0)")
 
 
+def create_storage_image(tree: Path, config: Path, destination: Path,
+                         env: dict[str, str]) -> None:
+    """复用固件的 LittleFS 源码及几何参数，在访问串口前生成并重挂载验证。"""
+    values = validate_config(config)
+    if (values.get("CONFIG_FS_LITTLEFS") != "y" or
+            values.get("CONFIG_FS_LITTLEFS_VERSION") != f'"{LITTLEFS_VERSION}"' or
+            values.get("CONFIG_FS_LITTLEFS_MULTI_VERSION") == "y"):
+        raise ValueError("格式化仅支持当前固件使用的 LittleFS v2.5.1 单版本配置")
+
+    def number(key: str, minimum: int = 1, maximum: int = FLASH_STORAGE_SIZE) -> int:
+        try:
+            result = int(values[key], 0)
+        except (KeyError, ValueError) as error:
+            raise ValueError(f"格式化缺少有效配置: {key}") from error
+        if not minimum <= result <= maximum:
+            raise ValueError(f"格式化配置超出范围: {key}")
+        return result
+
+    # 与 NuttX lfs_vfs.c 的 MTD 几何换算保持一致，物理擦除扇区为 4096 字节。
+    mtd_block = number("CONFIG_ESP32S3_SPIFLASH_MTD_BLKSIZE")
+    read_size = mtd_block * number("CONFIG_FS_LITTLEFS_READ_SIZE_FACTOR")
+    prog_size = mtd_block * number("CONFIG_FS_LITTLEFS_PROGRAM_SIZE_FACTOR")
+    block_size = FLASH_SECTOR_SIZE * number("CONFIG_FS_LITTLEFS_BLOCK_SIZE_FACTOR")
+    cache_size = mtd_block * number("CONFIG_FS_LITTLEFS_CACHE_SIZE_FACTOR")
+    if (block_size > FLASH_STORAGE_SIZE or FLASH_STORAGE_SIZE % block_size or
+            not 0 < read_size <= cache_size <= block_size or
+            not 0 < prog_size <= cache_size or cache_size % read_size or
+            cache_size % prog_size or block_size % cache_size):
+        raise ValueError("LittleFS 格式化几何参数不兼容")
+    block_count = FLASH_STORAGE_SIZE // block_size
+    lookahead = number("CONFIG_FS_LITTLEFS_LOOKAHEAD_SIZE", 0)
+    if lookahead == 0:
+        lookahead = min(((block_count + 63) // 64) * 8, read_size)
+    if lookahead == 0 or lookahead % 8:
+        raise ValueError("LittleFS lookahead 必须为正的 8 字节倍数")
+    cycles = number("CONFIG_FS_LITTLEFS_BLOCK_CYCLE", -1, 0x7fffffff)
+    if cycles == 0:
+        raise ValueError("LittleFS block_cycles 不能为 0")
+    limits = {"NAME": number("CONFIG_FS_LITTLEFS_NAME_MAX", 6, 255),
+              "FILE": number("CONFIG_FS_LITTLEFS_FILE_MAX", 1, 0x7fffffff),
+              "ATTR": number("CONFIG_FS_LITTLEFS_ATTR_MAX", 0, 1022)}
+    source = tree / "fs/littlefs/littlefs"
+    required = [source / name for name in ("lfs.c", "lfs_util.c", "bd/lfs_rambd.c")]
+    if not all(path.is_file() for path in required):
+        raise ValueError("构建快照缺少 LittleFS 源码，请先完成构建")
+    compiler = shutil.which("cc", path=env.get("PATH"))
+    if not compiler:
+        raise ValueError("格式化需要宿主 C 编译器 cc")
+    helper = destination.parent / "littlefs-image"
+    args = [compiler, "-std=c99", "-O2", "-DLFS_NO_MALLOC", "-I", str(source)]
+    args += [f"-DLFS_{name}_MAX={value}" for name, value in limits.items()]
+    args += [str(ROOT / "scripts/littlefs_image.c"), *(str(path) for path in required),
+             "-o", str(helper)]
+    subprocess.run(args, cwd=tree, env=env, check=True, timeout=60)
+    subprocess.run([str(helper), str(destination), *(str(value) for value in
+                    (read_size, prog_size, block_size, block_count, cache_size, lookahead, cycles))],
+                   cwd=tree, env=env, check=True, timeout=30)
+    if destination.stat().st_size != FLASH_STORAGE_SIZE:
+        raise ValueError("LittleFS 镜像必须恰好覆盖 8 MiB 数据区")
+    print(f"[nuttx] 格式化数据区: {FLASH_STORAGE_OFFSET:#x}.."
+          f"{FLASH_STORAGE_OFFSET + FLASH_STORAGE_SIZE:#x}，将删除应用、设置和文件", flush=True)
+
+
 def flash(tree: Path, binary: Path, esptool: Path, port: str, baud: int,
-          env: dict[str, str]) -> None:
+          env: dict[str, str], format_storage: bool = False) -> None:
     # 禁止再次 make flash：它会重建镜像，并能切换为填充整片 Flash 的 merged 产物。
     # 独立快照经过最终校验后直接交给 esptool，避免构建目录后续变化替换待写入文件。
     with tempfile.TemporaryDirectory(prefix=".pixelbox-flash-", dir=binary.parent) as temporary:
@@ -1161,13 +1224,18 @@ def flash(tree: Path, binary: Path, esptool: Path, port: str, baud: int,
         shutil.copyfile(binary, image)
         values = validate_flash_image(image, tree / ".config")
         validate_heap_evidence(binary, image)
+        storage = Path(temporary) / "littlefs.bin"
+        if format_storage:
+            create_storage_image(tree, binary.with_suffix(".config"), storage, env)
         args = [str(esptool), "-c", "esp32s3", "-p", port, "-b", str(baud)]
         if any(values.get(key) == "y" for key in
                ("CONFIG_ESP32S3_ESPTOOLPY_NO_STUB", "CONFIG_ESPRESSIF_ESPTOOLPY_NO_STUB")):
             args.append("--no-stub")
-        # 保留已校验的头部和 SHA-256；这里只允许这一份镜像及固定 offset 0。
+        # 保留已校验的头部和 SHA-256；格式化镜像仅能写入固定的数据区。
         args += ["write_flash", "--flash_mode", "keep", "--flash_freq", "keep",
                  "--flash_size", "keep", f"{FLASH_IMAGE_OFFSET:#x}", str(image)]
+        if format_storage:
+            args += [f"{FLASH_STORAGE_OFFSET:#x}", str(storage)]
         run(args, tree, env)
 
 
@@ -1179,10 +1247,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", choices=tuple(PROFILES), default="esp32s3")
     parser.add_argument("--port")
     parser.add_argument("--baud", type=int, default=921600)
+    parser.add_argument("--format-storage", action="store_true",
+                        help="烧录前格式化 LittleFS 数据分区，删除应用、设置和文件（默认保留）")
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 2, 8))
     opts = parser.parse_args(argv)
     root = ROOT.resolve()
     try:
+        if opts.format_storage and opts.task != "flash":
+            raise ValueError("--format-storage 仅允许用于 flash")
         if sys.platform == "win32":
             raise ValueError("NuttX 原生 Make 构建请在 WSL2/Linux 或 macOS 中运行")
         if opts.task == "clean":
@@ -1262,9 +1334,9 @@ def main(argv: list[str] | None = None) -> int:
             collect(root, tree, opts.target, opts.task == "merge")
             if opts.task == "flash":
                 flash(tree, root / "build" / opts.target / "nuttx.bin", esptool,
-                      opts.port, opts.baud, env)
+                      opts.port, opts.baud, env, format_storage=opts.format_storage)
         return 0
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print(f"[nuttx] 错误: {error}", file=sys.stderr, flush=True)
         return 1
 

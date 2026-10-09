@@ -315,6 +315,8 @@ export interface StartTaskOptions {
   port?: string
   /** 烧录波特率(缺省用设置值) */
   baud?: number
+  /** NuttX 烧录时格式化数据区；缺省保留数据。 */
+  formatStorage?: boolean
   /**
    * 固件工程目录；NuttX 校验 runner 与入口，ESP-IDF 校验 CMakeLists.txt。
    * 缺省使用所选后端的仓库/内置模板目录。
@@ -339,6 +341,11 @@ async function startTaskInternal(opts: StartTaskOptions): Promise<void> {
   const project = await resolveFirmwareProject(cwd, requested)
   const fw = project.root
   const backend = project.backend
+  // IPC 必须显式布尔值；格式化只允许用于 NuttX 烧录任务。
+  if ((opts.formatStorage !== undefined && typeof opts.formatStorage !== 'boolean') ||
+      (opts.formatStorage === true && (backend !== 'nuttx' || opts.kind !== 'flash'))) {
+    throw new Error('toolchain:badFormatStorage')
+  }
   if (!supportsFirmwareTarget(backend, target)) throw new Error('toolchain:unsupportedBackendTarget')
   // renderer 的 target 始终是芯片名；NuttX profile 才是 runner 的真实目标。
   // 例如 esp32s3-multinet7 会选择 MultiNet7 Kconfig 覆盖并隔离自己的缓存。
@@ -363,9 +370,9 @@ async function startTaskInternal(opts: StartTaskOptions): Promise<void> {
     }
     const baud = typeof opts.baud === 'number' && Number.isFinite(opts.baud) && opts.baud >= 9600 && opts.baud <= 4000000
       ? Math.floor(opts.baud) : settings.baudRate
+    const args = nuttxTaskArgs(opts.kind, nuttxPath, runnerTarget, opts.port, baud, opts.formatStorage)
     emitLines([line('info', `[toolchain] NuttX profile=${runnerTarget} (chip=${target})`),
-      line('info', `[toolchain] python3 ${nuttxTaskArgs(opts.kind, nuttxPath, runnerTarget, opts.port, baud).map(q).join(' ')}`)])
-    const args = nuttxTaskArgs(opts.kind, nuttxPath, runnerTarget, opts.port, baud)
+      line('info', `[toolchain] python3 ${args.map(q).join(' ')}`)])
     // NuttX 直接执行独立 runner；不 source export.sh、不读取 IDF 工具路径。
     const proc = spawn('python3', args, { cwd: fw, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } })
