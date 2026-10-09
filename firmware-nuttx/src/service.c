@@ -80,6 +80,7 @@ struct px_service {
   bool start_on_boot, started, running, shutting_down;
   int priority, last_result;
   int last_key_queue_error;
+  uint64_t key_switch_started_ms;
   uint64_t generation;
   struct px_service_vm *app;
   uint64_t push_token;
@@ -462,6 +463,7 @@ static void dispatch_action(struct px_service *service, struct px_devd_action *a
       action->code = NULL; /* 移交C字符串，action_free不能再释放。 */
     }
   } else if (action->type == PX_DEVD_RESTART || action->type == PX_DEVD_STOP) {
+    service->key_switch_started_ms = 0;
     if (service->portal_initialized) {
       /* 撤销未 begin 的授权及正在运行的会话；新 VM 仍需等待 ownership 释放。 */
       (void)px_portal_stop(); service->portal_pending = false;
@@ -520,8 +522,13 @@ static void dispatch_system_keys(struct px_service *service, bool *restart, bool
       }
       *settings = request.action == PX_SYSTEM_KEY_OPEN_SETTINGS;
       *restart = true;
+      uint64_t now = monotonic_ms();
+      service->key_switch_started_ms = request.at_ms ? request.at_ms : now;
       stop_app_locked(service);
       px_devd_state(service->devd, "updating", NULL);
+      fprintf(stderr, "[pixelbox] key switch %s: queue=%llu ms\n",
+              *settings ? "open-settings" : "return-app",
+              (unsigned long long)(now - service->key_switch_started_ms));
     }
     pthread_mutex_unlock(&service->lock);
   }
@@ -716,6 +723,12 @@ int px_service_run(struct px_service *service)
     }
     if (restart && !present && !portal_owned && !push_owned) {
       restart = false; int launched = launch_app(service, settings);
+      if (service->key_switch_started_ms) {
+        fprintf(stderr, "[pixelbox] key switch %s: launch=%llu ms result=%d\n",
+                settings ? "open-settings" : "return-app",
+                (unsigned long long)(monotonic_ms() - service->key_switch_started_ms), launched);
+        service->key_switch_started_ms = 0;
+      }
       if (launched) {
         if (launched == -ENOENT || launched == -ECANCELED) px_devd_state(service->devd, "stopped", NULL);
         else { char message[64]; snprintf(message, sizeof(message), "application start failed (%d)", launched);

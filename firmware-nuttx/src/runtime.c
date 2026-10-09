@@ -160,6 +160,20 @@ static size_t px_usable(const void *ptr)
 
 static struct px_runtime *state(JSContext *ctx) { return JS_GetContextOpaque(ctx); }
 
+static void report_runtime_log(struct px_runtime *runtime, const char *level,
+                               const char *tag, const char *message)
+{
+  fprintf(stderr, "%s\n", message);
+  px_service_vm_log(runtime ? runtime->service_vm : px_service_vm_current(), level, tag, message);
+}
+
+static void report_runtime_error(struct px_runtime *runtime, const char *message)
+{
+  char line[320];
+  snprintf(line, sizeof(line), "[pixelbox] %s", message);
+  report_runtime_log(runtime, "error", "runtime", line);
+}
+
 static JSValue error_errno(JSContext *ctx, const char *operation)
 {
   return JS_ThrowInternalError(ctx, "%s: %s", operation, strerror(errno));
@@ -175,7 +189,10 @@ static void dump_error(JSContext *ctx)
   JSValue stack = JS_GetPropertyStr(ctx, error, "stack");
   if (!JS_IsUndefined(stack)) {
     const char *text = JS_ToCString(ctx, stack);
-    if (text) fprintf(stderr, "%s\n", text);
+    if (text) {
+      fprintf(stderr, "%s\n", text);
+      px_service_vm_log(state(ctx)->service_vm, "error", "javascript", text);
+    }
     JS_FreeCString(ctx, text);
   }
   JS_FreeValue(ctx, stack);
@@ -281,8 +298,10 @@ static int evaluate(struct px_runtime *runtime, const char *source, size_t len, 
   }
   int failed = JS_IsException(result);
   if (failed) {
-    fprintf(stderr, "[pixelbox] %s failed: compile=%.0fms execute=%.0fms\n",
-            name, compiled - start, monotonic_ms() - compiled);
+    char line[320];
+    snprintf(line, sizeof(line), "[pixelbox] %s failed: compile=%.0fms execute=%.0fms",
+             name, compiled - start, monotonic_ms() - compiled);
+    report_runtime_log(runtime, "error", "runtime", line);
     dump_error(runtime->ctx);
   }
   JS_FreeValue(runtime->ctx, result);
@@ -808,9 +827,18 @@ static void install_device_identity(JSContext *ctx, JSValue native, const char *
                mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
       snprintf(mac_string, sizeof(mac_string), "%02x:%02x:%02x:%02x:%02x:%02x",
                mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
-    } else fprintf(stderr, "[pixelbox] eFuse MAC unavailable: %s\n", strerror(errno));
+    }
+    else {
+      char line[160];
+      snprintf(line, sizeof(line), "[pixelbox] eFuse MAC unavailable: %s", strerror(errno));
+      report_runtime_log(state(ctx), "warn", "runtime", line);
+    }
     close(fd);
-  } else fprintf(stderr, "[pixelbox] /dev/efuse unavailable: %s\n", strerror(errno));
+  } else {
+    char line[160];
+    snprintf(line, sizeof(line), "[pixelbox] /dev/efuse unavailable: %s", strerror(errno));
+    report_runtime_log(state(ctx), "warn", "runtime", line);
+  }
 #endif
   JS_SetPropertyStr(ctx, native, "deviceId", JS_NewString(ctx, device_id));
   JS_SetPropertyStr(ctx, native, "mac", JS_NewString(ctx, mac_string));
@@ -900,11 +928,11 @@ static int drain_jobs(struct px_runtime *runtime)
   while (JS_IsJobPending(runtime->rt) && !runtime->stopped &&
          !px_service_vm_should_stop(runtime->service_vm)) {
     if (monotonic_ms() > runtime->turn_deadline) {
-      fprintf(stderr, "[pixelbox] microtask turn timeout\n"); return -1;
+      report_runtime_error(runtime, "microtask turn timeout"); return -1;
     }
     if (JS_ExecutePendingJob(runtime->rt, &job_ctx) < 0) { dump_error(job_ctx); return -1; }
   }
-  if (runtime->failed) { fprintf(stderr, "[pixelbox] too many pending promise rejections\n"); return -1; }
+  if (runtime->failed) { report_runtime_error(runtime, "too many pending promise rejections"); return -1; }
   for (int i = 0; i < PX_MAX_REJECTIONS; ++i) {
     if (!JS_IsUndefined(runtime->rejected_promises[i])) {
       JS_Throw(runtime->ctx, JS_DupValue(runtime->ctx, runtime->rejections[i]));
@@ -959,14 +987,18 @@ static int event_loop(struct px_runtime *runtime)
         display_request.action == PX_SYSTEM_KEY_TOGGLE_SCREEN) {
       extern int px_toggle_framebuffer_power(void);
       int toggled = display_request.result ? display_request.result : px_toggle_framebuffer_power();
-      if (toggled) fprintf(stderr, "[pixelbox] screen toggle failed: %d\n", toggled);
+      if (toggled) {
+        char line[96];
+        snprintf(line, sizeof(line), "[pixelbox] screen toggle failed: %d", toggled);
+        report_runtime_log(runtime, "warn", "runtime", line);
+      }
     }
     service_eval(runtime);
     if (px_service_vm_should_stop(runtime->service_vm)) break;
     if (drain_jobs(runtime)) return -1;
     double now = monotonic_ms();
     if (runtime->runtime_deadline && now > runtime->runtime_deadline) {
-      fprintf(stderr, "[pixelbox] runtime timeout\n"); return -1;
+      report_runtime_error(runtime, "runtime timeout"); return -1;
     }
     double next = now + 50;
     int due = -1;
@@ -1010,9 +1042,10 @@ static int event_loop(struct px_runtime *runtime)
 
 static int run_locked(const struct px_options *options)
 {
+  double startup_began = monotonic_ms();
   struct px_runtime *runtime = calloc(1, sizeof(*runtime));
   if (!runtime) {
-    fprintf(stderr, "[pixelbox] cannot allocate runtime state\n");
+    report_runtime_log(NULL, "error", "runtime", "[pixelbox] cannot allocate runtime state");
     return 1;
   }
   runtime->options = options;
@@ -1023,7 +1056,9 @@ static int run_locked(const struct px_options *options)
   if (!protection) protection = px_watchdog_begin(runtime->watchdog_handle);
   if (protection) {
     if (runtime->watchdog_handle) (void)px_watchdog_unregister(runtime->watchdog_handle);
-    fprintf(stderr, "[pixelbox] VM watchdog registration failed: %d\n", protection);
+    char line[112];
+    snprintf(line, sizeof(line), "[pixelbox] VM watchdog registration failed: %d", protection);
+    report_runtime_log(runtime, "error", "runtime", line);
     free(runtime);
     return 1;
   }
@@ -1033,7 +1068,7 @@ static int run_locked(const struct px_options *options)
   JSMallocFunctions alloc = {px_calloc, px_malloc, px_free, px_realloc, px_usable};
   runtime->rt = JS_NewRuntime2(&alloc, NULL);
   if (!runtime->rt) {
-    fprintf(stderr, "[pixelbox] cannot allocate runtime\n");
+    report_runtime_error(runtime, "cannot allocate runtime");
     finish_watchdog(runtime); free(runtime); return 1;
   }
   JS_SetMemoryLimit(runtime->rt, options->heap_limit);
@@ -1050,6 +1085,7 @@ static int run_locked(const struct px_options *options)
   JS_SetHostPromiseRejectionTracker(runtime->rt, rejection_tracker, runtime);
   runtime->runtime_deadline = options->runtime_timeout_ms ? monotonic_ms() + options->runtime_timeout_ms : 0;
   int result = install(runtime);
+  double installed_at = monotonic_ms();
   if (!result && px_service_vm_enter(runtime->service_vm)) result = -1;
   char default_entry[PATH_MAX];
   const char *entry = options->entry;
@@ -1058,7 +1094,7 @@ static int run_locked(const struct px_options *options)
     int length = snprintf(default_entry, sizeof(default_entry), "%s/%s", options->app_root,
                            entry ? entry : "main.js");
     if (length < 0 || (size_t)length >= sizeof(default_entry)) {
-      fprintf(stderr, "[pixelbox] application entry path too long\n");
+      report_runtime_error(runtime, "application entry path too long");
       result = -1;
     }
     entry = default_entry;
@@ -1066,6 +1102,7 @@ static int run_locked(const struct px_options *options)
   if (!result) {
     size_t size = 0;
     uint8_t *source = options->eval_source ? NULL : read_file(entry, &size);
+    double source_at = monotonic_ms();
     if (options->eval_source) {
       result = evaluate(runtime, options->eval_source, strlen(options->eval_source), "nuttx:eval");
     }
@@ -1077,10 +1114,25 @@ static int run_locked(const struct px_options *options)
       if (!result && welcome) result = evaluate(runtime, welcome->source, welcome->length, welcome->filename);
       else if (!welcome) result = -1;
     }
-    else if (!source) { fprintf(stderr, "[pixelbox] %s: %s\n", entry, strerror(errno)); result = -1; }
+    else if (!source) {
+      char line[PATH_MAX + 96];
+      snprintf(line, sizeof(line), "[pixelbox] %s: %s", entry, strerror(errno));
+      report_runtime_log(runtime, "error", "runtime", line);
+      result = -1;
+    }
     else {
       result = evaluate(runtime, (const char *)source, size, entry);
       free(source);
+    }
+    double evaluated_at = monotonic_ms();
+    if (runtime->service_vm) {
+      char line[256];
+      snprintf(line, sizeof(line),
+               "[pixelbox] VM startup: install=%.0f ms source=%.0f ms eval=%.0f ms total=%.0f ms entry=%s",
+               installed_at - startup_began, source_at - installed_at,
+               evaluated_at - source_at, evaluated_at - startup_began,
+               options->eval_source ? "builtin" : "app");
+      report_runtime_log(runtime, "info", "runtime", line);
     }
     if (!result) result = event_loop(runtime);
   }
@@ -1126,7 +1178,9 @@ static int run_locked(const struct px_options *options)
   remaining = quiesce_deadline - monotonic_ms();
   wakeword_idle = px_wakeword_quiesce(remaining > 0 ? (unsigned)remaining : 0);
   if (wakeword_idle) {
-    fprintf(stderr, "[pixelbox] wakeword cleanup incomplete: %d\n", wakeword_idle);
+    char line[112];
+    snprintf(line, sizeof(line), "[pixelbox] wakeword cleanup incomplete: %d", wakeword_idle);
+    report_runtime_log(runtime, "warn", "cleanup", line);
     result = -1;
   }
   cleanup_began = cleanup_progress(runtime, "wakeword-quiesce", cleanup_began);
@@ -1139,7 +1193,9 @@ static int run_locked(const struct px_options *options)
   audio_idle = px_audio_quiesce(remaining > 0 ? (unsigned)remaining : 0);
   cleanup_began = cleanup_progress(runtime, "audio-quiesce", cleanup_began);
   if (mic_idle || audio_idle) {
-    fprintf(stderr, "[pixelbox] peripheral cleanup incomplete: mic=%d audio=%d\n", mic_idle, audio_idle);
+    char line[128];
+    snprintf(line, sizeof(line), "[pixelbox] peripheral cleanup incomplete: mic=%d audio=%d", mic_idle, audio_idle);
+    report_runtime_log(runtime, "warn", "cleanup", line);
     result = -1;
   }
   JS_FreeContext(runtime->ctx);
@@ -1155,7 +1211,8 @@ static int run_locked(const struct px_options *options)
 int px_run(const struct px_options *options)
 {
   if (pthread_mutex_trylock(&vm_lock)) {
-    fprintf(stderr, "[pixelbox] EBUSY: another application VM owns the hardware; stop it through devd first\n");
+    report_runtime_log(NULL, "warn", "runtime",
+                       "[pixelbox] EBUSY: another application VM owns the hardware; stop it through devd first");
     return 1;
   }
   int result = run_locked(options);

@@ -40,8 +40,16 @@ const rawReply=(ws,send)=>new Promise((resolve,reject)=>{const timer=setTimeout(
   assert.equal(await client.evalJs('1+2'),'3');await assert.rejects(client.evalJs('throw new Error("expected")'),/expected/);
   const sub=await client.subscribeLogs();assert.equal(typeof sub.boot,'number');assert(sub.last_seq>=1);await delay(30);
   assert(events.some(item=>item.event==='log'&&item.data.msg==='fixture ready'));
+  const observer=await connect(),observed=[];observer.onEvent((event,data)=>observed.push({event,data}));
+  await observer.subscribeLogs();await delay(20);
   const bytes=Buffer.alloc(65537);for(let i=0;i<bytes.length;i++)bytes[i]=i&255;
   await client.pushApp(manifest('1.0.0'),[{path:'main.js',data:bytes},{path:'assets/empty',data:Buffer.alloc(0)}]);
+  await client.evalJs('log("after separate-client push")');
+  const observerDeadline=Date.now()+2500;
+  while(!observed.some(item=>item.event==='log'&&item.data.msg==='after separate-client push')){
+    assert(Date.now()<observerDeadline,'independent log subscription stalled after push');await delay(10);
+  }
+  observer.close();
   assert.deepEqual(fs.readFileSync(path.join(root,'current/main.js')),bytes);assert.equal(fs.statSync(path.join(root,'current/assets/empty')).size,0);
   assert.equal((await client.hello()).appVersion,'1.0.0');assert.equal(await client.evalJs('generation'),'2');
   await client.pushApp(manifest('2.0.0'),[{path:'main.js',data:Buffer.from('v2')}]);
