@@ -83,10 +83,11 @@
     };
     const headers = path => 'Path: ' + path + '\r\nX-RequestId: ' + id + '\r\nX-Timestamp: ' + new Date().toISOString() + '\r\n';
     const audio = bytes => {
-      /* Azure 音频消息是“文本头 + 空行 + 二进制体”，没有自定义长度前缀。 */
-      const header = speechEncoder.encode(headers('audio') + (bytes.length ? 'Content-Type: audio/x-wav\r\n' : '') + '\r\n');
-      const frame = new Uint8Array(header.length + bytes.length);
-      frame.set(header); frame.set(bytes,header.length);
+      /* Azure 二进制协议：两字节大端头长 + CRLF 头 + 音频正文；空正文表示输入结束。 */
+      const header = speechEncoder.encode(headers('audio') + (bytes.length ? 'Content-Type: audio/x-wav\r\n' : ''));
+      const frame = new Uint8Array(2 + header.length + bytes.length);
+      new DataView(frame.buffer).setUint16(0,header.length,false);
+      frame.set(header,2); frame.set(bytes,2 + header.length);
       return frame;
     };
     const send = bytes => {

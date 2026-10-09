@@ -5,13 +5,14 @@ const config = {region:'eastasia',key:'abcdefgh12345678'};
 let passed = 0;
 async function test(name,run) { await run(); ++passed; console.log('PASS ' + name); }
 const payload = frame => {
-  const marker = new Uint8Array([13,10,13,10]);
-  let end = -1;
-  for (let i = 0; i + marker.length <= frame.length; ++i) {
-    if (marker.every((value,index) => frame[i + index] === value)) { end = i; break; }
-  }
-  assert(end > 0);
-  return {headers:new TextDecoder().decode(frame.subarray(0,end)),body:frame.subarray(end + marker.length)};
+  // 按 Azure 二进制协议独立解帧，不能用文本消息的空行分隔方式解析音频。
+  assert(frame.length >= 2,'音频帧缺少两字节头长度');
+  const length = new DataView(frame.buffer,frame.byteOffset,2).getUint16(0,false);
+  assert(length > 0 && length <= frame.length - 2,'音频帧头长度必须采用大端序且不含长度前缀');
+  const headers = new TextDecoder().decode(frame.subarray(2,2 + length));
+  assert(headers.endsWith('\r\n'),'音频消息头必须以 CRLF 结尾');
+  assert(!headers.includes('\r\n\r\n'),'音频正文前不能插入额外空行');
+  return {headers,body:frame.subarray(2 + length)};
 };
 const response = (id,path,body = '') => 'Path: ' + path + '\r\nX-RequestId: ' + id + '\r\n\r\n' + (body ? JSON.stringify(body) : '');
 
@@ -38,7 +39,7 @@ await test('ASR建连前完整留存开口、WAV帧和终止帧顺序、累计�
   for (let i = 0; i < 30; ++i) await f.frame(0);
   const binary = ws.sent.filter(item => typeof item !== 'string').map(payload);
   assert(binary[0].headers.startsWith('Path: audio\r\n'));
-  assert(!binary[0].headers.includes('\r\n\r\n'));
+  assert(binary.slice(0,-1).every(frame => frame.headers.endsWith('Content-Type: audio/x-wav\r\n')));
   assert.equal(binary[0].body.length,44); const wav = new DataView(binary[0].body.buffer,binary[0].body.byteOffset,44);
   assert.equal(wav.getUint32(4,true),0); assert.equal(wav.getUint32(40,true),0); assert.equal(wav.getUint32(24,true),16000);
   assert.equal(binary.at(-1).body.length,0); assert(!binary.at(-1).headers.includes('Content-Type'));
