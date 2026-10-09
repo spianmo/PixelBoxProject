@@ -34,7 +34,7 @@ struct launch { int (*entry)(int,char **); };
 static void *run(void *p) { struct launch job = *(struct launch *)p; free(p); job.entry(0,NULL); return NULL; }
 int kthread_create(const char *name,int priority,int stack,int (*entry)(int,char **),char *const args[])
 {
-  assert(!strcmp(name,"px-wakeword") && priority == 105 && stack >= 32768 && !args);
+  assert(!strcmp(name,"px-wakeword") && priority == 100 && stack == 16384 && !args);
   ++launches;
   if (mode("launch")) { errno = EDOM; return -EAGAIN; }
   struct launch *job = malloc(sizeof(*job)); assert(job); job->entry = entry;
@@ -147,7 +147,7 @@ int main(int argc,char **argv)
   }
   if (mode("cancel")) { px_wakeword_stop(id); assert(!px_wakeword_quiesce(2000)); struct px_wakeword_event e; assert(!px_wakeword_poll(&e)); goto finish; }
   int error = mode("watchdog") ? -ENOSPC : mode("model") ? -EBADMSG : mode("create") ? -ENOMEM :
-              (mode("rate") || mode("chunk")) ? -EPROTO : (mode("command") || mode("threshold")) ? -EINVAL : 0;
+              (mode("rate") || mode("chunk")) ? -EPROTO : mode("command") ? -EINVAL : 0;
   if (error) { struct px_wakeword_event e=next_event(PX_WAKEWORD_ERROR); assert(e.error == error); goto finish; }
   assert(next_event(PX_WAKEWORD_READY).job_id == id);
   if (mode("terminal_wake") || mode("terminal_error") || mode("terminal_cancel")) {

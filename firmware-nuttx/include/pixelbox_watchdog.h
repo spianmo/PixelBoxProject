@@ -6,7 +6,9 @@
 
 #define PX_WATCHDOG_MAX_CLIENTS 8
 #ifndef PX_WATCHDOG_STALL_MS
-#define PX_WATCHDOG_STALL_MS 30000u
+/* VM/音频任务的普通阶段须在硬件 60 秒窗口前报告进展；MultiNet7 的
+ * 同步 create() 阶段会暂时退出健康槽，由独立硬件 watchdog 兜底。 */
+#define PX_WATCHDOG_STALL_MS 45000u
 #endif
 #ifndef PX_WATCHDOG_HARDWARE_MS
 #define PX_WATCHDOG_HARDWARE_MS 60000u

@@ -23,7 +23,9 @@
 #endif
 #endif
 
-enum { RATE = 16000, QUEUE = 8192, MAX_PENDING = 2560, STACK = 32768 };
+/* 与 VM 同级轮转，使同步模型初始化和 JS 定时器都能推进；栈保留在内部 RAM。 */
+enum { RATE = 16000, QUEUE = 8192, MAX_PENDING = 2560, STACK = 16384,
+       WORKER_PRIORITY = 100 };
 #ifndef PX_WAKEWORD_AUDIO_TIMEOUT_MS
 #define PX_WAKEWORD_AUDIO_TIMEOUT_MS 3000u
 #endif
@@ -91,22 +93,47 @@ static int run_model(void *argument)
   int result = 0;
   bool detected = false; float probability = 0;
   if (stopped()) goto done;
+  uint64_t stage_started = now_ms();
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=model-load begin handle=%lu\n", (unsigned long)guard->handle);
   result = px_mn7_model_builtin();
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=model-load result=%d elapsed=%llums\n",
+         result, (unsigned long long)(now_ms() - stage_started));
   if (result < 0) goto done;
   result = px_audio_worker_progress(guard);
   if (result < 0 || stopped()) goto done;
   api = esp_mn_handle_from_name("mn7_cn");
   if (!api || !api->create || !api->destroy || !api->detect || !api->get_results ||
       !api->get_samp_rate || !api->get_samp_chunksize || !api->set_det_threshold || !api->clean) { result = -ENOTSUP; goto done; }
+  /* create() 是第三方同步初始化，真机实测最长 259 秒且期间没有可报告的
+   * 音频进展。暂时结束本 worker 的健康槽，让独立看门狗继续喂硬件；
+   * create 返回后立即重新开始监督。这样不会把同步初始化误判为线程卡死，
+   * 同时硬件 60 秒期限仍能兜底真正失控。 */
+  result = px_audio_worker_idle(guard);
+  if (result < 0) goto done;
+  stage_started = now_ms();
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=create begin handle=%lu\n", (unsigned long)guard->handle);
   model = api->create("mn7_cn", 6000);
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=create result=%d elapsed=%llums\n",
+         model ? 0 : -ENOMEM, (unsigned long long)(now_ms() - stage_started));
   if (!model) { result = -ENOMEM; goto done; }
+  result = px_audio_worker_watch(guard);
+  if (result < 0) goto done;
   result = px_audio_worker_progress(guard);
   if (result < 0 || stopped()) goto done;
   int chunk = api->get_samp_chunksize(model);
   if (api->get_samp_rate(model) != RATE || chunk < 1 || chunk > 4096) { result = -EPROTO; goto done; }
-  if (esp_mn_commands_alloc(api, model) || esp_mn_commands_clear() ||
-      esp_mn_commands_add(1, state.pinyin) || esp_mn_commands_update()) { result = -EINVAL; goto done; }
-  if (api->set_det_threshold(model, state.threshold) < 0) { result = -EINVAL; goto done; }
+  stage_started = now_ms();
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=commands begin handle=%lu\n", (unsigned long)guard->handle);
+  int commands_result = esp_mn_commands_alloc(api, model);
+  if (!commands_result) commands_result = esp_mn_commands_clear();
+  if (!commands_result) commands_result = esp_mn_commands_add(1, state.pinyin);
+  if (!commands_result && esp_mn_commands_update()) commands_result = -EINVAL;
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=commands result=%d elapsed=%llums\n",
+         commands_result, (unsigned long long)(now_ms() - stage_started));
+  if (commands_result) { result = -EINVAL; goto done; }
+  /* ESP-SR 返回截断后的 logf(threshold)，合法阈值小于 1 时也可为负数。 */
+  int threshold_result = api->set_det_threshold(model, state.threshold);
+  syslog(LOG_INFO, "[pixelbox] mn7 stage=threshold value=%d\n", threshold_result);
   size_t capacity = (RATE / 5 + (size_t)chunk - 1) / (size_t)chunk;
   frame = aligned_samples((size_t)chunk);
   history = aligned_samples(capacity * (size_t)chunk);
@@ -224,7 +251,7 @@ int px_wakeword_start(const char *pinyin, float threshold, uint32_t *job_id)
   state.job = state.sequence; state.busy = true; state.stopped = state.ready = state.discontinuity = false;
   state.used = state.begin = 0; state.event_used = state.event_begin = 0;
 #ifdef PX_AUDIO_INDEPENDENT_WORKER
-  int pid = kthread_create("px-wakeword", 105, STACK, worker_task, NULL);
+  int pid = kthread_create("px-wakeword", WORKER_PRIORITY, STACK, worker_task, NULL);
   int error = pid < 0 ? -pid : 0;
 #else
   pthread_t thread; pthread_attr_t attr; pthread_attr_init(&attr);

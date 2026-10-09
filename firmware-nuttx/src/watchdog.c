@@ -31,8 +31,8 @@
 
 #define WATCHDOG_PATH "/dev/watchdog0"
 #define WATCHDOG_POLL_MS 1000u
-/* 启动监督器不能抢占 init/NSH；硬件喂狗周期为 1 秒，低优先级足够。 */
-#define WATCHDOG_PRIORITY 80
+/* 唤醒模型同步初始化持续占用 CPU；监督器每秒必须能抢占同级轮转的 VM/worker。 */
+#define WATCHDOG_PRIORITY 120
 #define WATCHDOG_STACK_BYTES 3072
 #define WATCHDOG_START_POLL_MS 10u
 #define WATCHDOG_START_POLLS 200u

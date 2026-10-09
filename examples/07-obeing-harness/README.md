@@ -21,6 +21,21 @@ PixelBox 上独立联网的语音助手。助手形象是三维粒子小猫“�
 从旧非语音固件升级时，部署前必须按该说明处理完整分区迁移。
 真机诊断与耗时记录见 [语音与网络报告](../../docs/speech-network-performance.md)。
 
+NuttX 固件必须使用 `esp32s3-multinet7` profile；普通 `esp32s3` profile 会明确关闭本地唤醒，
+因此会显示“本地唤醒不可用”。构建和刷写命令如下（`--nuttx-path`、`--apps-path` 按本机路径替换）：
+
+```sh
+python3 firmware-nuttx/scripts/nuttx.py configure --target esp32s3-multinet7 \
+  --nuttx-path .deps/nuttx --apps-path .deps/apps
+python3 firmware-nuttx/scripts/nuttx.py build --target esp32s3-multinet7 \
+  --nuttx-path .deps/nuttx --apps-path .deps/apps
+python3 firmware-nuttx/scripts/nuttx.py flash --target esp32s3-multinet7 \
+  --nuttx-path .deps/nuttx --apps-path .deps/apps --port /dev/ttyUSB0
+```
+
+首次启动 MultiNet7 需要加载模型，ESP32-S3 真机实测最长约 259 秒；期间保持设备供电，
+不要把初始化中的短暂状态当作本轮失败。
+
 ## 使用
 
 1. 打开应用，在设备触屏填写六位企业 ID、六位账号和密码。内置键盘支持大小写、数字和常用符号。
