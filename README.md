@@ -12,9 +12,9 @@
 ![Apache NuttX](https://img.shields.io/badge/Apache%20NuttX-experimental-orange)
 ![Node ≥ 20](https://img.shields.io/badge/Node-%E2%89%A520-green)
 
-![PixelBox](docs/assets/hero.png)
+![PixelBox 真机实拍](docs/assets/hero-photo.jpg)
 
-<sub>产品概念渲染图</sub>
+<sub>真机实拍：两台 PixelBox 正在运行像素小猫应用</sub>
 
 </div>
 
@@ -258,4 +258,4 @@ px.input.onTouch((ev) => {
 
 本项目以 [MIT 许可证](LICENSE) 开源。
 第三方组件（QuickJS-ng、ESP-IDF、Apache NuttX 等）遵循各自的开源许可证；
-`docs/assets/` 下的渲染图仅用于本项目的文档展示。
+`docs/assets/` 下的图片（渲染图、实拍照片和截图）仅用于本项目的文档展示。
