@@ -2,31 +2,44 @@
 
 # PixelBox 像素盒
 
-**放在桌上的、完全可编程的像素动画小盒子**
+**一台放在桌上、从屏幕到语音都能用 TypeScript 编程的像素动画小盒子**
 
-ESP32-S3 + 1.8" AMOLED · 用 TypeScript 写应用 · 一键热更新到真机 · 语音大模型对话 · Electron 模拟器 IDE
+ESP32-S3 + AMOLED 触摸屏 · TypeScript 写应用 · 保存即热更新到真机 · 语音大模型对话 · 一体化模拟器 IDE
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![ESP-IDF v5.5](https://img.shields.io/badge/ESP--IDF-v5.5-red)
+![Apache NuttX](https://img.shields.io/badge/Apache%20NuttX-experimental-orange)
+![Node ≥ 20](https://img.shields.io/badge/Node-%E2%89%A520-green)
 
 ![PixelBox](docs/assets/hero.png)
+
+<sub>产品概念渲染图</sub>
 
 </div>
 
 ## 它是什么
 
-PixelBox 在 ESP32-S3 上内嵌完整 JS 运行时(QuickJS-ng),把整台设备抽象成一套
-TypeScript API(`px.*`):屏幕、触摸、音频、语音对话、Wi-Fi/BLE、传感器、存储……
-你写 TS,保存,1~2 秒后真机上的像素动画就变了——不重烧固件、不碰 C 代码。
-没有硬件也能玩:模拟器 IDE 提供与真机同一套 API 和同一个语音协议。
+PixelBox 在 ESP32-S3 上内嵌了完整的 JavaScript 运行时（QuickJS-ng），把整台设备抽象成一套
+TypeScript API `px.*`，覆盖屏幕、触摸、按键、音频、语音、Wi-Fi/BLE、传感器和存储。
+
+写应用的体验接近前端开发：改 TS 代码，保存，一两秒后真机上的画面就更新了。整个过程不用重烧固件，也不用写 C。
+手头没有硬件也没关系，模拟器 IDE 实现了和真机相同的 API 与语音协议，可以先在电脑上开发调试。
 
 ## 特性
 
-- **TypeScript 全栈开发**:`sdk/types/pixelbox.d.ts` 全量类型契约,编辑器补全即文档;esbuild 打包为单文件应用包。
-- **秒级热更新**:devd 协议(WebSocket + mDNS 发现)推送应用包,原子切换后仅重启 JS VM,芯片不重启。
-- **像素动画引擎**:368×448 AMOLED 画布,`onFrame(dt)` 逐帧渲染(1–60 FPS)、离屏画布、雪碧图/帧动画/GIF、内置像素字体(含中文)。
-- **语音大模型对话**:麦克风 → 中继服务器 → STT/LLM/TTS(全部 OpenAI 兼容、可插拔)→ 流式回放,支持说话打断(barge-in)。
-- **完整外设 API**:触摸/按键/手势、IMU 摇一摇、Wi-Fi/TCP/UDP/mDNS/BLE、NVS+文件系统、电池电量、OTA;定制板可选摄像头/GPS/灯带。
-- **屏上报错**:应用抛未捕获异常时,设备屏幕直接弹提示——非致命走顶部横幅(5 秒消失),入口崩溃/反复出错走全屏卡片(应用名 + 摘要 + 调用栈),模拟器同款([排错手册 §10.1](docs/troubleshooting.md))。
-- **模拟器 IDE**:Electron + Monaco,虚拟像素屏与虚拟外设面板,零硬件跑通全部 API,一键推送真机。
-- **硬件零门槛落地**:Stage A 用微雪现成开发板攒机(约 ¥300),Stage B 提供面向新手的定制 PCB 与外壳完整教程。
+- **TypeScript 开发**：[`sdk/types/pixelbox.d.ts`](sdk/types/pixelbox.d.ts) 是完整的 API 类型契约，编辑器里的补全提示就是文档；应用由 esbuild 打包成单文件。
+- **秒级热更新**：基于 devd 协议（WebSocket + mDNS 自动发现）推送应用包，设备原子切换后只重启 JS 虚拟机，芯片本身不重启。
+- **像素动画引擎**：`onFrame(dt)` 逐帧渲染（1–60 FPS），支持离屏画布、雪碧图、帧动画、GIF 和内置像素字体（含常用中文）；分辨率随板型变化，默认的 2.16 英寸板为 480×480。
+- **语音大模型对话**：
+  - `px.voice`：设备经自建中继服务器接入任意 OpenAI 兼容的 STT / LLM / TTS，流式回放，支持说话打断（barge-in）。
+  - `px.speech`：设备直连 Azure 语音做流式识别与合成，可选 ESP-SR MultiNet7 本地中文唤醒词。
+- **完整外设 API**：触摸、按键与手势、IMU 摇一摇与姿态、Wi-Fi / TCP / UDP / mDNS / BLE、NVS 与文件系统、电池电量、OTA；定制板还可选配摄像头、GPS 和灯带。
+- **屏上报错**：应用抛出未捕获异常时，设备屏幕会直接显示错误。非致命错误显示为顶部横幅（5 秒后消失），入口崩溃或反复出错则显示全屏错误卡（应用名、摘要、调用栈），模拟器行为一致（见[排错手册 §10.1](docs/troubleshooting.md)）。
+- **一体化模拟器 IDE**：Electron + Monaco 构建的 JetBrains 风格桌面 IDE，支持三类工程：
+  - **应用工程**：虚拟像素屏加虚拟外设面板，不接硬件也能跑通全部 API，可一键推送到真机。
+  - **固件工程**：集成 ESP-IDF / NuttX 构建与烧录，C/C++ 智能提示由 clangd 提供。
+  - **硬件工程**：用 tscircuit 设计 PCB、用 OpenSCAD 编写外壳，支持 3D 预览和 STL 导出，并可发送到 OctoPrint、Moonraker 或拓竹打印机。
+- **硬件上手门槛低**：Stage A 用微雪现成开发板组装（约 ¥320），Stage B 提供写给新手的定制 PCB 与外壳教程。
 
 ## 架构总览
 
@@ -49,6 +62,7 @@ flowchart LR
   end
 
   CLOUD["OpenAI 兼容云服务<br/>STT / LLM / TTS"]
+  AZURE["Azure 语音服务<br/>流式 STT / TTS"]
 
   CLI -- "热更新 / 日志 (devd 协议)" --> DEVD
   SIM -- "推送到真机" --> DEVD
@@ -58,116 +72,144 @@ flowchart LR
   VC <-- "PCM16 上行 / TTS 下行" --> RELAY
   SIM <-- "同协议直连" --> RELAY
   RELAY <--> CLOUD
+  JSVM <-- "px.speech (WSS)" --> AZURE
 ```
 
-详见 [docs/architecture.md](docs/architecture.md)(协议与一致性规则)与
-[sdk/types/pixelbox.d.ts](sdk/types/pixelbox.d.ts)(API 唯一事实源)。
+协议细节与一致性规则见 [docs/architecture.md](docs/architecture.md)；API 以
+[sdk/types/pixelbox.d.ts](sdk/types/pixelbox.d.ts) 为唯一事实源。
 
-## 固件实现选择
+## 两套固件实现
 
-固件保留两套独立工程，上层 JS/TypeScript 继续使用同一份 `px.*` FFI 契约：
+仓库包含两套相互独立的固件工程，上层 JS/TypeScript 应用共用同一份 `px.*` 接口契约：
 
 | 实现 | 工程 | 构建入口 | 当前硬件范围 |
 | --- | --- | --- | --- |
-| ESP-IDF | `firmware/` | `idf.py build` | 现有 ESP32-S3/C6/P4 板级支持 |
-| Apache NuttX | `firmware-nuttx/` | `python3 scripts/nuttx.py build --nuttx-path /path/to/nuttx` | ESP32-S3，16MB Flash + 8MB octal PSRAM；Simple Boot |
+| ESP-IDF（主线） | `firmware/` | `idf.py build` | ESP32-S3 / C6 / P4 板级支持 |
+| Apache NuttX（实验） | `firmware-nuttx/` | `python3 scripts/nuttx.py build --nuttx-path /path/to/nuttx` | ESP32-S3，16 MB Flash + 8 MB Octal PSRAM，Simple Boot |
 
-espIDE 的「新建项目 → 固件工程」可选择实现，在「设置 → 工具 → 固件工具链」分别配置
-ESP-IDF 与 NuttX 路径。工程通过 `pixelbox.json.firmwareBackend` 保存选择；旧固件工程默认
-ESP-IDF。NuttX 工程生成时包含 QuickJS 和共享 FFI prelude，可以独立于本仓库构建。
+在模拟器 IDE 里通过「新建项目 → 固件工程」选择实现，在「设置 → 工具 → 固件工具链」分别配置
+ESP-IDF 与 NuttX 的路径。选择结果保存在工程的 `pixelbox.json.firmwareBackend` 中，未设置时默认为 ESP-IDF。
+生成的 NuttX 工程自带 QuickJS 和共享 FFI prelude，可以脱离本仓库单独构建。
 
-NuttX 版使用 POSIX 和 NuttX 设备接口，不加载 `export.sh`、`idf.py` 或 ESP-IDF bootloader。
-接口对齐不代表全部硬件能力均已移植：网络开发服务、音频和语音等能力的实现状态及
-`ENOTSUP` 行为见 [NuttX 固件说明](firmware-nuttx/README.md)。请按应用所需能力选择后端。
+NuttX 版基于 POSIX 和 NuttX 设备接口实现，不依赖 `export.sh`、`idf.py` 或 ESP-IDF bootloader。
+接口一致不等于硬件能力已全部移植：网络开发服务、音频、语音等能力的完成度以及未支持时的 `ENOTSUP` 行为，
+请查看 [NuttX 固件说明](firmware-nuttx/README.md)，再根据应用需要的能力选择后端。
 
-## 快速开始(三选一)
+## 快速开始（三选一）
 
-> 本仓库为 pnpm workspace(sdk / simulator / server / examples),Node 侧统一用
-> [pnpm](https://pnpm.io) 管理:根目录 `pnpm install` 一次装齐全部包;
-> 根目录聚合脚本 `pnpm run build` / `pnpm run typecheck` / `pnpm run check` 逐包执行。
-> 国内网络首次安装 Electron 二进制建议带镜像:
+> 本仓库是 pnpm workspace（sdk / simulator / server / examples）。在仓库根目录执行一次 `pnpm install`
+> 即可装齐所有包，根目录的 `pnpm run build`、`pnpm run typecheck`、`pnpm run check` 会逐包执行。
+>
+> 国内网络首次安装 Electron 二进制时，建议通过环境变量指定镜像（pnpm 不会把 `.npmrc` 里的
+> `electron_mirror` 传给安装脚本）：
 > `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/ pnpm install`
-> (pnpm 不会像 npm 那样把 .npmrc 的 electron_mirror 透传给安装脚本,需用环境变量)。
 
-### 路径 1:模拟器最速体验(零硬件,10 分钟)
+### 路径 1：模拟器体验（无需硬件，约 10 分钟）
 
 ```bash
-pnpm install                      # 仓库根执行,工作区所有包一次装齐
+pnpm install                      # 在仓库根目录执行
 cd simulator && pnpm run dev
 ```
 
-打开示例工程(`examples/`),编辑器里改代码,虚拟像素屏实时刷新。
+打开 `examples/` 下任一示例工程，在编辑器里改代码，虚拟像素屏会实时刷新。
 
-### 路径 2:真机热更新(需微雪开发板)
+### 路径 2：真机热更新（需要微雪开发板）
 
 ```bash
-# 固件(需 ESP-IDF v5.5,详细步骤见 docs/getting-started.md)
+# 固件（需要 ESP-IDF v5.5，详细步骤见 docs/getting-started.md）
 tools/fetch_deps.sh
 cd firmware && idf.py set-target esp32s3 && idf.py build
 idf.py -p <串口> flash monitor
 
 # SDK CLI
-pnpm install                                   # 仓库根执行(已装过可跳过)
-cd sdk && pnpm run build && npm link           # npm link 挂全局命令(或 pnpm link --global)
-pixelbox create my-app && cd my-app && npm install   # 用户项目 npm/pnpm 任选
-pixelbox dev        # watch 构建 + 自动推送 + 日志回传
+pnpm install                                   # 在仓库根目录执行（装过可跳过）
+cd sdk && pnpm run build && npm link           # 注册全局命令（也可用 pnpm link --global）
+pixelbox create my-app && cd my-app && npm install   # 用户项目可任选 npm 或 pnpm
+pixelbox dev        # 监听构建 + 自动推送 + 日志回传
 ```
 
-### 路径 3:语音对话
+### 路径 3：语音对话
 
 ```bash
-pnpm install           # 仓库根执行(已装过可跳过)
+pnpm install           # 在仓库根目录执行（装过可跳过）
 cd server
-cp .env.example .env   # 填 OpenAI 兼容的 STT/LLM/TTS baseURL/key/model
-pnpm run dev           # ws://<本机>:8787/realtime
+cp .env.example .env   # 填写 OpenAI 兼容 STT / LLM / TTS 的 baseURL、key 和 model
+pnpm run dev           # 服务地址 ws://<本机>:8787/realtime
 ```
 
-设备端 `px.voice.configure({ serverUrl: 'ws://<电脑局域网IP>:8787/realtime' })` 后按键开聊。
+在设备端调用 `px.voice.configure({ serverUrl: 'ws://<电脑局域网 IP>:8787/realtime' })`，之后就可以开始对话。
 
-完整教程(购板 → 装环境 → 烧录 → 热更新 → 语音 → 排错表):**[docs/getting-started.md](docs/getting-started.md)**
+从购板、装环境、烧录、热更新、语音到排错的完整教程见 **[docs/getting-started.md](docs/getting-started.md)**。
+
+## 一个最小应用
+
+```ts
+// src/main.ts —— 保存后自动热更新到真机
+const { width, height } = px.screen;
+
+px.screen.setFps(30);
+px.screen.onFrame(() => {
+  px.screen.clear(0x000000);
+  const t = performance.now() / 300;
+  const y = height / 2 + Math.sin(t) * 60;
+  px.screen.fillCircle(width / 2, y | 0, 20, px.color.hsv((t * 40) % 360, 100, 100));
+  px.screen.drawText('你好, PixelBox!', 8, 8, { font: 'pixel12', color: px.color.WHITE });
+});
+
+px.input.onTouch((ev) => {
+  if (ev.type === 'up') px.voice.start(); // 点一下屏幕，开始一轮语音对话
+});
+```
+
+更多示例（像素时钟、语音助手、IMU 物理小球、拼豆图、桌面伴侣等）见 [examples/](examples/README.md)。
+
+## 硬件路线
+
+| | Stage A：开发板组装 | Stage B：定制 PCB |
+|---|---|---|
+| 门槛 | 不需要 PCB 知识；选带喇叭的套餐可免焊接 | 立创 EDA 设计 + 嘉立创打样（教程面向新手） |
+| 硬件 | 微雪 ESP32-S3-Touch-AMOLED-2.16（默认，1.8 寸版同样支持）+ 喇叭 + 电池 + 3D 打印外壳 | 在 A 的基础上增加 OV2640 摄像头、GPS、WS2812 灯带，外形可定制 |
+| 预算（估算） | 约 ¥320 / 台 | 约 ¥1200～2000（含两轮打样） |
+| 指南 | [devboard.md](docs/hardware/devboard.md) · [bom.md](docs/hardware/bom.md) | [custom-pcb.md](docs/hardware/custom-pcb.md) · [enclosure.md](docs/hardware/enclosure.md) |
 
 ## 仓库导航
 
 | 目录 | 内容 | 入口 |
 |---|---|---|
-| `docs/` | 架构、产品、上手、硬件落地指南 | [architecture.md](docs/architecture.md) · [product.md](docs/product.md) · [getting-started.md](docs/getting-started.md) |
-| `docs/hardware/` | 开发板攒机 / 定制 PCB / 外壳 / BOM | [devboard.md](docs/hardware/devboard.md) · [custom-pcb.md](docs/hardware/custom-pcb.md) · [enclosure.md](docs/hardware/enclosure.md) · [bom.md](docs/hardware/bom.md) |
-| `firmware/` | ESP-IDF v5.5 固件(QuickJS-ng / devd / voicechat / HAL) | [firmware/README.md](firmware/README.md) |
-| `sdk/` | `@pixelbox/sdk`:d.ts 契约 + CLI | [sdk/README.md](sdk/README.md) |
+| `docs/` | 架构、产品设计、上手教程、性能分析 | [architecture.md](docs/architecture.md) · [product.md](docs/product.md) · [getting-started.md](docs/getting-started.md) |
+| `docs/hardware/` | 开发板组装、定制 PCB、外壳、BOM、多芯片目标 | [devboard.md](docs/hardware/devboard.md) · [custom-pcb.md](docs/hardware/custom-pcb.md) · [enclosure.md](docs/hardware/enclosure.md) · [bom.md](docs/hardware/bom.md) |
+| `firmware/` | ESP-IDF v5.5 固件（QuickJS-ng / devd / voicechat / HAL） | [firmware/README.md](firmware/README.md) |
+| `firmware-nuttx/` | Apache NuttX 固件（实验性，与 ESP-IDF 版接口一致） | [firmware-nuttx/README.md](firmware-nuttx/README.md) |
+| `sdk/` | `@pixelbox/sdk`：d.ts 接口契约 + CLI | [sdk/README.md](sdk/README.md) |
 | `simulator/` | Electron 模拟器 IDE | [simulator/README.md](simulator/README.md) |
-| `server/` | 语音中继服务器(STT/LLM/TTS 可插拔) | [server/README.md](server/README.md) |
-| `examples/` | 示例应用:像素动画/时钟/语音助手/传感器 | [examples/README.md](examples/README.md) |
-| `tools/` | 依赖拉取、字体生成等脚本 | — |
+| `server/` | 语音中继服务器（STT / LLM / TTS 可插拔） | [server/README.md](server/README.md) |
+| `examples/` | 示例应用 | [examples/README.md](examples/README.md) |
+| `tools/` | 依赖拉取、字体生成、真机诊断等脚本 | — |
 
-## 硬件路线
+## 参与贡献
 
-| | Stage A:开发板攒机 | Stage B:定制 PCB |
-|---|---|---|
-| 门槛 | 零 PCB 知识,焊两根喇叭线 | 立创 EDA + 嘉立创打样(教程面向新手) |
-| 硬件 | 微雪 ESP32-S3-Touch-AMOLED-1.8 + 喇叭 + 电池 + 3D 打印外壳 | 增加 OV2640 摄像头 / GPS / WS2812 灯带 / 定制外形 |
-| 预算(估算) | ≈ ¥320/台 | ≈ ¥1200~2000(含两轮打样) |
-| 指南 | [devboard.md](docs/hardware/devboard.md) | [custom-pcb.md](docs/hardware/custom-pcb.md) |
+欢迎提交 Issue 和 Pull Request。修改设备 API 时，请同步更新三处实现，确保真机与模拟器行为一致：
 
-## 一段最小应用
+1. 接口契约 `sdk/types/pixelbox.d.ts`（协议层改动同时更新 `docs/architecture.md`）；
+2. 固件实现 `firmware/`（以及 `firmware-nuttx/`，未实现的能力返回 `ENOTSUP`）；
+3. 模拟器实现 `simulator/`。
 
-```ts
-// src/main.ts —— 保存即热更新到真机
-px.screen.setFps(30);
-px.screen.onFrame((dt) => {
-  px.screen.clear(0x000000);
-  const t = performance.now() / 300;
-  const y = 200 + Math.sin(t) * 60;
-  px.screen.fillCircle(184, y | 0, 20, px.color.hsv((t * 40) % 360, 100, 100));
-  px.screen.drawText('你好, PixelBox!', 8, 8, { font: 'pixel12', color: px.color.WHITE });
-});
+提交前请至少在仓库根目录运行 `pnpm run typecheck`；需要完整回归时运行 `pnpm run check`（含全量构建与模拟器自检）。
 
-px.input.onButton((ev) => {
-  if (ev.type === 'click') px.voice.start(); // 按一下,开始语音对话
-});
-```
+## 致谢
+
+本项目构建在这些优秀的开源项目之上：
+[QuickJS-ng](https://github.com/quickjs-ng/quickjs) ·
+[ESP-IDF](https://github.com/espressif/esp-idf) ·
+[ESP-SR](https://github.com/espressif/esp-sr) ·
+[Apache NuttX](https://nuttx.apache.org/) ·
+[LVGL](https://lvgl.io/) ·
+[Monaco Editor](https://github.com/microsoft/monaco-editor) ·
+[tscircuit](https://github.com/tscircuit/tscircuit) ·
+[OpenSCAD](https://openscad.org/)
 
 ## 许可证
 
-本项目以 **MIT 许可证** 开源(见仓库 LICENSE 文件)。
-第三方组件(QuickJS-ng、ESP-IDF 等)遵循其各自的开源许可证;
-`docs/assets/` 下渲染图仅用于本项目文档展示。
+本项目以 [MIT 许可证](LICENSE) 开源。
+第三方组件（QuickJS-ng、ESP-IDF、Apache NuttX 等）遵循各自的开源许可证；
+`docs/assets/` 下的渲染图仅用于本项目的文档展示。
