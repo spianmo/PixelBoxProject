@@ -4,9 +4,10 @@
 
 **一台放在桌上、从屏幕到语音都能用 TypeScript 编程的像素动画小盒子**
 
-ESP32-S3 + AMOLED 触摸屏 · TypeScript 写应用 · 保存即热更新到真机 · 语音大模型对话 · 一体化模拟器 IDE
+面向 ESP32 全系列 · TypeScript 写应用 · 保存即热更新到真机 · 语音大模型对话 · 一体化模拟器 IDE
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![ESP32 S3 | C6 | P4 | C3 | ESP32](https://img.shields.io/badge/ESP32-S3%20%7C%20C6%20%7C%20P4%20%7C%20C3%20%7C%20ESP32-E7352C)
 ![ESP-IDF v5.5](https://img.shields.io/badge/ESP--IDF-v5.5-red)
 ![Apache NuttX](https://img.shields.io/badge/Apache%20NuttX-experimental-orange)
 ![Node ≥ 20](https://img.shields.io/badge/Node-%E2%89%A520-green)
@@ -19,14 +20,40 @@ ESP32-S3 + AMOLED 触摸屏 · TypeScript 写应用 · 保存即热更新到真�
 
 ## 它是什么
 
-PixelBox 在 ESP32-S3 上内嵌了完整的 JavaScript 运行时（QuickJS-ng），把整台设备抽象成一套
+PixelBox 在 ESP32 芯片上内嵌了完整的 JavaScript 运行时（QuickJS-ng），把整台设备抽象成一套
 TypeScript API `px.*`，覆盖屏幕、触摸、按键、音频、语音、Wi-Fi/BLE、传感器和存储。
 
 写应用的体验接近前端开发：改 TS 代码，保存，一两秒后真机上的画面就更新了。整个过程不用重烧固件，也不用写 C。
 手头没有硬件也没关系，模拟器 IDE 实现了和真机相同的 API 与语音协议，可以先在电脑上开发调试。
 
+参考硬件是一台 ESP32-S3 + AMOLED 触摸屏的桌面小盒子，但 PixelBox 并不绑定 S3。模拟器 IDE 与硬件设计工具链
+支持 ESP32-S3、C6、P4、C3 和经典 ESP32，PixelBox 固件已适配 S3、C6 和 P4；
+同一份应用代码换芯片不用改（见[芯片支持](#芯片支持不止-esp32-s3)）。
+
+## 界面预览
+
+**应用开发**：在 IDE 里打开示例 [`02-pixel-clock`](examples/02-pixel-clock/)，按 ⌃R 在 480×480 虚拟设备上运行。
+左边是 TypeScript 源码，右边是虚拟 AMOLED 屏和外设工具条（电源、按键、IMU、GPS、灯带、摄像头），
+底部实时显示应用日志。确认无误后，一键推送到真机。
+
+![模拟器 IDE 运行像素时钟示例](docs/assets/screenshots/ide-app-demo.png)
+
+**硬件设计**：电路板用 [tscircuit](https://github.com/tscircuit/tscircuit)（TSX）描述，外壳用 OpenSCAD 编写，
+IDE 实时编译出 PCB、原理图和 3D 装配爆炸图。外壳可导出 STL，直接发送到 3D 打印机。
+下图是新建 ESP32-S3 硬件工程后自动生成的主控扩展板与外壳。
+
+![硬件设计面板：外壳与 PCB 的 3D 爆炸视图](docs/assets/screenshots/ide-hardware-3d.png)
+
+<details>
+<summary>PCB 布线视图</summary>
+
+![硬件设计面板：PCB 布线](docs/assets/screenshots/ide-hardware-pcb.png)
+
+</details>
+
 ## 特性
 
+- **面向 ESP32 全系列**：模拟器、固件工程和硬件模板支持 S3 / C6 / P4 / C3 / 经典 ESP32，PixelBox 固件已适配 S3 / C6 / P4。芯片缺少的能力按契约返回 `ENOTSUP`，应用可以通过 `px.system.info().capabilities` 判断后降级。
 - **TypeScript 开发**：[`sdk/types/pixelbox.d.ts`](sdk/types/pixelbox.d.ts) 是完整的 API 类型契约，编辑器里的补全提示就是文档；应用由 esbuild 打包成单文件。
 - **秒级热更新**：基于 devd 协议（WebSocket + mDNS 自动发现）推送应用包，设备原子切换后只重启 JS 虚拟机，芯片本身不重启。
 - **像素动画引擎**：`onFrame(dt)` 逐帧渲染（1–60 FPS），支持离屏画布、雪碧图、帧动画、GIF 和内置像素字体（含常用中文）；分辨率随板型变化，默认的 2.16 英寸板为 480×480。
@@ -77,6 +104,25 @@ flowchart LR
 
 协议细节与一致性规则见 [docs/architecture.md](docs/architecture.md)；API 以
 [sdk/types/pixelbox.d.ts](sdk/types/pixelbox.d.ts) 为唯一事实源。
+
+## 芯片支持：不止 ESP32-S3
+
+上层应用只依赖 `px.*` 契约，芯片之间的差异收敛在固件的板型 Kconfig 和 `sdkconfig.defaults.<target>` 里。
+芯片没有的能力（如 P4 没有片上 Wi-Fi、C6 没有 PSRAM）会如实降级，不会假装成功。
+
+| 芯片 | 内核 | PixelBox 固件（ESP-IDF） | 模拟器虚拟设备 | IDE 固件工程 | IDE 硬件参考板模板 |
+|---|---|---|---|---|---|
+| **ESP32-S3**（默认） | 双核 Xtensa LX7 | ✅ 主线，已在微雪 AMOLED 2.16 真机验证 | ✅ | ✅ | PixelBox S3 主控扩展板 |
+| **ESP32-C6** | 单核 RISC-V | ✅ 整包编译通过（通用 SPI 屏，无 PSRAM） | ✅ | ✅ | 微雪 ESP32-C6-Touch-AMOLED-2.16 |
+| **ESP32-P4** | 双核 RISC-V | ✅ 整包编译通过（无屏调试板，无片上 Wi-Fi/BT） | ✅ | ✅ | 微雪 ESP32-P4-WIFI6-Touch-LCD-4.3 |
+| **ESP32-C3** | 单核 RISC-V | 🚧 待适配 | ✅ | ✅ | 微雪 ESP32-C3-LCD-1.47 |
+| **ESP32**（经典） | 双核 Xtensa LX6 | 🚧 待适配 | ✅ | ✅ | 微雪 ESP32 One |
+
+- **模拟器虚拟设备**：在设备管理器里按芯片、分辨率、PSRAM 和 Flash 建档，虚拟设备的能力表与对应芯片一致。
+- **IDE 固件工程**：新建工程时选择目标芯片，IDE 调用 `idf.py` 完成多芯片构建、合并镜像和烧录。
+- **IDE 硬件模板**：新建硬件工程时按芯片生成参考板的 PCB 与外壳，可在此基础上修改。
+
+多芯片的设计原则和 C6 / P4 的移植细节见 [docs/hardware/multi-target.md](docs/hardware/multi-target.md)，适配新芯片或新板子时可以照着做。
 
 ## 两套固件实现
 
